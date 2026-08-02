@@ -47,7 +47,10 @@ function loadConfig() {
 
     outputDir: path.resolve(ROOT, env.OUTPUT_DIR || 'outputs'),
     maxConcurrent: Number(env.MAX_CONCURRENT) || 1,
-    jobTimeoutMs: Number(env.JOB_TIMEOUT_MS) || 15 * 60 * 1000,
+    // Generous by default: the first local run downloads tens of gigabytes of
+    // weights before it generates anything, and a small GPU is slow after
+    // that. A ceiling that fits a hosted request would cancel it mid-download.
+    jobTimeoutMs: Number(env.JOB_TIMEOUT_MS) || 60 * 60 * 1000,
     retainJobs: Number(env.RETAIN_JOBS) || 100,
   };
 }

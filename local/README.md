@@ -8,9 +8,11 @@ models, but it runs as often as you like.
 
 - **An NVIDIA graphics card.** 4 GB of VRAM is the practical minimum; 6 GB or
   more is comfortable. AMD and Intel graphics won't work with this setup.
-- **~20 GB of free disk space** for Python, the libraries, and the model.
-- **Patience on the first run.** The setup downloads roughly 8 GB and the model
-  another 5 GB. Once. After that, startup takes seconds.
+- **~50 GB of free disk space.** The libraries are ~8 GB and the Wan repository
+  is roughly 28 GB — most of that is the text encoder, not the video model.
+- **Patience on the first run.** That download takes 20-40 minutes on a normal
+  connection, and it happens before the first frame is generated. It is a
+  one-time cost; later runs start in seconds.
 
 Check your card: **Ctrl+Shift+Esc** → **Performance** → **GPU**.
 
@@ -59,7 +61,13 @@ You now have two windows open: the GPU server and RealFrame. Both need to stay
 running. Generate as usual at `http://localhost:3000`.
 
 The model loads on your *first* generation, not at startup — so the first video
-takes several extra minutes while it downloads. Later ones don't.
+waits on a 20-40 minute download before any generating begins. Watch the GPU
+server window for progress; the RealFrame page shows only "generating". Later
+runs skip all of this.
+
+If a `.env` with an `HF_TOKEN` exists in the main folder, the server reuses it
+for downloads — anonymous Hub traffic is rate limited and slower. Generation
+itself stays entirely local either way.
 
 ## Long clips locally
 
@@ -82,8 +90,11 @@ Set `LOCAL_MODEL` before starting to switch.
 
 | Value | Model | Download | Character |
 | --- | --- | --- | --- |
-| `wan-1.3b` *(default)* | Wan 2.1 T2V 1.3B | ~5 GB | Best small-model realism and motion |
-| `ltx` | LTX-Video | ~9 GB | Several times faster, softer detail |
+| `wan-1.3b` *(default)* | Wan 2.1 T2V 1.3B | ~28 GB | Best small-model realism and motion |
+| `ltx` | LTX-Video | ~19 GB | Several times faster, softer detail |
+
+Both figures are the whole repository. The video model itself is small; the
+text encoder is the bulk of it.
 
 Any diffusers-compatible repo id also works, at your own risk of a shape
 mismatch.

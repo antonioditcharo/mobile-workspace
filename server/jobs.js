@@ -167,7 +167,11 @@ class JobQueue extends EventEmitter {
     // Chained jobs need proportionally longer before the timeout bites.
     const segmentCount = job.plan?.segments || 1;
     const timeout = this.config.jobTimeoutMs * Math.max(1, segmentCount);
-    const timer = setTimeout(() => job.controller.abort(), timeout);
+    job.timedOut = false;
+    const timer = setTimeout(() => {
+      job.timedOut = true;
+      job.controller.abort();
+    }, timeout);
 
     const scratch = [];
 
@@ -213,10 +217,18 @@ class JobQueue extends EventEmitter {
       );
     } catch (err) {
       const aborted = err.name === 'AbortError';
-      job.status = aborted ? STATUS.CANCELLED : STATUS.ERROR;
-      job.error = aborted
-        ? 'Cancelled or timed out.'
-        : err.message || 'Generation failed for an unknown reason.';
+      job.status = aborted && !job.timedOut ? STATUS.CANCELLED : STATUS.ERROR;
+
+      if (aborted && job.timedOut) {
+        const minutes = Math.round(timeout / 60000);
+        job.error = `Gave up after ${minutes} minutes. On a first local run most of that is `
+          + 'the model download — check the GPU server window, and if it is still working, '
+          + 'raise JOB_TIMEOUT_MS in .env and try again once the download finishes.';
+      } else if (aborted) {
+        job.error = 'Cancelled.';
+      } else {
+        job.error = err.message || 'Generation failed for an unknown reason.';
+      }
       job.finishedAt = new Date().toISOString();
     } finally {
       clearTimeout(timer);

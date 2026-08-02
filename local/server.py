@@ -77,6 +77,35 @@ def log(msg):
     print(f"  {msg}", flush=True)
 
 
+def adopt_hf_token():
+    """
+    Reuse the token from RealFrame's .env if one is set.
+
+    Anonymous Hub downloads are rate limited and noticeably slower, and the
+    weights here run to tens of gigabytes. The token is only used to fetch
+    files — generation stays entirely local.
+    """
+    if os.environ.get("HF_TOKEN"):
+        return True
+
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    try:
+        with open(env_path, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() in ("HF_TOKEN", "HUGGINGFACE_API_KEY"):
+                    value = value.strip().strip('"').strip("'")
+                    if value:
+                        os.environ["HF_TOKEN"] = value
+                        return True
+    except OSError:
+        pass
+    return False
+
+
 def resolve_model():
     name = os.environ.get("LOCAL_MODEL", "wan-1.3b").strip()
     if name in MODELS:
@@ -185,7 +214,10 @@ def load_pipeline():
         log("Anything larger will run out of memory. Expect slow generation.")
     log(f"Model: {spec['repo']}")
     log(f"Precision: {str(dtype).replace('torch.', '')}")
-    log("Loading — the first run downloads several GB and can take a while.")
+    log(f"Authenticated Hub downloads: {'yes' if os.environ.get('HF_TOKEN') else 'no (slower, rate limited)'}")
+    log("Loading. The first run downloads the full repository — for Wan that is")
+    log("roughly 28 GB, most of it the text encoder, and it can take 20-40")
+    log("minutes. Progress appears below. Nothing is stuck.")
 
     try:
         if spec["kind"] == "wan":
@@ -451,6 +483,7 @@ def main():
     if not check_python_version():
         sys.exit(1)
 
+    adopt_hf_token()
     spec = resolve_model()
     print()
     print("  RealFrame local GPU server")

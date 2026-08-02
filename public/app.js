@@ -22,14 +22,37 @@ const INTENSITY_HINTS = [
 /* ---------- helpers ---------- */
 
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+  } catch {
+    // A browser-level failure means RealFrame itself is unreachable, which is
+    // a different problem from a generation failing. Say which.
+    setConnectionLost(true);
+    throw new Error('Lost contact with RealFrame. Is the window running npm start still open?');
+  }
+  setConnectionLost(false);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
+}
+
+function setConnectionLost(lost) {
+  if (state.connectionLost === lost) return;
+  state.connectionLost = lost;
+  const chip = $('status-chip');
+  if (lost) {
+    state.lastChip = { text: chip.textContent, cls: chip.className };
+    chip.textContent = 'RealFrame not responding';
+    chip.className = 'status warn';
+  } else if (state.lastChip) {
+    chip.textContent = state.lastChip.text;
+    chip.className = state.lastChip.cls;
+  }
 }
 
 function debounce(fn, ms) {
@@ -361,6 +384,10 @@ async function refreshJobs() {
   try {
     ({ jobs } = await api('/api/jobs'));
   } catch {
+    // api() has already flagged the connection; keep polling so the page
+    // recovers on its own once the server is back.
+    clearTimeout(state.pollTimer);
+    state.pollTimer = setTimeout(refreshJobs, 3000);
     return;
   }
 

@@ -17,6 +17,8 @@
  * video bytes, base64 in JSON, or a URL to fetch all resolve to a Buffer.
  */
 
+const { request: httpRequest } = require('./httpclient');
+
 const HF_ROUTER = 'https://router.huggingface.co';
 const HF_LEGACY = 'https://api-inference.huggingface.co';
 const HF_MODEL_API = 'https://huggingface.co/api/models';
@@ -179,7 +181,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Returns [{ provider, providerId, status, task }], or [] if the lookup fails
  * (offline, rate limited, private model) so callers can fall back.
  */
-async function fetchProviderMapping(model, config, { fetchImpl = fetch, signal, strict = false } = {}) {
+async function fetchProviderMapping(model, config, { fetchImpl = httpRequest, signal, strict = false } = {}) {
   const url = `${HF_MODEL_API}/${model}?expand[]=inferenceProviderMapping`;
   const headers = config.hfToken ? { Authorization: `Bearer ${config.hfToken}` } : {};
 
@@ -275,7 +277,7 @@ function buildProviderRequest(provider, providerId, job) {
  * to the legacy inference host if nothing is mapped.
  */
 async function callHuggingFace(job, config, opts = {}) {
-  const { fetchImpl = fetch, signal } = opts;
+  const { fetchImpl = httpRequest, signal } = opts;
 
   if (!config.hfToken) {
     throw new ProviderError('No HF_TOKEN set. Add one to .env — see README for how to create it.');
@@ -387,7 +389,7 @@ async function callHuggingFace(job, config, opts = {}) {
  * `CUSTOM_BODY_TEMPLATE` lets you reshape it for an endpoint that expects
  * something else.
  */
-async function callCustom(job, config, { fetchImpl = fetch, signal } = {}) {
+async function callCustom(job, config, { fetchImpl = httpRequest, signal } = {}) {
   if (!config.customEndpoint) {
     throw new ProviderError('Provider is set to "custom" but CUSTOM_ENDPOINT is not configured.');
   }
