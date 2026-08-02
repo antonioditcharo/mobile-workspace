@@ -1,0 +1,23 @@
+{
+  "name": "realframe",
+  "version": "0.1.0",
+  "description": "Video generation tuned for photorealism, backed by Hugging Face or your own endpoint.",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "video-generation",
+    "text-to-video",
+    "photorealism",
+    "huggingface",
+    "diffusion"
+  ],
+  "license": "MIT",
+  "private": true
+}

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RealFrame — realism video generation</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎞️</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◉</span>
+      <div>
+        <h1>RealFrame</h1>
+        <p class="tagline">Video generation tuned for footage, not renders</p>
+      </div>
+    </div>
+    <div class="status" id="status-chip">connecting…</div>
+  </header>
+
+  <main class="layout">
+    <!-- ---------- Composer ---------- -->
+    <section class="panel composer">
+      <h2 class="panel-title">Shot</h2>
+
+      <label class="field">
+        <span class="label">What happens in the video</span>
+        <textarea id="subject" rows="4" placeholder="A woman in a rain jacket steps off a bus and checks her phone on a wet street at dusk"></textarea>
+        <span class="hint">Describe the action plainly. The realism layer adds the camera, lens, light and imperfections.</span>
+      </label>
+
+      <div id="analysis" class="analysis hidden"></div>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="label">Capture preset</span>
+          <select id="preset"></select>
+          <span class="hint" id="preset-summary"></span>
+        </label>
+
+        <label class="field medium">
+          <span class="label">Realism intensity <b id="intensity-value">3</b></span>
+          <input type="range" id="intensity" min="0" max="4" step="1" value="3">
+          <span class="hint" id="intensity-hint">Strong — full capture stack plus subject detail.</span>
+        </label>
+      </div>
+
+      <details class="advanced">
+        <summary>Model &amp; parameters</summary>
+
+        <div class="field-row">
+          <label class="field">
+            <span class="label">Backend</span>
+            <select id="provider">
+              <option value="hf">Hugging Face</option>
+              <option value="custom">Custom endpoint (your own weights)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">Model</span>
+            <input id="model" list="model-list" placeholder="Wan-AI/Wan2.2-T2V-A14B">
+            <datalist id="model-list"></datalist>
+            <span class="hint" id="model-note"></span>
+          </label>
+        </div>
+
+        <div class="field-row">
+          <label class="field narrow">
+            <span class="label">Frames</span>
+            <input type="number" id="num_frames" min="1" max="1000">
+          </label>
+          <label class="field narrow">
+            <span class="label">FPS</span>
+            <input type="number" id="fps" min="1" max="60">
+          </label>
+          <label class="field narrow">
+            <span class="label">Guidance</span>
+            <input type="number" id="guidance_scale" min="0" max="20" step="0.1">
+          </label>
+          <label class="field narrow">
+            <span class="label">Steps</span>
+            <input type="number" id="num_inference_steps" min="1" max="150">
+          </label>
+          <label class="field narrow">
+            <span class="label">Seed</span>
+            <input type="number" id="seed" placeholder="random">
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="label">Start frame (image-to-video)</span>
+          <input type="file" id="init-image" accept="image/*">
+          <span class="hint">Animating a real photograph is the most reliable route to convincing realism. Requires an image-to-video model.</span>
+        </label>
+
+        <label class="field">
+          <span class="label">Extra negative terms</span>
+          <input id="extra-negative" placeholder="comma, separated, terms">
+        </label>
+
+        <fieldset class="field">
+          <span class="label">Negative prompt groups</span>
+          <div id="negative-groups" class="chips"></div>
+        </fieldset>
+      </details>
+
+      <div class="actions">
+        <button id="generate" class="primary">Generate</button>
+        <button id="copy-prompt" class="ghost">Copy compiled prompt</button>
+      </div>
+      <p class="error hidden" id="composer-error"></p>
+    </section>
+
+    <!-- ---------- Compiled prompt ---------- -->
+    <section class="panel preview">
+      <h2 class="panel-title">Compiled prompt</h2>
+
+      <div class="score-row">
+        <div class="score">
+          <span class="score-num" id="score-after">—</span>
+          <span class="score-label" title="How well the compiled prompt describes a physical capture. Measures prompt construction, not which preset you picked — sparse presets like CCTV score lower by design.">realism score</span>
+        </div>
+        <div class="score-delta" id="score-delta"></div>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span>Positive</span>
+          <button class="link" data-copy="compiled-prompt">copy</button>
+        </div>
+        <p id="compiled-prompt" class="prompt-body">Describe a shot to see the compiled prompt.</p>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span>Negative</span>
+          <button class="link" data-copy="compiled-negative">copy</button>
+        </div>
+        <p id="compiled-negative" class="prompt-body muted"></p>
+      </div>
+
+      <ul id="compile-notes" class="notes"></ul>
+    </section>
+
+    <!-- ---------- Results ---------- -->
+    <section class="panel results">
+      <h2 class="panel-title">Renders</h2>
+      <div id="jobs" class="jobs">
+        <p class="empty">Nothing generated yet.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
