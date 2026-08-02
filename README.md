@@ -121,7 +121,31 @@ models actually respond depends on the inference providers enabled for your acco
 catalog in `server/catalog.js` is a starting list, not a guarantee. Any model id can be
 typed into the model field directly.
 
-### Your own endpoint
+Which partner actually serves a model changes over time, so routing looks it up
+rather than assuming. `HF_PROVIDER=auto` queries the Hub's provider mapping and
+tries the live providers in turn; set `HF_PROVIDER=fal-ai` (or `replicate`,
+`novita`) to pin one. The **Check availability** button reports what a given
+model is served by. Note that `hf-inference` is HF's own serverless pool and
+does not host large video models — those are always on a partner.
+
+### Your own GPU — free and unlimited
+
+`local/` contains a small server that runs an open model on your own NVIDIA card
+and speaks the custom-endpoint protocol, so the app and realism engine work
+unchanged. No credits, no rate limits.
+
+```env
+PROVIDER=custom
+CUSTOM_ENDPOINT=http://localhost:8000/generate
+```
+
+Windows: double-click `local/start-local-gpu.bat`. It builds an isolated Python
+environment, installs PyTorch with CUDA, checks the card, and starts serving.
+6 GB VRAM is the realistic floor, which fits the 1.3–2B models rather than the
+14B ones. Precision is chosen per-device — Turing cards (GTX 16xx, RTX 20xx)
+get `float16` since they have no hardware `bfloat16`. See `local/README.md`.
+
+### Any other endpoint
 
 ```env
 PROVIDER=custom

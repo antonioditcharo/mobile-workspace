@@ -4,3 +4,7 @@ outputs/*
 !outputs/.gitkeep
 .DS_Store
 *.log
+
+local/.venv/
+local/__pycache__/
+__pycache__/
