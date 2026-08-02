@@ -32,6 +32,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("LOCAL_PORT", "8000"))
 
+# PyTorch lags new Python releases by many months. Catch that here rather than
+# letting pip fail with "No matching distribution found", which reads like a
+# network problem and sends people looking in the wrong place.
+SUPPORTED_PYTHON = (3, 10, 3, 13)
+
+
+def check_python_version():
+    lo_major, lo_minor, hi_major, hi_minor = SUPPORTED_PYTHON
+    major, minor = sys.version_info[:2]
+    if (major, minor) < (lo_major, lo_minor) or (major, minor) > (hi_major, hi_minor):
+        print()
+        print(f"  Python {major}.{minor} is not supported by PyTorch.")
+        print(f"  Supported: {lo_major}.{lo_minor} through {hi_major}.{hi_minor}.")
+        print()
+        print("  Install Python 3.12, then delete the .venv folder here and")
+        print("  run start-local-gpu.bat again.")
+        print("  https://www.python.org/downloads/release/python-3128/")
+        print()
+        return False
+    return True
+
 MODELS = {
     "wan-1.3b": {
         "repo": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
@@ -380,6 +401,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    if not check_python_version():
+        sys.exit(1)
+
     spec = resolve_model()
     print()
     print("  RealFrame local GPU server")

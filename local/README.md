@@ -16,9 +16,19 @@ Check your card: **Ctrl+Shift+Esc** → **Performance** → **GPU**.
 
 ## Setup (Windows)
 
-1. **Install Python** from [python.org/downloads](https://www.python.org/downloads/).
-   On the first installer screen, tick **"Add python.exe to PATH"** before
-   clicking Install. This matters — skipping it is the most common failure.
+1. **Install Python 3.12** —
+   [python.org/downloads/release/python-3128](https://www.python.org/downloads/release/python-3128/),
+   scroll to *Windows installer (64-bit)*.
+
+   **The version matters.** PyTorch lags new Python releases by months, so the
+   newest Python is the wrong one — 3.14 has no PyTorch builds at all, and
+   installing it produces a "No matching distribution found for torch" error
+   that looks like a network failure but isn't. Supported range is 3.10–3.13.
+
+   On the first installer screen, tick **"Add python.exe to PATH"**.
+
+   Already have a newer Python? Leave it. Installing 3.12 alongside it is
+   fine — the launcher script finds and uses the right one automatically.
 
 2. **Double-click `start-local-gpu.bat`** in this folder.
 
@@ -119,6 +129,13 @@ start-local-gpu.bat
 **"Python is not installed"** after installing it — you missed the "Add
 python.exe to PATH" checkbox. Re-run the Python installer, choose **Modify**,
 and enable it.
+
+**"No matching distribution found for torch"** — your Python is too new for
+PyTorch, not a network problem. Install Python 3.12, delete the `.venv` folder
+in this directory, and run the launcher again. It will pick up 3.12 on its own.
+
+**Switched Python versions and it still fails** — the `.venv` folder remembers
+which Python built it. Delete it and re-run; it rebuilds in seconds.
 
 **Black or garbled video** — usually a precision problem. Force it:
 
