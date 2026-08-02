@@ -51,6 +51,21 @@ running. Generate as usual at `http://localhost:3000`.
 The model loads on your *first* generation, not at startup — so the first video
 takes several extra minutes while it downloads. Later ones don't.
 
+## Long clips locally
+
+RealFrame builds anything past ~5 seconds by chaining segments, which means each
+continuation needs an **image-to-video** pipeline. Of the two models here only
+`ltx` has one, so long clips locally require:
+
+```
+set LOCAL_MODEL=ltx
+start-local-gpu.bat
+```
+
+With `wan-1.3b` loaded, a chained request fails with a message saying exactly
+this. The stitching itself needs ffmpeg — this setup installs one, and RealFrame
+finds it inside `.venv` automatically.
+
 ## Models
 
 Set `LOCAL_MODEL` before starting to switch.

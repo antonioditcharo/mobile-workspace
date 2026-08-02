@@ -48,6 +48,7 @@ MODELS = {
 }
 
 _pipeline = None
+_pipeline_i2v = None
 _pipeline_error = None
 
 
@@ -179,6 +180,64 @@ def load_pipeline():
     return _pipeline
 
 
+def decode_image(value):
+    """Accept a data URL or bare base64 and return a PIL image."""
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+
+    if not isinstance(value, str):
+        return None
+    payload = value.split(",", 1)[1] if value.startswith("data:") else value
+    try:
+        return Image.open(BytesIO(base64.b64decode(payload))).convert("RGB")
+    except Exception as exc:
+        raise ValueError(f"Could not read the start frame: {exc}")
+
+
+def load_i2v_pipeline():
+    """
+    Image-to-video pipeline, used for start frames and for continuing a clip
+    when RealFrame chains segments into something longer.
+    """
+    global _pipeline_i2v
+    if _pipeline_i2v is not None:
+        return _pipeline_i2v
+
+    spec = resolve_model()
+    if spec["kind"] != "ltx":
+        raise RuntimeError(
+            "This model is text-to-video only, so it cannot continue from a frame. "
+            "Long clips and start frames need an image-to-video model — restart with "
+            "LOCAL_MODEL=ltx."
+        )
+
+    import torch
+    from diffusers import LTXImageToVideoPipeline
+
+    log("Loading the image-to-video pipeline (shares weights with the loaded model)")
+    base = load_pipeline()
+    dtype = pick_dtype(torch)
+
+    # Reuse the already-resident components rather than paying twice in VRAM.
+    try:
+        _pipeline_i2v = LTXImageToVideoPipeline(
+            scheduler=base.scheduler,
+            vae=base.vae,
+            text_encoder=base.text_encoder,
+            tokenizer=base.tokenizer,
+            transformer=base.transformer,
+        )
+    except Exception:
+        _pipeline_i2v = LTXImageToVideoPipeline.from_pretrained(
+            spec["repo"], torch_dtype=dtype
+        )
+        _pipeline_i2v.enable_model_cpu_offload()
+
+    return _pipeline_i2v
+
+
 def export_video(frames, fps):
     """Write frames to a temporary mp4 and return the bytes."""
     from diffusers.utils import export_to_video
@@ -231,7 +290,10 @@ def generate(payload):
     if seed not in (None, ""):
         generator = torch.Generator(device="cpu").manual_seed(int(seed))
 
-    log(f"Generating: {num_frames}f {width}x{height} steps={steps} cfg={guidance}")
+    # A start frame means either an image-to-video request or a continuation
+    # segment of a longer clip.
+    raw_image = payload.get("image") or payload.get("image_data_url") or params.get("image")
+    start_image = decode_image(raw_image) if raw_image else None
 
     kwargs = dict(
         prompt=prompt,
@@ -245,6 +307,13 @@ def generate(payload):
         kwargs["negative_prompt"] = negative
     if generator is not None:
         kwargs["generator"] = generator
+
+    if start_image is not None:
+        pipe = load_i2v_pipeline()
+        kwargs["image"] = start_image.resize((width, height))
+        log(f"Continuing from a start frame: {num_frames}f {width}x{height} steps={steps}")
+    else:
+        log(f"Generating: {num_frames}f {width}x{height} steps={steps} cfg={guidance}")
 
     try:
         result = pipe(**kwargs)

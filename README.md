@@ -22,7 +22,7 @@ npm start                 # http://localhost:3000
 No dependencies to install — the server uses only the Node standard library. Node 18+.
 
 ```bash
-npm test                  # 52 tests, no network required
+npm test                  # 78 tests, no network required
 ```
 
 ---
@@ -79,6 +79,37 @@ focal length, an aperture, camera movement, a real light source, optical imperfe
 surface imperfection? Shown before and after compilation so you can see what the engine
 added. It grades prompt *construction*, not preset quality — sparse presets like
 `security_cam` score lower by design.
+
+### Length
+
+Models cap out around 3–5 seconds in a single pass — past that, coherence
+collapses and VRAM runs out. Longer clips are **chained**: generate a segment,
+take its final frame, continue from that frame with image-to-video, repeat, then
+stitch. The length slider goes to 20 seconds and the UI shows how many passes
+that costs before you commit.
+
+Two things to know. Chaining multiplies the time roughly by the segment count.
+And detail drifts a little at each join — faces and clothing wander over a
+20-second clip in a way they don't over 5. Shorter is usually the stronger
+result.
+
+Chaining needs an image-to-video counterpart for the model (`continuation` in
+the catalog) and an ffmpeg binary for the frame extraction and stitching. If
+you've set up the local GPU server, its Python environment already ships one and
+it's found automatically; otherwise set `FFMPEG_PATH`.
+
+### Quality
+
+The **Quality** control sets denoising steps — draft 18, standard 32, high 50,
+maximum 75 — and writes the number into the visible Steps field, so nothing is
+applied invisibly. More steps means more time and finer detail, with returns
+flattening off past roughly 50. Typing a step count yourself overrides the
+preset.
+
+Steps are the main lever, but not the only one. Resolution matters as much on
+local hardware (`LOCAL_WIDTH`/`LOCAL_HEIGHT`), and guidance scale trades prompt
+adherence against naturalness — lower values often look *more* real, since high
+guidance produces the over-saturated, over-composed look.
 
 ### What actually moves the needle
 
@@ -191,7 +222,9 @@ download all work, so most endpoints need no adapter.
 | `POST` | `/api/generate` | Enqueue a job → `202 {id, compiled}` |
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `GET` | `/api/jobs/:id` | One job's status |
-| `DELETE` | `/api/jobs/:id` | Cancel a queued or running job |
+| `DELETE` | `/api/jobs/:id` | Cancel if running, delete if finished; `?purge=true` forces deletion |
+| `DELETE` | `/api/jobs/all` | Delete every finished render |
+| `GET` | `/api/probe?model=` | Which providers serve a model |
 | `GET` | `/api/video/:id` | Stream the result (supports range requests) |
 
 Generation runs for minutes, well past any sane HTTP timeout, so `/api/generate` returns
@@ -217,10 +250,11 @@ server/
   realism.js     Prompt compiler, presets, anti-patterns, scoring  ← the core
   providers.js   Hugging Face + custom endpoint, retries, response normalization
   jobs.js        Async queue, cancellation, disk persistence
-  catalog.js     Model list and per-model default parameters
+  catalog.js     Model list, quality presets, segment planning for long clips
+  ffmpeg.js      Frame extraction and stitching for chained segments
   config.js      .env parsing
 public/          Frontend — no framework, no build step
-test/            52 tests, all offline (providers are faked)
+test/            78 tests, all offline (providers are faked)
 ```
 
 ---

@@ -14,6 +14,7 @@ const { JobQueue } = require('./jobs');
 const realism = require('./realism');
 const catalog = require('./catalog');
 const providers = require('./providers');
+const ffmpeg = require('./ffmpeg');
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
@@ -151,6 +152,9 @@ function createServer(config = loadConfig()) {
           hasToken: Boolean(config.hfToken),
           hasCustomEndpoint: Boolean(config.customEndpoint),
           models: catalog.MODELS,
+          quality: catalog.QUALITY,
+          maxDuration: catalog.MAX_DURATION_SECONDS,
+          hasFfmpeg: await ffmpeg.locate() !== null,
           presets: realism.listPresets(),
           negativeGroups: realism.listNegativeGroups(),
         });
@@ -218,6 +222,30 @@ function createServer(config = loadConfig()) {
         const model = body.model || config.defaultModel;
         const params = { ...catalog.defaultParamsFor(model), ...(body.params || {}) };
 
+        // Quality sets the step count unless the user typed one explicitly.
+        const quality = catalog.QUALITY[body.quality] ? body.quality : null;
+        if (quality && (body.params || {}).num_inference_steps == null) {
+          params.num_inference_steps = catalog.QUALITY[quality].steps;
+        }
+
+        const plan = catalog.planSegments({
+          model,
+          durationSeconds: body.durationSeconds,
+          fps: params.fps,
+        });
+
+        if (plan.segments > 1) {
+          if (!(await ffmpeg.locate())) {
+            sendJson(res, 400, {
+              error: 'Clips longer than one segment need ffmpeg to join them, and none was found. '
+                + 'Set it up via local/start-local-gpu.bat (its Python environment ships one), '
+                + 'install ffmpeg, or point FFMPEG_PATH at a binary.',
+            });
+            return;
+          }
+          params.num_frames = plan.framesPerSegment;
+        }
+
         const job = queue.create({
           provider: body.provider || config.provider,
           model,
@@ -227,9 +255,11 @@ function createServer(config = loadConfig()) {
           params,
           initImage: body.initImage || null,
           compiled,
+          plan,
+          quality,
         });
 
-        sendJson(res, 202, { id: job.id, compiled });
+        sendJson(res, 202, { id: job.id, compiled, plan });
         return;
       }
 
@@ -238,18 +268,39 @@ function createServer(config = loadConfig()) {
         return;
       }
 
+      // Delete every finished job. Declared before the :id route so "all"
+      // is not read as an id.
+      if (pathname === '/api/jobs/all' && req.method === 'DELETE') {
+        const removed = await queue.clear();
+        sendJson(res, 200, { removed });
+        return;
+      }
+
       const jobMatch = /^\/api\/jobs\/([^/]+)$/.exec(pathname);
       if (jobMatch) {
-        const job = queue.get(jobMatch[1]);
+        const id = jobMatch[1];
+        const job = queue.get(id);
         if (!job) {
           sendJson(res, 404, { error: 'Unknown job.' });
           return;
         }
+
         if (req.method === 'DELETE') {
-          sendJson(res, 200, queue.cancel(jobMatch[1]));
+          // Cancel what is still running; delete what has finished. `purge`
+          // forces removal either way.
+          const purge = url.searchParams.get('purge') === 'true';
+          const active = job.status === 'running' || job.status === 'queued';
+
+          if (active && !purge) {
+            sendJson(res, 200, { action: 'cancelled', job: queue.cancel(id) });
+            return;
+          }
+          await queue.remove(id);
+          sendJson(res, 200, { action: 'deleted', id });
           return;
         }
-        sendJson(res, 200, queue.list().find((j) => j.id === jobMatch[1]));
+
+        sendJson(res, 200, queue.list().find((j) => j.id === id));
         return;
       }
 

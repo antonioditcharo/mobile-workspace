@@ -90,6 +90,15 @@ async function boot() {
   groupBox.innerHTML = cfg.negativeGroups
     .map((g) => `<button type="button" class="chip on" data-group="${g.key}" title="${g.terms.slice(0, 6).join(', ')}…">${g.key}</button>`)
     .join('');
+  // Quality presets
+  $('quality').innerHTML = Object.entries(cfg.quality)
+    .map(([key, q]) => `<option value="${key}">${q.label} — ${q.steps} steps</option>`)
+    .join('');
+  $('quality').value = 'standard';
+  $('num_inference_steps').value = cfg.quality.standard.steps;
+  updateDurationHint();
+  updateQualityHint();
+
   cfg.negativeGroups.forEach((g) => state.activeGroups.add(g.key));
   groupBox.addEventListener('click', (e) => {
     const btn = e.target.closest('.chip');
@@ -142,6 +151,60 @@ function currentOptions() {
     extraNegative: $('extra-negative').value,
     negativeGroups: [...state.activeGroups],
   };
+}
+
+/**
+ * Explain what a requested length actually costs: how many passes it takes,
+ * and roughly how much longer than a single clip.
+ */
+function updateDurationHint() {
+  const seconds = Number($('duration').value);
+  const model = state.config.models.find((m) => m.id === $('model').value);
+  const hint = $('duration-hint');
+
+  $('duration-value').textContent = `${seconds}s`;
+
+  if (!model) {
+    hint.textContent = 'Custom model — length is passed through as requested.';
+    return;
+  }
+
+  const fps = Number($('fps').value) || model.defaultParams.fps || 16;
+  const segments = Math.max(1, Math.ceil((seconds * fps) / model.maxFrames));
+
+  if (segments === 1) {
+    hint.textContent = `One pass. ${model.label} handles this length directly.`;
+    hint.className = 'hint';
+    return;
+  }
+
+  if (!model.continuation) {
+    hint.innerHTML = `<span class="bad">${escapeHtml(model.label)} cannot be extended — `
+      + `it has no image-to-video counterpart. Length will be capped at `
+      + `${(model.maxFrames / fps).toFixed(1)}s. Try Wan or LTX.</span>`;
+    return;
+  }
+
+  if (!state.config.hasFfmpeg) {
+    hint.innerHTML = '<span class="bad">Needs ffmpeg to join segments, and none was found. '
+      + 'Setting up the local GPU server installs one.</span>';
+    return;
+  }
+
+  hint.innerHTML = `<span class="warn-text">${segments} chained passes</span> — each continues from `
+    + `the last frame of the one before. Roughly ${segments}× the time of a single clip, and detail `
+    + `drifts a little at each join.`;
+}
+
+function updateQualityHint() {
+  const q = state.config.quality[$('quality').value];
+  if (!q) return;
+  const seconds = Number($('duration').value);
+  const model = state.config.models.find((m) => m.id === $('model').value);
+  const fps = Number($('fps').value) || model?.defaultParams.fps || 16;
+  const segments = model ? Math.max(1, Math.ceil((seconds * fps) / model.maxFrames)) : 1;
+  const factor = (q.timeFactor * segments).toFixed(1);
+  $('quality-hint').textContent = `${q.summary} ${q.steps} steps, about ${factor}× a standard single clip.`;
 }
 
 async function compile() {
@@ -223,6 +286,8 @@ async function generate() {
         ...currentOptions(),
         provider: $('provider').value,
         model: $('model').value,
+        durationSeconds: Number($('duration').value),
+        quality: $('quality').value,
         params,
         initImage: state.initImage,
       },
@@ -255,10 +320,20 @@ function jobCard(job) {
   } else if (job.status === 'cancelled') {
     media = '<div class="job-state">Cancelled.</div>';
   } else {
-    const label = job.status === 'running' ? 'Generating — this takes minutes' : 'Queued';
+    let label = job.status === 'running' ? 'Generating — this takes minutes' : 'Queued';
+    const p = job.segmentProgress;
+    if (p) {
+      label = p.stitching
+        ? `Joining ${p.total} segments`
+        : `Generating segment ${p.current} of ${p.total}`;
+    }
     const retry = job.attempts?.length ? ` (retry ${job.attempts.length})` : '';
     media = `<div class="job-state"><span class="spinner"></span>${label}${retry}…</div>`;
   }
+
+  if (job.plan?.segments > 1) meta.push(`${job.plan.segments} segments`);
+  if (job.plan?.actualSeconds) meta.push(`${job.plan.actualSeconds}s`);
+  if (job.quality) meta.push(job.quality);
 
   const actions = [];
   if (job.status === 'done') {
@@ -268,6 +343,7 @@ function jobCard(job) {
     actions.push(`<button class="link" data-cancel="${job.id}">cancel</button>`);
   }
   actions.push(`<button class="link" data-reuse="${job.id}">reuse prompt</button>`);
+  actions.push(`<button class="link danger" data-delete="${job.id}">delete</button>`);
 
   return `
     <article class="job" data-id="${job.id}">
@@ -301,6 +377,10 @@ async function refreshJobs() {
     }
   }
 
+  $('clear-all').classList.toggle('hidden', !jobs.some(
+    (j) => j.status !== 'running' && j.status !== 'queued',
+  ));
+
   const busy = jobs.some((j) => j.status === 'queued' || j.status === 'running');
   clearTimeout(state.pollTimer);
   if (busy) state.pollTimer = setTimeout(refreshJobs, 2500);
@@ -325,7 +405,28 @@ function wireEvents() {
     scheduleCompile();
   });
 
-  $('model').addEventListener('change', applyModelDefaults);
+  $('duration').addEventListener('input', () => {
+    updateDurationHint();
+    updateQualityHint();
+  });
+
+  // Quality is a shortcut for step count, so write it into the visible field
+  // rather than applying it invisibly at the server.
+  $('quality').addEventListener('change', () => {
+    const q = state.config.quality[$('quality').value];
+    if (q) {
+      const steps = $('num_inference_steps');
+      steps.value = q.steps;
+      delete steps.dataset.touched;
+    }
+    updateQualityHint();
+  });
+
+  $('model').addEventListener('change', () => {
+    applyModelDefaults();
+    updateDurationHint();
+    updateQualityHint();
+  });
   $('provider').addEventListener('change', () => {
     const custom = $('provider').value === 'custom';
     $('model-note').textContent = custom
@@ -375,6 +476,16 @@ function wireEvents() {
 
   $('generate').addEventListener('click', generate);
 
+  $('clear-all').addEventListener('click', async () => {
+    const finished = (state.jobs || []).filter(
+      (j) => j.status !== 'running' && j.status !== 'queued',
+    ).length;
+    if (!window.confirm(`Delete ${finished} finished render${finished === 1 ? '' : 's'}? Video files are removed from disk.`)) return;
+    await api('/api/jobs/all', { method: 'DELETE' });
+    $('jobs').dataset.signature = '';
+    refreshJobs();
+  });
+
   $('probe').addEventListener('click', async () => {
     const out = $('probe-result');
     out.textContent = 'Checking…';
@@ -408,6 +519,24 @@ function wireEvents() {
     const cancelBtn = e.target.closest('[data-cancel]');
     if (cancelBtn) {
       api(`/api/jobs/${cancelBtn.dataset.cancel}`, { method: 'DELETE' }).then(refreshJobs);
+      return;
+    }
+
+    const deleteBtn = e.target.closest('[data-delete]');
+    if (deleteBtn) {
+      const id = deleteBtn.dataset.delete;
+      const job = state.jobs?.find((j) => j.id === id);
+      const active = job && (job.status === 'running' || job.status === 'queued');
+      const message = active
+        ? 'This render is still running. Cancel it and delete it?'
+        : 'Delete this render? The video file is removed from disk.';
+      if (!window.confirm(message)) return;
+
+      api(`/api/jobs/${id}?purge=true`, { method: 'DELETE' }).then(() => {
+        // Force a redraw — the signature check would otherwise see no change.
+        $('jobs').dataset.signature = '';
+        refreshJobs();
+      });
       return;
     }
 

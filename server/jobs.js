@@ -14,6 +14,7 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 
 const providers = require('./providers');
+const ffmpeg = require('./ffmpeg');
 
 const STATUS = {
   QUEUED: 'queued',
@@ -69,6 +70,8 @@ class JobQueue extends EventEmitter {
       params: spec.params || {},
       initImage: spec.initImage || null,
       compiled: spec.compiled || null,
+      plan: spec.plan || null,
+      quality: spec.quality || null,
       error: null,
       videoUrl: null,
       attempts: [],
@@ -132,25 +135,72 @@ class JobQueue extends EventEmitter {
     }
   }
 
+  /**
+   * Generate one segment. The first is produced from the prompt; later ones
+   * resume from the previous segment's final frame via image-to-video.
+   */
+  async #runSegment(job, index, startFrame) {
+    const spec = {
+      ...job,
+      model: index === 0 ? job.model : (job.plan?.continuation || job.model),
+      initImage: index === 0 ? job.initImage : startFrame,
+      params: { ...job.params, num_frames: job.plan?.framesPerSegment || job.params.num_frames },
+    };
+
+    return providers.generate(spec, this.config, {
+      signal: job.controller.signal,
+      onRetry: ({ attempt, backoff, error }) => {
+        job.attempts.push({
+          attempt, backoff, segment: index + 1, error: error.message, at: new Date().toISOString(),
+        });
+        this.emit('update', job);
+      },
+    });
+  }
+
   async #run(job) {
     job.status = STATUS.RUNNING;
     job.startedAt = new Date().toISOString();
     job.controller = new AbortController();
     this.emit('update', job);
 
-    const timer = setTimeout(() => job.controller.abort(), this.config.jobTimeoutMs);
+    // Chained jobs need proportionally longer before the timeout bites.
+    const segmentCount = job.plan?.segments || 1;
+    const timeout = this.config.jobTimeoutMs * Math.max(1, segmentCount);
+    const timer = setTimeout(() => job.controller.abort(), timeout);
+
+    const scratch = [];
 
     try {
-      const video = await providers.generate(job, this.config, {
-        signal: job.controller.signal,
-        onRetry: ({ attempt, backoff, error }) => {
-          job.attempts.push({ attempt, backoff, error: error.message, at: new Date().toISOString() });
-          this.emit('update', job);
-        },
-      });
-
       const videoPath = path.join(this.config.outputDir, `${job.id}.mp4`);
-      await fsp.writeFile(videoPath, video);
+
+      if (segmentCount === 1) {
+        const video = await this.#runSegment(job, 0, null);
+        await fsp.writeFile(videoPath, video);
+      } else {
+        // Build the clip a segment at a time, carrying the last frame forward.
+        let startFrame = job.initImage || null;
+
+        for (let i = 0; i < segmentCount; i += 1) {
+          job.segmentProgress = { current: i + 1, total: segmentCount };
+          this.emit('update', job);
+
+          const video = await this.#runSegment(job, i, startFrame);
+          const segPath = path.join(this.config.outputDir, `${job.id}.seg${i}.mp4`);
+          await fsp.writeFile(segPath, video);
+          scratch.push(segPath);
+
+          if (i < segmentCount - 1) {
+            startFrame = await ffmpeg.lastFrameDataUrl(segPath);
+          }
+        }
+
+        job.segmentProgress = { current: segmentCount, total: segmentCount, stitching: true };
+        this.emit('update', job);
+        await ffmpeg.concat(scratch, videoPath);
+      }
+
+      const video = await fsp.readFile(videoPath);
 
       job.status = STATUS.DONE;
       job.finishedAt = new Date().toISOString();
@@ -171,8 +221,46 @@ class JobQueue extends EventEmitter {
     } finally {
       clearTimeout(timer);
       delete job.controller;
+      delete job.segmentProgress;
+      // Intermediate segments are only needed until the stitch completes.
+      await Promise.all(scratch.map((p) => fsp.unlink(p).catch(() => {})));
       this.emit('update', job);
     }
+  }
+
+  /**
+   * Remove a job and everything it wrote. Running jobs are cancelled first so
+   * the file handles are released before the unlink.
+   */
+  async remove(id) {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+
+    if (job.status === STATUS.RUNNING || job.status === STATUS.QUEUED) {
+      this.cancel(id);
+    }
+
+    this.jobs.delete(id);
+    this.pending = this.pending.filter((p) => p !== id);
+
+    await Promise.all([
+      fsp.unlink(path.join(this.config.outputDir, `${id}.mp4`)).catch(() => {}),
+      fsp.unlink(path.join(this.config.outputDir, `${id}.json`)).catch(() => {}),
+    ]);
+
+    this.emit('removed', id);
+    return true;
+  }
+
+  /** Delete every finished job. Running work is left alone. */
+  async clear() {
+    const finished = [...this.jobs.values()].filter(
+      (j) => j.status !== STATUS.RUNNING && j.status !== STATUS.QUEUED,
+    );
+    for (const job of finished) {
+      await this.remove(job.id);
+    }
+    return finished.length;
   }
 }
 

@@ -46,6 +46,20 @@
         </label>
       </div>
 
+      <div class="field-row">
+        <label class="field medium">
+          <span class="label">Length <b id="duration-value">5s</b></span>
+          <input type="range" id="duration" min="1" max="20" step="1" value="5">
+          <span class="hint" id="duration-hint"></span>
+        </label>
+
+        <label class="field medium">
+          <span class="label">Quality</span>
+          <select id="quality"></select>
+          <span class="hint" id="quality-hint"></span>
+        </label>
+      </div>
+
       <details class="advanced">
         <summary>Model &amp; parameters</summary>
 
@@ -151,7 +165,10 @@
 
     <!-- ---------- Results ---------- -->
     <section class="panel results">
-      <h2 class="panel-title">Renders</h2>
+      <div class="panel-head">
+        <h2 class="panel-title">Renders</h2>
+        <button id="clear-all" class="link hidden">clear all</button>
+      </div>
       <div id="jobs" class="jobs">
         <p class="empty">Nothing generated yet.</p>
       </div>
