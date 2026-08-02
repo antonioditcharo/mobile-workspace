@@ -135,9 +135,6 @@ if errorlevel 1 (
   for /f "delims=" %%g in ('%PY% -c "import torch;p=torch.cuda.get_device_properties(0);print(p.name+chr(32)+chr(45)+chr(32)+str(round(p.total_memory/1073741824,1))+chr(32)+chr(71)+chr(66))"') do echo   [OK] GPU: %%g
 )
 
-if not defined LOCAL_WIDTH set LOCAL_WIDTH=832
-if not defined LOCAL_HEIGHT set LOCAL_HEIGHT=480
-
 echo.
 echo   Starting the server. Leave this window open while you generate.
 echo   Press Ctrl+C to stop.

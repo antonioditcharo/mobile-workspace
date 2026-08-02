@@ -117,6 +117,40 @@ def total_vram_gb(torch):
         return 0
 
 
+# Frame size drives memory use more sharply than anything else, so the default
+# is chosen from the card rather than fixed. Dimensions stay multiples of 16 to
+# satisfy the VAE's spatial compression and patch size.
+VRAM_TIERS = [
+    (5.0, (480, 320), 33),
+    (7.0, (640, 384), 49),
+    (11.0, (832, 480), 49),
+    (float("inf"), (832, 480), 81),
+]
+
+
+def defaults_for_vram(vram):
+    for ceiling, (width, height), frames in VRAM_TIERS:
+        if vram < ceiling:
+            return width, height, frames
+    return 832, 480, 81
+
+
+_auto_defaults = None
+
+
+def auto_defaults():
+    """Resolution and frame ceiling suited to the installed card."""
+    global _auto_defaults
+    if _auto_defaults is not None:
+        return _auto_defaults
+    try:
+        import torch
+        _auto_defaults = defaults_for_vram(total_vram_gb(torch))
+    except Exception:
+        _auto_defaults = (640, 384, 49)
+    return _auto_defaults
+
+
 def load_pipeline():
     """Load the model once, on first request, so startup failures are visible."""
     global _pipeline, _pipeline_error
@@ -145,6 +179,10 @@ def load_pipeline():
         return None
 
     log(f"GPU: {torch.cuda.get_device_name(0)} ({vram:.1f} GB)")
+    if vram and vram < 5:
+        w, h, f = defaults_for_vram(vram)
+        log(f"Low VRAM — defaulting to {w}x{h} at up to {f} frames.")
+        log("Anything larger will run out of memory. Expect slow generation.")
     log(f"Model: {spec['repo']}")
     log(f"Precision: {str(dtype).replace('torch.', '')}")
     log("Loading — the first run downloads several GB and can take a while.")
@@ -295,9 +333,18 @@ def generate(payload):
 
     negative = payload.get("negative_prompt") or params.get("negative_prompt") or None
 
-    width = int(param("width", os.environ.get("LOCAL_WIDTH", 832)))
-    height = int(param("height", os.environ.get("LOCAL_HEIGHT", 480)))
-    num_frames = int(param("num_frames", 49))
+    auto_w, auto_h, auto_frames = auto_defaults()
+    width = int(param("width", os.environ.get("LOCAL_WIDTH", auto_w)))
+    height = int(param("height", os.environ.get("LOCAL_HEIGHT", auto_h)))
+    num_frames = int(param("num_frames", auto_frames))
+
+    # A frame count sized for a datacenter GPU will not fit a small card, and
+    # failing 20 minutes in is a poor way to find out.
+    cap = int(os.environ.get("LOCAL_MAX_FRAMES", auto_frames))
+    if num_frames > cap:
+        log(f"Capping {num_frames} frames to {cap} for the available VRAM "
+            f"(raise with LOCAL_MAX_FRAMES).")
+        num_frames = cap
     fps = int(param("fps", 16))
     steps = int(param("num_inference_steps", 30))
     guidance = float(param("guidance_scale", 5.0))

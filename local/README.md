@@ -6,8 +6,8 @@ models, but it runs as often as you like.
 
 ## What you need
 
-- **An NVIDIA graphics card.** 6 GB of VRAM is the realistic floor. AMD and
-  Intel graphics won't work with this setup.
+- **An NVIDIA graphics card.** 4 GB of VRAM is the practical minimum; 6 GB or
+  more is comfortable. AMD and Intel graphics won't work with this setup.
 - **~20 GB of free disk space** for Python, the libraries, and the model.
 - **Patience on the first run.** The setup downloads roughly 8 GB and the model
   another 5 GB. Once. After that, startup takes seconds.
@@ -96,21 +96,36 @@ Set these before running the `.bat`, or edit them into it:
 | --- | --- | --- |
 | `LOCAL_MODEL` | `wan-1.3b` | Which model to run |
 | `LOCAL_PORT` | `8000` | Server port |
-| `LOCAL_WIDTH` / `LOCAL_HEIGHT` | `832` / `480` | Frame size — lower these if you run out of memory |
+| `LOCAL_WIDTH` / `LOCAL_HEIGHT` | from VRAM | Frame size — lower these if you run out of memory |
 | `LOCAL_OFFLOAD` | `auto` | `sequential` (least VRAM), `model` (balanced), `none` (fastest) |
-| `LOCAL_DTYPE` | `auto` | Precision. Auto picks `float16` on GTX 16xx / RTX 20xx cards, which lack `bfloat16` support |
+| `LOCAL_MAX_FRAMES` | from VRAM | Frame ceiling; requests above it are capped |
+| `LOCAL_DTYPE` | `auto` | Precision. Auto picks `float16` on cards without hardware `bfloat16` (Turing and older) |
 | `LOCAL_PRELOAD` | off | Set to `1` to load the model at startup instead of on first request |
 
-## Expectations on a 6 GB card
+## What your card can do
 
-- **Roughly 3–10 minutes** for a 3-second clip at 832×480, depending on step
-  count. `ltx` is substantially faster.
+Frame size drives memory use more sharply than anything else, so the server
+picks a default from the card it finds:
+
+| VRAM | Default frame | Frame ceiling |
+| --- | --- | --- |
+| under 5 GB | 480×320 | 33 |
+| 5–7 GB | 640×384 | 49 |
+| 7–11 GB | 832×480 | 49 |
+| 11 GB+ | 832×480 | 81 |
+
+Override with `LOCAL_WIDTH`, `LOCAL_HEIGHT`, and `LOCAL_MAX_FRAMES`. Requests
+above the ceiling are capped rather than left to fail twenty minutes in.
+
+- **Roughly 3–10 minutes** for a 3-second clip on a 6 GB card, longer on 4 GB
+  where more of the model is shuffled to system RAM. `ltx` is faster.
 - **Quality is below the 14B hosted models.** A 1.3B model has less capacity for
-  faces, hands, and complex motion. The realism engine helps — it's the same
+  faces, hands, and complex motion, and a smaller frame gives it less to work
+  with — a 480×320 clip will not match what a hosted 14B model produces. The realism engine helps — it's the same
   prompt compiler either way — but it can't close the whole gap.
-- **Keep clips short.** 49 frames (~3s at 16fps) is a sensible ceiling here.
+- **Keep clips short.** The frame ceiling above is roughly 2–5 seconds at 16fps.
 - **Close other GPU applications.** Games, video editors, and even a browser
-  with hardware acceleration eat into the same 6 GB.
+  with hardware acceleration eat into the same VRAM.
 
 ## When it goes wrong
 
@@ -118,10 +133,12 @@ Set these before running the `.bat`, or edit them into it:
 a smaller frame:
 
 ```
-set LOCAL_WIDTH=640
-set LOCAL_HEIGHT=384
+set LOCAL_WIDTH=384
+set LOCAL_HEIGHT=256
 start-local-gpu.bat
 ```
+
+On a 4 GB card this is the setting most likely to get a first clip out.
 
 **"No CUDA GPU detected"** — your NVIDIA driver is likely out of date. Update at
 [nvidia.com/Download](https://www.nvidia.com/Download/index.aspx) and restart.
