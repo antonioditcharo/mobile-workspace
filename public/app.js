@@ -375,6 +375,25 @@ function wireEvents() {
 
   $('generate').addEventListener('click', generate);
 
+  $('probe').addEventListener('click', async () => {
+    const out = $('probe-result');
+    out.textContent = 'Checking…';
+    try {
+      const model = encodeURIComponent($('model').value);
+      const info = await api(`/api/probe?model=${model}`);
+      if (!info.providers.length) {
+        out.innerHTML = `<span class="bad">${escapeHtml(info.hint)}</span>`;
+        return;
+      }
+      const rows = info.providers
+        .map((p) => `${p.provider}${p.status === 'live' ? '' : ` (${p.status})`}`)
+        .join(', ');
+      out.innerHTML = `<span class="good">Served by: ${escapeHtml(rows)}</span>`;
+    } catch (err) {
+      out.innerHTML = `<span class="bad">${escapeHtml(err.message)}</span>`;
+    }
+  });
+
   $('copy-prompt').addEventListener('click', () => {
     if (state.compiled) copy(state.compiled.prompt, $('copy-prompt'));
   });

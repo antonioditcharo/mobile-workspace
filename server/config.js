@@ -35,6 +35,9 @@ function loadConfig() {
     host: env.HOST || '0.0.0.0',
     provider: env.PROVIDER || 'hf',
     hfToken: env.HF_TOKEN || env.HUGGINGFACE_API_KEY || '',
+    // "auto" looks up which partner provider serves the model. Set a name
+    // (fal-ai, replicate, novita, hf-inference) to force one.
+    hfProvider: env.HF_PROVIDER || 'auto',
     defaultModel: env.DEFAULT_MODEL || 'Wan-AI/Wan2.2-T2V-A14B',
 
     customEndpoint: env.CUSTOM_ENDPOINT || '',

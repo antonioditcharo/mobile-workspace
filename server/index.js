@@ -13,6 +13,7 @@ const { loadConfig, ROOT } = require('./config');
 const { JobQueue } = require('./jobs');
 const realism = require('./realism');
 const catalog = require('./catalog');
+const providers = require('./providers');
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
@@ -163,6 +164,32 @@ function createServer(config = loadConfig()) {
           sendJson(res, 200, realism.compilePrompt(body));
         } catch (err) {
           sendJson(res, 400, { error: err.message });
+        }
+        return;
+      }
+
+      // Which providers actually serve a model. Runs from the user's machine,
+      // which can reach the Hub, and reports exactly what routing will see.
+      if (pathname === '/api/probe' && req.method === 'GET') {
+        const model = url.searchParams.get('model') || config.defaultModel;
+        try {
+          const mapping = await providers.fetchProviderMapping(model, config, { strict: true });
+          sendJson(res, 200, {
+            model,
+            configuredProvider: config.hfProvider,
+            providers: mapping,
+            reachable: true,
+            hint: mapping.length
+              ? `Routing will try: ${mapping.map((m) => m.provider).join(', ')}`
+              : 'No providers serve this model. Pick a different one, or check that your token has the "Make calls to Inference Providers" permission.',
+          });
+        } catch (err) {
+          sendJson(res, 200, {
+            model,
+            providers: [],
+            reachable: false,
+            hint: `Could not reach huggingface.co: ${err.message}`,
+          });
         }
         return;
       }

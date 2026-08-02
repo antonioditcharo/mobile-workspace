@@ -19,6 +19,7 @@
 
 const HF_ROUTER = 'https://router.huggingface.co';
 const HF_LEGACY = 'https://api-inference.huggingface.co';
+const HF_MODEL_API = 'https://huggingface.co/api/models';
 
 class ProviderError extends Error {
   constructor(message, { status, retryable = false, body } = {}) {
@@ -168,50 +169,168 @@ async function toError(res, url) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Hugging Face path. Tries the router first, then the legacy host, so a model
- * that has moved between the two still resolves without config changes.
+ * Ask the Hub which inference providers actually serve a model.
+ *
+ * `hf-inference` is Hugging Face's own serverless pool and it does not host
+ * large video models — those live on partner providers (fal.ai, Replicate,
+ * Novita) that the router forwards to. Rather than hardcode a guess that goes
+ * stale, look the mapping up and route accordingly.
+ *
+ * Returns [{ provider, providerId, status, task }], or [] if the lookup fails
+ * (offline, rate limited, private model) so callers can fall back.
  */
-async function callHuggingFace(job, config, { fetchImpl = fetch, signal } = {}) {
+async function fetchProviderMapping(model, config, { fetchImpl = fetch, signal, strict = false } = {}) {
+  const url = `${HF_MODEL_API}/${model}?expand[]=inferenceProviderMapping`;
+  const headers = config.hfToken ? { Authorization: `Bearer ${config.hfToken}` } : {};
+
+  let json;
+  try {
+    const res = await fetchImpl(url, { headers, signal });
+    if (!res.ok) {
+      // `strict` is for the probe, which must tell "no providers" apart from
+      // "could not ask". Routing wants the quiet fallback instead.
+      if (strict) throw await toError(res, url);
+      return [];
+    }
+    json = await res.json();
+  } catch (err) {
+    if (strict) throw err;
+    return [];
+  }
+
+  const mapping = json?.inferenceProviderMapping;
+  if (!mapping) return [];
+
+  // The Hub has returned this as both a keyed object and an array; accept either.
+  const rows = Array.isArray(mapping)
+    ? mapping
+    : Object.entries(mapping).map(([provider, v]) => ({ provider, ...v }));
+
+  return rows
+    .filter((r) => r && (r.provider || r.providerId))
+    .map((r) => ({
+      provider: r.provider,
+      providerId: r.providerId || model,
+      status: r.status || 'unknown',
+      task: r.task || null,
+    }));
+}
+
+/**
+ * Build the request for a specific provider. Each partner exposes its own path
+ * and body shape through the router, so they cannot share one format.
+ */
+function buildProviderRequest(provider, providerId, job) {
+  const image = job.initImage ? toBareBase64(job.initImage) : null;
+  const params = job.params || {};
+
+  switch (provider) {
+    case 'replicate':
+      return {
+        url: `${HF_ROUTER}/replicate/v1/models/${providerId}/predictions`,
+        // Ask Replicate to hold the connection instead of returning a job to poll.
+        headers: { Prefer: 'wait' },
+        body: {
+          input: {
+            prompt: job.prompt,
+            negative_prompt: job.negativePrompt || undefined,
+            ...(job.initImage ? { image: job.initImage } : {}),
+            ...params,
+          },
+        },
+      };
+
+    case 'hf-inference':
+      return {
+        url: `${HF_ROUTER}/hf-inference/models/${providerId}`,
+        headers: {},
+        body: {
+          inputs: job.prompt,
+          parameters: {
+            negative_prompt: job.negativePrompt || undefined,
+            ...(image ? { image } : {}),
+            ...params,
+          },
+          options: { wait_for_model: true, use_cache: false },
+        },
+      };
+
+    // fal-ai, novita, and the rest take a flat body at the provider root.
+    default:
+      return {
+        url: `${HF_ROUTER}/${provider}/${providerId}`,
+        headers: {},
+        body: {
+          prompt: job.prompt,
+          negative_prompt: job.negativePrompt || undefined,
+          ...(job.initImage ? { image_url: job.initImage } : {}),
+          ...params,
+        },
+      };
+  }
+}
+
+/**
+ * Hugging Face path. Resolves which provider serves the model, then falls back
+ * to the legacy inference host if nothing is mapped.
+ */
+async function callHuggingFace(job, config, opts = {}) {
+  const { fetchImpl = fetch, signal } = opts;
+
   if (!config.hfToken) {
     throw new ProviderError('No HF_TOKEN set. Add one to .env — see README for how to create it.');
   }
 
-  const payload = {
-    inputs: job.prompt,
-    parameters: {
-      negative_prompt: job.negativePrompt || undefined,
-      ...job.params,
-    },
-    options: { wait_for_model: true, use_cache: false },
-  };
-  if (job.initImage) {
-    payload.parameters.image = toBareBase64(job.initImage);
+  // Work out which providers can actually serve this model.
+  const forced = job.hfProvider || config.hfProvider;
+  let candidates = [];
+
+  if (forced && forced !== 'auto') {
+    candidates = [{ provider: forced, providerId: job.model, status: 'forced' }];
+  } else {
+    const mapping = await fetchProviderMapping(job.model, config, { fetchImpl, signal });
+    // Live providers first; hf-inference last since it rarely hosts video.
+    candidates = mapping
+      .filter((m) => m.status !== 'error')
+      .sort((a, b) => {
+        if (a.status === 'live' && b.status !== 'live') return -1;
+        if (b.status === 'live' && a.status !== 'live') return 1;
+        if (a.provider === 'hf-inference') return 1;
+        if (b.provider === 'hf-inference') return -1;
+        return 0;
+      });
+
+    if (!candidates.length) {
+      // No mapping available — try the historical hosts before giving up.
+      candidates = [{ provider: 'hf-inference', providerId: job.model, status: 'assumed' }];
+    }
   }
 
-  const candidates = [
-    `${HF_ROUTER}/hf-inference/models/${job.model}`,
-    `${HF_LEGACY}/models/${job.model}`,
-  ];
+  const authHeaders = {
+    Authorization: `Bearer ${config.hfToken}`,
+    'Content-Type': 'application/json',
+    Accept: 'video/mp4, application/json',
+  };
 
   let lastError = null;
+  const tried = [];
 
-  for (const url of candidates) {
+  for (const candidate of candidates) {
+    const req = buildProviderRequest(candidate.provider, candidate.providerId, job);
+    tried.push(candidate.provider);
+
     try {
-      const res = await fetchImpl(url, {
+      const res = await fetchImpl(req.url, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.hfToken}`,
-          'Content-Type': 'application/json',
-          Accept: 'video/mp4, application/json',
-        },
-        body: JSON.stringify(payload),
+        headers: { ...authHeaders, ...req.headers },
+        body: JSON.stringify(req.body),
         signal,
       });
 
       if (!res.ok) {
-        lastError = await toError(res, url);
-        // A 404 means "wrong host, try the next one"; anything else is real.
-        if (lastError.status === 404) continue;
+        lastError = await toError(res, req.url);
+        // "Wrong door" answers mean try the next provider; real errors stop here.
+        if (lastError.status === 404 || lastError.status === 400) continue;
         throw lastError;
       }
 
@@ -222,11 +341,44 @@ async function callHuggingFace(job, config, { fetchImpl = fetch, signal } = {}) 
     } catch (err) {
       if (err.name === 'AbortError') throw err;
       lastError = err instanceof ProviderError ? err : new ProviderError(err.message);
-      if (lastError.status && lastError.status !== 404) throw lastError;
+      if (lastError.status && lastError.status !== 404 && lastError.status !== 400) throw lastError;
     }
   }
 
-  throw lastError || new ProviderError('No Hugging Face endpoint responded.');
+  // Last resort: the legacy inference host, which predates provider routing.
+  try {
+    const res = await fetchImpl(`${HF_LEGACY}/models/${job.model}`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        inputs: job.prompt,
+        parameters: {
+          negative_prompt: job.negativePrompt || undefined,
+          ...(job.initImage ? { image: toBareBase64(job.initImage) } : {}),
+          ...job.params,
+        },
+        options: { wait_for_model: true, use_cache: false },
+      }),
+      signal,
+    });
+    if (res.ok) {
+      return await extractVideo(res, (u) => fetchImpl(u, {
+        headers: { Authorization: `Bearer ${config.hfToken}` },
+        signal,
+      }));
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+  }
+
+  const summary = tried.length ? tried.join(', ') : 'none';
+  throw new ProviderError(
+    `No provider served ${job.model} (tried: ${summary}). `
+    + `Use the "Check availability" button to see which providers carry this model, `
+    + `then set HF_PROVIDER in .env or pick a different model. `
+    + `Last error: ${lastError ? lastError.message : 'none'}`,
+    { status: lastError?.status, body: lastError?.body },
+  );
 }
 
 /**
@@ -308,4 +460,13 @@ async function generate(job, config, opts = {}) {
   throw lastError;
 }
 
-module.exports = { generate, callHuggingFace, callCustom, extractVideo, toBareBase64, ProviderError };
+module.exports = {
+  generate,
+  callHuggingFace,
+  callCustom,
+  extractVideo,
+  toBareBase64,
+  fetchProviderMapping,
+  buildProviderRequest,
+  ProviderError,
+};

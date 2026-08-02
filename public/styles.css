@@ -302,5 +302,9 @@ button.link:hover { color: var(--accent); }
 
 .init-note { color: var(--accent); }
 
+button.ghost.small { padding: 6px 12px; font-size: 12.5px; }
+.hint .good { color: var(--good); }
+.hint .bad { color: var(--bad); }
+
 .error { color: var(--bad); font-size: 12.5px; margin: 12px 0 0; }
 .hidden { display: none; }
