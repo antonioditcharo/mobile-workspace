@@ -79,7 +79,7 @@ async function boot() {
 
   // Models
   $('model-list').innerHTML = cfg.models
-    .map((m) => `<option value="${m.id}">${m.label} — ${m.notes}</option>`)
+    .map((m) => `<option value="${m.id}">${m.label} · ${m.kind} — ${m.notes}</option>`)
     .join('');
   $('model').value = cfg.defaultModel;
   $('provider').value = cfg.provider;
@@ -113,6 +113,18 @@ function updatePresetSummary() {
 function applyModelDefaults() {
   const model = state.config.models.find((m) => m.id === $('model').value);
   $('model-note').textContent = model ? model.notes : 'Custom model id — parameters passed through as entered.';
+
+  // Switching to a text-to-video model while a start frame is loaded would
+  // silently drop the frame, so say so.
+  const note = $('init-image-note');
+  if (state.initImage && model && model.kind !== 'image-to-video') {
+    note.textContent = `Warning: ${model.label} is text-to-video and will ignore the start frame.`;
+    note.classList.remove('hidden');
+  } else if (state.initImage && model) {
+    note.textContent = `Using ${model.label}.`;
+    note.classList.remove('hidden');
+  }
+
   if (!model) return;
   for (const [key, value] of Object.entries(model.defaultParams)) {
     const input = $(key);
@@ -328,13 +340,37 @@ function wireEvents() {
 
   $('init-image').addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
+    const note = $('init-image-note');
+
     if (!file) {
       state.initImage = null;
+      note.textContent = '';
+      note.classList.add('hidden');
       return;
     }
+
     const reader = new FileReader();
     reader.onload = () => { state.initImage = reader.result; };
     reader.readAsDataURL(file);
+
+    // A start frame is meaningless to a text-to-video model, so move to an
+    // image-to-video one rather than letting the upload silently do nothing.
+    const current = state.config.models.find((m) => m.id === $('model').value);
+    if (current && current.kind === 'image-to-video') {
+      note.textContent = `Using ${current.label}.`;
+      note.classList.remove('hidden');
+      return;
+    }
+
+    const i2v = state.config.models.find((m) => m.kind === 'image-to-video');
+    if (i2v) {
+      $('model').value = i2v.id;
+      applyModelDefaults();
+      note.textContent = `Switched to ${i2v.label} — the selected model does not accept a start frame.`;
+    } else {
+      note.textContent = 'Warning: the selected model is text-to-video and will ignore this start frame.';
+    }
+    note.classList.remove('hidden');
   });
 
   $('generate').addEventListener('click', generate);

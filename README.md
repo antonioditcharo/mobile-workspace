@@ -22,7 +22,7 @@ npm start                 # http://localhost:3000
 No dependencies to install — the server uses only the Node standard library. Node 18+.
 
 ```bash
-npm test                  # 48 tests, no network required
+npm test                  # 52 tests, no network required
 ```
 
 ---
@@ -85,7 +85,10 @@ added. It grades prompt *construction*, not preset quality — sparse presets li
 In rough order of impact:
 
 1. **Start from a real photograph.** Image-to-video with a real still beats anything
-   text-to-video will give you. Use the start-frame upload with `Wan2.2-I2V`.
+   text-to-video will give you — the hardest part of the problem is already solved by the
+   photo. Use the start-frame upload under **Model & parameters**; selecting a frame
+   switches to an image-to-video model automatically, and warns you if you later pick a
+   text-to-video one that would ignore it.
 2. **Pick an unglamorous register.** `smartphone_candid` and `security_cam` read as real
    because the failure modes people associate with fakery — cinematic grading, perfect
    motion — are absent.
@@ -193,7 +196,7 @@ server/
   catalog.js     Model list and per-model default parameters
   config.js      .env parsing
 public/          Frontend — no framework, no build step
-test/            48 tests, all offline (providers are faked)
+test/            52 tests, all offline (providers are faked)
 ```
 
 ---

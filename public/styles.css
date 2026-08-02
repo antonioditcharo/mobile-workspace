@@ -300,5 +300,7 @@ button.link:hover { color: var(--accent); }
 
 .job-actions { padding: 0 13px 12px; display: flex; gap: 12px; }
 
+.init-note { color: var(--accent); }
+
 .error { color: var(--bad); font-size: 12.5px; margin: 12px 0 0; }
 .hidden { display: none; }

@@ -35,6 +35,16 @@ const VIDEO_MIME = /^(video\/|application\/octet-stream)/;
 const B64_KEYS = ['video', 'video_base64', 'data', 'b64_json', 'output', 'generated_video'];
 const URL_KEYS = ['url', 'video_url', 'output_url', 'video'];
 
+/**
+ * Browsers hand back start frames as `data:image/png;base64,…`, but inference
+ * hosts expect the payload alone. Strip the prefix on the way out.
+ */
+function toBareBase64(str) {
+  if (typeof str !== 'string') return str;
+  const comma = str.indexOf(',');
+  return str.startsWith('data:') && comma !== -1 ? str.slice(comma + 1) : str;
+}
+
 function decodeBase64(str) {
   const payload = str.includes(',') && str.startsWith('data:') ? str.split(',')[1] : str;
   const buf = Buffer.from(payload, 'base64');
@@ -175,7 +185,7 @@ async function callHuggingFace(job, config, { fetchImpl = fetch, signal } = {}) 
     options: { wait_for_model: true, use_cache: false },
   };
   if (job.initImage) {
-    payload.parameters.image = job.initImage;
+    payload.parameters.image = toBareBase64(job.initImage);
   }
 
   const candidates = [
@@ -239,8 +249,10 @@ async function callCustom(job, config, { fetchImpl = fetch, signal } = {}) {
     ...job.params,
   };
   if (job.initImage) {
-    body.image = job.initImage;
-    body.parameters.image = job.initImage;
+    // Self-hosted wrappers vary on which they accept, so send both shapes.
+    body.image = toBareBase64(job.initImage);
+    body.image_data_url = job.initImage;
+    body.parameters.image = body.image;
   }
 
   if (config.customBodyTemplate) {
@@ -296,4 +308,4 @@ async function generate(job, config, opts = {}) {
   throw lastError;
 }
 
-module.exports = { generate, callHuggingFace, callCustom, extractVideo, ProviderError };
+module.exports = { generate, callHuggingFace, callCustom, extractVideo, toBareBase64, ProviderError };

@@ -1,7 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { callHuggingFace, callCustom, extractVideo, ProviderError } = require('../server/providers');
+const {
+  callHuggingFace, callCustom, extractVideo, toBareBase64, ProviderError,
+} = require('../server/providers');
 
 const CONFIG = {
   provider: 'hf',
@@ -142,6 +144,56 @@ test('503 and 429 are marked retryable, 400 is not', async () => {
   assert.strictEqual((await statusOf(503)).retryable, true);
   assert.strictEqual((await statusOf(429)).retryable, true);
   assert.strictEqual((await statusOf(400)).retryable, false);
+});
+
+test('toBareBase64 strips a data URL prefix and passes bare payloads through', () => {
+  assert.strictEqual(toBareBase64('data:image/png;base64,AAAB'), 'AAAB');
+  assert.strictEqual(toBareBase64('data:image/jpeg;base64,/9j/4AAQ'), '/9j/4AAQ');
+  assert.strictEqual(toBareBase64('AAAB'), 'AAAB');
+});
+
+test('a start frame reaches the HF payload as bare base64', async () => {
+  let captured;
+  await callHuggingFace(
+    { ...JOB, model: 'Wan-AI/Wan2.2-I2V-A14B', initImage: 'data:image/png;base64,SGVsbG8=' },
+    CONFIG,
+    {
+      fetchImpl: async (url, opts) => {
+        captured = JSON.parse(opts.body);
+        return mockResponse();
+      },
+    },
+  );
+  assert.strictEqual(captured.parameters.image, 'SGVsbG8=');
+  assert.ok(!captured.parameters.image.startsWith('data:'), 'the data URL prefix must be stripped');
+});
+
+test('text-to-video jobs send no image parameter at all', async () => {
+  let captured;
+  await callHuggingFace(JOB, CONFIG, {
+    fetchImpl: async (url, opts) => {
+      captured = JSON.parse(opts.body);
+      return mockResponse();
+    },
+  });
+  assert.ok(!('image' in captured.parameters));
+});
+
+test('a start frame reaches a custom endpoint in both shapes', async () => {
+  let captured;
+  await callCustom(
+    { ...JOB, initImage: 'data:image/png;base64,SGVsbG8=' },
+    CONFIG,
+    {
+      fetchImpl: async (url, opts) => {
+        captured = JSON.parse(opts.body);
+        return mockResponse();
+      },
+    },
+  );
+  assert.strictEqual(captured.image, 'SGVsbG8=');
+  assert.strictEqual(captured.image_data_url, 'data:image/png;base64,SGVsbG8=');
+  assert.strictEqual(captured.parameters.image, 'SGVsbG8=');
 });
 
 test('callCustom posts to the configured endpoint with its auth header', async () => {
