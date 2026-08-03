@@ -198,8 +198,16 @@ and enable it.
 PyTorch, not a network problem. Install Python 3.12, delete the `.venv` folder
 in this directory, and run the launcher again. It will pick up 3.12 on its own.
 
-**Switched Python versions and it still fails** — the `.venv` folder remembers
-which Python built it. Delete it and re-run; it rebuilds in seconds.
+**Switched Python versions and it still fails** — the environment remembers
+which Python built it. Delete it and re-run the launcher; it rebuilds from
+cached downloads. It lives at `%LOCALAPPDATA%\realframe-venv` unless an older
+`.venv` exists inside this folder, which still takes precedence.
+
+**"The term '.\.venv\Scripts\python' is not recognized"** — that path only
+exists after the launcher has run at least once. A freshly downloaded copy of
+RealFrame has no environment in it. Double-click `start-local-gpu.bat` first;
+newer versions keep the environment outside the project folder so updating
+no longer costs a reinstall.
 
 **Flat grey video, or fine noise with no picture** — denoising did not
 converge, which is nearly always precision. AnimateDiff and SVD are Stable

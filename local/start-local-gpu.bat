@@ -59,18 +59,41 @@ REM ===================================================================
 REM  2. Virtual environment
 REM ===================================================================
 
-if not exist ".venv\Scripts\python.exe" (
-  echo   [..] Creating a private Python environment ^(one time^)
-  %PYCMD% -m venv .venv
-  if errorlevel 1 (
-    echo   [X] Could not create the environment.
-    pause
-    exit /b 1
-  )
-)
-echo   [OK] Environment ready
+REM The environment is kept outside the project folder by default. Downloading
+REM a fresh copy of RealFrame replaces this directory, and a .venv inside it
+REM would be thrown away with it - forcing a full reinstall every update.
+set "SHARED_VENV=%LOCALAPPDATA%\realframe-venv"
 
+REM An environment already inside the folder still wins, so existing setups
+REM keep working untouched.
+if exist ".venv\Scripts\python.exe" goto :venv_local
+if exist "%SHARED_VENV%\Scripts\python.exe" goto :venv_shared
+
+echo   [..] Creating a private Python environment ^(one time^)
+echo        Location: %SHARED_VENV%
+%PYCMD% -m venv "%SHARED_VENV%"
+if errorlevel 1 goto :venv_fallback
+goto :venv_shared
+
+:venv_fallback
+echo   [!] Could not create it there; using this folder instead.
+%PYCMD% -m venv .venv
+if errorlevel 1 (
+  echo   [X] Could not create the environment.
+  pause
+  exit /b 1
+)
+
+:venv_local
 set "PY=.venv\Scripts\python.exe"
+echo   [OK] Environment ready ^(this folder^)
+goto :venv_done
+
+:venv_shared
+set "PY=%SHARED_VENV%\Scripts\python.exe"
+echo   [OK] Environment ready ^(%SHARED_VENV%^)
+
+:venv_done
 
 REM ===================================================================
 REM  3. PyTorch
