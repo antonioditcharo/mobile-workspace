@@ -14,12 +14,13 @@ Then in RealFrame's .env:
 
 Environment variables:
 
-    LOCAL_MODEL     wan-1.3b (default) | ltx | a diffusers repo id
+    LOCAL_MODEL     auto from system RAM | animatediff | svd | wan-1.3b | ltx
     LOCAL_PORT      8000
     LOCAL_OFFLOAD   auto (default) | sequential | model | none
-    LOCAL_WIDTH     832
-    LOCAL_HEIGHT    480
-    LOCAL_DTYPE     auto (default) | float16 | bfloat16
+    LOCAL_WIDTH     auto from VRAM
+    LOCAL_HEIGHT    auto from VRAM
+    LOCAL_MAX_FRAMES auto from VRAM
+    LOCAL_DTYPE     auto (default) | float16 | bfloat16 | float32
 """
 
 import io
@@ -187,26 +188,57 @@ def resolve_model():
     return {"repo": name, "kind": kind, "vram_gb": 0, "note": "custom repo"}
 
 
-def pick_dtype(torch):
+def pick_dtype(torch, kind=None):
     """
-    Turing cards (GTX 16xx, RTX 20xx) do not support bfloat16 in hardware, and
-    most model cards assume you are on Ampere or newer. Pick per-device rather
-    than trusting the default.
+    Choose a precision the model architecture actually tolerates.
+
+    Two separate constraints. Turing cards (GTX 16xx, RTX 20xx) have no
+    hardware bfloat16 at all. And Stable Diffusion 1.5 lineage models —
+    AnimateDiff and SVD here — are trained and validated in float16; running
+    their UNet and VAE in bfloat16 loses enough mantissa to collapse the
+    denoising, which decodes to flat grey mush rather than an image. The
+    newer transformer video models (Wan, LTX) do prefer bfloat16.
     """
     override = os.environ.get("LOCAL_DTYPE", "auto").lower()
     if override == "float16":
         return torch.float16
     if override == "bfloat16":
         return torch.bfloat16
+    if override == "float32":
+        return torch.float32
 
     if not torch.cuda.is_available():
         return torch.float32
+
+    if kind in ("animatediff", "svd"):
+        return torch.float16
+
     try:
         if torch.cuda.is_bf16_supported():
             return torch.bfloat16
     except Exception:
         pass
     return torch.float16
+
+
+def looks_degenerate(frames):
+    """
+    Detect output that decoded to flat mush instead of an image.
+
+    A failed denoise produces near-uniform frames — the tell is very low
+    variation across the whole frame. Real content, even a dim night shot,
+    carries far more.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return False, 0.0
+    try:
+        sample = np.asarray(frames[len(frames) // 2].convert("RGB")).astype("float32")
+    except Exception:
+        return False, 0.0
+    std = float(sample.std())
+    return std < 18.0, std
 
 
 def total_vram_gb(torch):
@@ -268,7 +300,7 @@ def load_pipeline():
         return None
 
     spec = resolve_model()
-    dtype = pick_dtype(torch)
+    dtype = pick_dtype(torch, spec["kind"])
     vram = total_vram_gb(torch)
 
     if not torch.cuda.is_available():
@@ -379,11 +411,22 @@ def load_pipeline():
         log(f"Offload setup failed ({exc}); falling back to model offload.")
         pipe.enable_model_cpu_offload()
 
-    # Tiling keeps the VAE decode step from spiking memory at the end of a run,
-    # which is where low-VRAM cards usually fail.
-    for enable in ("enable_tiling", "enable_slicing"):
+    # Slicing keeps the VAE decode from spiking memory at the end of a run,
+    # which is where low-VRAM cards usually fail. It is free of artifacts.
+    try:
+        pipe.vae.enable_slicing()
+    except Exception:
+        pass
+
+    # Tiling decodes the frame in overlapping patches, which saves more memory
+    # but leaves a visible seam where the tiles meet. At the frame sizes small
+    # cards use it is unnecessary — the whole frame fits — so only enable it
+    # when the output is actually large.
+    width, height, _ = auto_defaults()
+    if max(width, height) >= 704:
         try:
-            getattr(pipe.vae, enable)()
+            pipe.vae.enable_tiling()
+            log("VAE tiling on (large frame).")
         except Exception:
             pass
 
@@ -432,7 +475,7 @@ def load_i2v_pipeline():
 
     log("Loading the image-to-video pipeline (shares weights with the loaded model)")
     base = load_pipeline()
-    dtype = pick_dtype(torch)
+    dtype = pick_dtype(torch, spec["kind"])
 
     # Reuse the already-resident components rather than paying twice in VRAM.
     try:
@@ -654,6 +697,23 @@ def generate(payload):
         )
 
     frames = result.frames[0]
+
+    # Shipping flat grey as if it were a video wastes the next five minutes of
+    # the user's life on the wrong diagnosis. Say what happened.
+    bad, std = looks_degenerate(frames)
+    if bad:
+        import torch
+        current = str(pick_dtype(torch, spec["kind"])).replace("torch.", "")
+        log("")
+        log(f"WARNING: the output looks flat (variation {std:.1f}, expected 30+).")
+        log("Denoising did not converge. This is almost always precision.")
+        if current != "float16":
+            log("  Try:  set LOCAL_DTYPE=float16   then restart this server.")
+        else:
+            log("  Already at float16. Try LOCAL_DTYPE=float32 (slower), or")
+            log("  raise Steps in RealFrame, or lower Guidance to 3-4.")
+        log("")
+
     return export_video(frames, fps)
 
 

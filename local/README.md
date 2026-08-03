@@ -201,12 +201,24 @@ in this directory, and run the launcher again. It will pick up 3.12 on its own.
 **Switched Python versions and it still fails** — the `.venv` folder remembers
 which Python built it. Delete it and re-run; it rebuilds in seconds.
 
-**Black or garbled video** — usually a precision problem. Force it:
+**Flat grey video, or fine noise with no picture** — denoising did not
+converge, which is nearly always precision. AnimateDiff and SVD are Stable
+Diffusion 1.5 lineage and need `float16`; `bfloat16` loses enough mantissa to
+collapse them into mush. This is now chosen automatically per model, but you
+can force it:
 
 ```
 set LOCAL_DTYPE=float16
 start-local-gpu.bat
 ```
+
+If it is already float16, try `float32` (slower but exact), raise **Steps**, or
+lower **Guidance** to 3-4. The server checks its own output and prints a
+warning when a clip comes out flat, so you are not left guessing.
+
+**A vertical seam down the middle of the frame** — VAE tiling. It decodes in
+overlapping patches to save memory and leaves a join where they meet. It is now
+only enabled for large frames, where it is actually needed.
 
 **Everything is extremely slow** — check the server window for the offload mode.
 `sequential` is the slow-but-fits setting. If you have VRAM to spare, set
