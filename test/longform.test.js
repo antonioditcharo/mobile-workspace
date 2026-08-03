@@ -522,3 +522,67 @@ test('a clip already at the target rate is left alone', { skip: !hasFfmpeg }, as
     providers.generate = original;
   }
 });
+
+/* ---------- the short-clip regression ---------- */
+
+test('an unchainable model fills one pass rather than a fraction of it', () => {
+  // The reported failure: 5s at 16fps is 80 frames; a ceiling of 33 with no
+  // continuation model used to divide by the three passes it wanted (27) and
+  // then run only one of them, delivering a third of the requested clip.
+  const plan = catalog.planSegments({
+    model: 'Wan-AI/Wan2.2-T2V-A14B',
+    durationSeconds: 5,
+    fps: 16,
+    maxFrames: 33,
+    continuation: null,
+  });
+
+  assert.strictEqual(plan.segments, 1);
+  assert.strictEqual(plan.framesPerSegment, 33, 'should fill the pass, not divide it');
+  assert.strictEqual(plan.truncated, true);
+  assert.match(plan.reason, /cannot be extended past one pass of 33 frames/);
+});
+
+test('a ceiling that fits the request delivers the full length', () => {
+  const plan = catalog.planSegments({
+    model: 'Wan-AI/Wan2.2-T2V-A14B',
+    durationSeconds: 5,
+    fps: 16,
+    maxFrames: 82,
+    continuation: null,
+  });
+  assert.strictEqual(plan.framesPerSegment, 80);
+  assert.strictEqual(plan.actualSeconds, 5);
+  assert.strictEqual(plan.truncated, false);
+});
+
+test('the frame count sent to the provider matches the plan on a single pass', async () => {
+  let seen = null;
+  const original = providers.generate;
+  providers.generate = async (job) => {
+    seen = job.params.num_frames;
+    return Buffer.from('x');
+  };
+
+  try {
+    await withServer(testConfig(), async (base) => {
+      const { id, plan } = await (await fetch(`${base}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: 'a harbour at dawn',
+          durationSeconds: 5,
+          // A stale frame count from a different model must not win over the plan.
+          params: { num_frames: 33, fps: 16 },
+        }),
+      })).json();
+
+      await waitFor(base, id);
+      assert.strictEqual(plan.segments, 1);
+      assert.strictEqual(seen, plan.framesPerSegment);
+      assert.strictEqual(seen, 80, '5s at 16fps within an 81-frame ceiling');
+    });
+  } finally {
+    providers.generate = original;
+  }
+});

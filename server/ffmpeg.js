@@ -34,20 +34,32 @@ function run(bin, args, { timeoutMs = 120000 } = {}) {
   });
 }
 
-/** Look for a bundled ffmpeg inside the local server's Python environment. */
+/**
+ * Look for a bundled ffmpeg inside the local server's Python environment.
+ *
+ * The environment lives outside the project folder so it survives updates, so
+ * both locations have to be searched — checking only the in-project one meant
+ * interpolation and stitching silently went missing on an up-to-date install.
+ */
 function findBundled() {
-  const roots = [
-    path.join(ROOT, 'local', '.venv', 'Lib', 'site-packages', 'imageio_ffmpeg', 'binaries'),
-    path.join(ROOT, 'local', '.venv', 'lib', 'site-packages', 'imageio_ffmpeg', 'binaries'),
-  ];
+  const envRoots = [
+    path.join(ROOT, 'local', '.venv'),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'realframe-venv'),
+    process.env.HOME && path.join(process.env.HOME, '.local', 'share', 'realframe-venv'),
+  ].filter(Boolean);
 
-  // Linux/mac venvs bury site-packages under a python version directory.
-  const posixLib = path.join(ROOT, 'local', '.venv', 'lib');
-  try {
-    for (const entry of fs.readdirSync(posixLib)) {
-      roots.push(path.join(posixLib, entry, 'site-packages', 'imageio_ffmpeg', 'binaries'));
-    }
-  } catch { /* no venv yet */ }
+  const roots = [];
+  for (const envRoot of envRoots) {
+    roots.push(path.join(envRoot, 'Lib', 'site-packages', 'imageio_ffmpeg', 'binaries'));
+    roots.push(path.join(envRoot, 'lib', 'site-packages', 'imageio_ffmpeg', 'binaries'));
+
+    // Linux/mac venvs bury site-packages under a python version directory.
+    try {
+      for (const entry of fs.readdirSync(path.join(envRoot, 'lib'))) {
+        roots.push(path.join(envRoot, 'lib', entry, 'site-packages', 'imageio_ffmpeg', 'binaries'));
+      }
+    } catch { /* not this one */ }
+  }
 
   for (const dir of roots) {
     try {

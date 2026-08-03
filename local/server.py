@@ -334,15 +334,34 @@ _auto_defaults = None
 
 
 def auto_defaults():
-    """Resolution and frame ceiling suited to the installed card."""
+    """
+    Frame size and frame ceiling for this server.
+
+    Honours LOCAL_WIDTH/LOCAL_HEIGHT, because these values are also what
+    /health reports to RealFrame. Deriving them from the card alone made the
+    server describe a configuration it was not running: launched at 320x192 it
+    still advertised 480x320 and the 33-frame ceiling that goes with it, so the
+    app planned against the wrong limit and clips came back short.
+    """
     global _auto_defaults
     if _auto_defaults is not None:
         return _auto_defaults
+
     try:
         import torch
-        _auto_defaults = defaults_for_vram(total_vram_gb(torch))
+        width, height, frames = defaults_for_vram(total_vram_gb(torch))
     except Exception:
-        _auto_defaults = (640, 384, 49)
+        width, height, frames = 640, 384, 49
+
+    env_width = os.environ.get("LOCAL_WIDTH")
+    env_height = os.environ.get("LOCAL_HEIGHT")
+    if env_width or env_height:
+        width = int(env_width) if env_width else width
+        height = int(env_height) if env_height else height
+        # A frame size the user chose changes how many frames fit.
+        frames = max_frames_for(width, height)
+
+    _auto_defaults = (width, height, frames)
     return _auto_defaults
 
 

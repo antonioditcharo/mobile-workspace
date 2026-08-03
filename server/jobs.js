@@ -145,7 +145,10 @@ class JobQueue extends EventEmitter {
       ...job,
       model: index === 0 ? job.model : (job.plan?.continuation || job.model),
       initImage: index === 0 ? job.initImage : startFrame,
-      params: { ...job.params, num_frames: job.plan?.framesPerSegment || job.params.num_frames },
+      // params.num_frames is already the per-pass count; the plan does not
+      // need to reapply it here, and doing so unconditionally is what let a
+      // divided count reach a job that only ever ran one pass.
+      params: { ...job.params },
     };
 
     return providers.generate(spec, this.config, {

@@ -291,6 +291,10 @@ function createServer(config = loadConfig()) {
           continuation: localLimits ? localLimits.continuation : undefined,
         });
 
+        // The plan decides the frame count in every case — a single pass still
+        // needs to be told how many frames the requested length works out to.
+        params.num_frames = plan.framesPerSegment;
+
         if (plan.segments > 1) {
           if (!(await ffmpeg.locate())) {
             sendJson(res, 400, {
@@ -300,7 +304,6 @@ function createServer(config = loadConfig()) {
             });
             return;
           }
-          params.num_frames = plan.framesPerSegment;
         }
 
         const job = queue.create({

@@ -149,27 +149,34 @@ function planSegments({
   const target = Math.max(1, Math.min(durationSeconds || 5, MAX_DURATION_SECONDS));
 
   const totalFrames = Math.ceil(target * rate);
-  const segments = Math.max(1, Math.ceil(totalFrames / maxFrames));
-
-  // Spread frames evenly rather than leaving a stub final segment.
-  const perSegment = Math.min(maxFrames, Math.ceil(totalFrames / segments));
+  const wanted = Math.max(1, Math.ceil(totalFrames / maxFrames));
 
   const continuation = continuationOverride !== undefined
     ? continuationOverride
     : (spec?.continuation || null);
-  const chainable = segments === 1 || Boolean(continuation);
+  const chainable = wanted === 1 || Boolean(continuation);
+  const segments = chainable ? wanted : 1;
+
+  // Spread frames evenly across the passes that will actually run. Dividing by
+  // the number wanted rather than the number used would shorten a clip that
+  // cannot be chained: asking for 5s from a model limited to one pass would
+  // produce a third of a clip instead of as much as one pass can hold.
+  const perSegment = Math.min(maxFrames, Math.ceil(totalFrames / segments));
+  const delivered = perSegment * segments;
 
   return {
-    segments: chainable ? segments : 1,
+    segments,
     framesPerSegment: perSegment,
     fps: rate,
-    totalFrames: chainable ? perSegment * segments : perSegment,
-    actualSeconds: +(((chainable ? perSegment * segments : perSegment) / rate).toFixed(1)),
+    totalFrames: delivered,
+    actualSeconds: +((delivered / rate).toFixed(1)),
     continuation,
     chainable,
+    truncated: delivered < totalFrames,
     reason: chainable
       ? null
-      : `${spec?.label || model} has no image-to-video counterpart, so it cannot be extended past one segment.`,
+      : `${spec?.label || model} has no image-to-video counterpart, so it cannot be extended past one pass `
+        + `of ${maxFrames} frames (${(maxFrames / rate).toFixed(1)}s at ${rate}fps).`,
   };
 }
 

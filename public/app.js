@@ -206,12 +206,36 @@ function currentOptions() {
  * Explain what a requested length actually costs: how many passes it takes,
  * and roughly how much longer than a single clip.
  */
+/**
+ * Length is the control that matters, so the numbers underneath follow it.
+ *
+ * Frames is the field the backend actually acts on, and leaving the two to be
+ * set independently meant the slider could say 5s while Frames still held a
+ * value from a different model — the request then delivered whatever Frames
+ * said. Deriving it here keeps one source of truth.
+ */
+function syncFramesToDuration() {
+  const seconds = Number($('duration').value);
+  const fps = Number($('fps').value) || 16;
+  const ceiling = state.localInfo?.max_frames
+    || state.config.models.find((m) => m.id === $('model').value)?.maxFrames
+    || 81;
+
+  const wanted = Math.round(seconds * fps);
+  const perPass = Math.min(wanted, ceiling);
+
+  const frames = $('num_frames');
+  frames.value = perPass;
+  delete frames.dataset.touched;
+}
+
 function updateDurationHint() {
   const seconds = Number($('duration').value);
   const model = state.config.models.find((m) => m.id === $('model').value);
   const hint = $('duration-hint');
 
   $('duration-value').textContent = `${seconds}s`;
+  syncFramesToDuration();
 
   // A local endpoint knows its own ceiling, which depends on its GPU and the
   // frame size — the hosted catalog cannot speak for it.
@@ -509,6 +533,12 @@ function wireEvents() {
   });
 
   $('target-fps').addEventListener('change', updateFpsHint);
+
+  // Frames is derived from length x fps, so a change to either re-derives it.
+  $('fps').addEventListener('input', () => {
+    updateDurationHint();
+    updateFpsHint();
+  });
 
   // Quality is a shortcut for step count, so write it into the visible field
   // rather than applying it invisibly at the server.
