@@ -659,11 +659,33 @@ def generate(payload):
         log(f"Animating a still: {kwargs['num_frames']}f {width}x{height}")
 
     elif spec["kind"] == "animatediff":
-        # Built on Stable Diffusion 1.5, so it works in that resolution range
-        # and tops out around 32 frames.
-        kwargs["num_frames"] = min(num_frames, 32)
-        kwargs["height"] = min(height, 512)
-        kwargs["width"] = min(width, 512)
+        # The v1.5 motion adapter was trained on 16 frames at 512x512, and it
+        # degrades sharply outside that. Past ~16 frames the temporal layers
+        # wash the image out progressively — the clip starts with structure and
+        # decays into flat colour by the end. Off-square, off-512 frame sizes
+        # hurt for the same reason. Hold it to what it was trained for.
+        requested = num_frames
+        kwargs["num_frames"] = min(num_frames, 16)
+        kwargs["height"] = 512 if height >= 384 else 384
+        kwargs["width"] = 512 if width >= 384 else 384
+
+        if requested > kwargs["num_frames"]:
+            log(f"AnimateDiff trained on 16 frames; capping {requested} to 16 "
+                "(more makes the picture dissolve, not longer).")
+        if (width, height) != (kwargs["width"], kwargs["height"]):
+            log(f"Using {kwargs['width']}x{kwargs['height']} — its native size.")
+
+        # Stable Diffusion 1.5 expects roughly 7-8 guidance. The value arriving
+        # here is the RealFrame default for whichever model is named in the UI,
+        # which is usually a Wan-family number far too low for this one.
+        if guidance < 6.0:
+            log(f"Raising guidance {guidance} to 7.5 for Stable Diffusion 1.5.")
+            kwargs["guidance_scale"] = 7.5
+
+        # 16 frames at 16fps is a one-second clip. AnimateDiff's motion is
+        # paced for 8fps, which also gives a watchable two seconds.
+        if fps > 10:
+            fps = 8
         if start_image is not None:
             log("AnimateDiff ignores start frames; generating from the prompt.")
 
@@ -709,6 +731,11 @@ def generate(payload):
         log("Denoising did not converge. This is almost always precision.")
         if current != "float16":
             log("  Try:  set LOCAL_DTYPE=float16   then restart this server.")
+        elif spec["kind"] == "animatediff":
+            log("  Already at float16. For this model the usual causes are")
+            log("  asking for more than 16 frames, a frame size far from 512,")
+            log("  or guidance below 6 — all three are now clamped, so if you")
+            log("  still see this, try LOCAL_DTYPE=float32 (slower but exact).")
         else:
             log("  Already at float16. Try LOCAL_DTYPE=float32 (slower), or")
             log("  raise Steps in RealFrame, or lower Guidance to 3-4.")

@@ -92,7 +92,7 @@ Set `LOCAL_MODEL` before starting to switch.
 
 | Value | Type | Download | RAM to load | Character |
 | --- | --- | --- | --- | --- |
-| `animatediff` | text-to-video | ~4 GB | ~6 GB | Lightest. Runs where the others cannot |
+| `animatediff` | text-to-video | ~4 GB | ~6 GB | Lightest. Runs where the others cannot. Fixed at 16 frames / 512x512 |
 | `svd` | image-to-video | ~5 GB | ~8 GB | Animates a still. No text encoder |
 | `wan-1.3b` | text-to-video | ~28 GB | ~32 GB | Best small-model realism and motion |
 | `ltx` | text-to-video | ~19 GB | ~24 GB | Faster than Wan, softer detail |
@@ -208,6 +208,12 @@ exists after the launcher has run at least once. A freshly downloaded copy of
 RealFrame has no environment in it. Double-click `start-local-gpu.bat` first;
 newer versions keep the environment outside the project folder so updating
 no longer costs a reinstall.
+
+**A vague blob that dissolves as the clip goes on** — that is AnimateDiff being
+pushed past what it was trained for. Its motion adapter learned 16 frames at
+512x512; ask for 32 frames at 480x320 and the temporal layers wash the picture
+out progressively, so the clip starts with structure and ends flat. The server
+now clamps frames, size and guidance to the trained range automatically.
 
 **Flat grey video, or fine noise with no picture** — denoising did not
 converge, which is nearly always precision. AnimateDiff and SVD are Stable
