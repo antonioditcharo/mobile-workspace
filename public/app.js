@@ -121,6 +121,7 @@ async function boot() {
   $('num_inference_steps').value = cfg.quality.standard.steps;
   updateDurationHint();
   updateQualityHint();
+  updateFpsHint();
 
   cfg.negativeGroups.forEach((g) => state.activeGroups.add(g.key));
   groupBox.addEventListener('click', (e) => {
@@ -265,6 +266,28 @@ function updateDurationHint() {
     + `drifts a little at each join.`;
 }
 
+/**
+ * Generated frame rates are low because every frame costs GPU time and memory.
+ * Interpolation fills the gaps afterwards on the CPU, so it buys smoothness
+ * without spending any of the generation budget.
+ */
+function updateFpsHint() {
+  const target = Number($('target-fps').value);
+  const source = Number($('fps').value) || 16;
+  const hint = $('fps-hint');
+
+  if (!target) {
+    hint.textContent = `Keeps the model's own ${source}fps. Motion will look steppy.`;
+    return;
+  }
+  if (target <= source) {
+    hint.textContent = `Already generating at ${source}fps — no interpolation needed.`;
+    return;
+  }
+  hint.textContent = `${source}fps generated, then filled to ${target}fps by synthesising `
+    + 'in-between frames. Costs CPU time after generation, not GPU time.';
+}
+
 function updateQualityHint() {
   const q = state.config.quality[$('quality').value];
   if (!q) return;
@@ -357,6 +380,7 @@ async function generate() {
         model: $('model').value,
         durationSeconds: Number($('duration').value),
         quality: $('quality').value,
+        targetFps: Number($('target-fps').value) || null,
         params,
         initImage: state.initImage,
       },
@@ -392,9 +416,9 @@ function jobCard(job) {
     let label = job.status === 'running' ? 'Generating — this takes minutes' : 'Queued';
     const p = job.segmentProgress;
     if (p) {
-      label = p.stitching
-        ? `Joining ${p.total} segments`
-        : `Generating segment ${p.current} of ${p.total}`;
+      if (p.interpolating) label = `Smoothing to ${p.to}fps`;
+      else if (p.stitching) label = `Joining ${p.total} segments`;
+      else label = `Generating segment ${p.current} of ${p.total}`;
     }
     const retry = job.attempts?.length ? ` (retry ${job.attempts.length})` : '';
     media = `<div class="job-state"><span class="spinner"></span>${label}${retry}…</div>`;
@@ -403,6 +427,7 @@ function jobCard(job) {
   if (job.plan?.segments > 1) meta.push(`${job.plan.segments} segments`);
   if (job.plan?.actualSeconds) meta.push(`${job.plan.actualSeconds}s`);
   if (job.quality) meta.push(job.quality);
+  if (job.interpolatedTo) meta.push(`${job.interpolatedTo}fps`);
 
   const actions = [];
   if (job.status === 'done') {
@@ -482,6 +507,8 @@ function wireEvents() {
     updateDurationHint();
     updateQualityHint();
   });
+
+  $('target-fps').addEventListener('change', updateFpsHint);
 
   // Quality is a shortcut for step count, so write it into the visible field
   // rather than applying it invisibly at the server.

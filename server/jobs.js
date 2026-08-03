@@ -72,6 +72,7 @@ class JobQueue extends EventEmitter {
       compiled: spec.compiled || null,
       plan: spec.plan || null,
       quality: spec.quality || null,
+      targetFps: spec.targetFps || null,
       error: null,
       videoUrl: null,
       attempts: [],
@@ -208,6 +209,25 @@ class JobQueue extends EventEmitter {
         job.segmentProgress = { current: segmentCount, total: segmentCount, stitching: true };
         this.emit('update', job);
         await ffmpeg.concat(scratch, videoPath);
+      }
+
+      // Interpolate last, once the whole clip exists — doing it per segment
+      // would smooth each piece but leave the joins at the original rate.
+      if (job.targetFps && job.targetFps > (job.params.fps || 16)) {
+        job.segmentProgress = { interpolating: true, to: job.targetFps };
+        this.emit('update', job);
+
+        const smooth = path.join(this.config.outputDir, `${job.id}.smooth.mp4`);
+        try {
+          await ffmpeg.interpolate(videoPath, smooth, job.targetFps);
+          await fsp.rename(smooth, videoPath);
+          job.interpolatedTo = job.targetFps;
+        } catch (err) {
+          // The clip itself is fine; only the smoothing failed.
+          job.warning = `Generated successfully, but interpolation to `
+            + `${job.targetFps}fps failed: ${err.message}`;
+          await fsp.unlink(smooth).catch(() => {});
+        }
       }
 
       const video = await fsp.readFile(videoPath);

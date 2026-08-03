@@ -1020,6 +1020,7 @@ class Handler(BaseHTTPRequestHandler):
                     **suggested_params(spec),
                 },
                 "max_frames": ceiling,
+                "supports_i2v": spec["kind"] in ("ltx", "svd"),
                 "gpu": gpu_summary(),
                 "error": _pipeline_error,
             })

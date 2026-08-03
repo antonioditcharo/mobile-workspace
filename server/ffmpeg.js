@@ -147,6 +147,52 @@ async function concat(segmentPaths, outPath) {
   return outPath;
 }
 
+/**
+ * Raise the frame rate by synthesising intermediate frames.
+ *
+ * Video models generate at 8-16fps because every frame costs GPU memory and
+ * time, and the result reads as choppy however good the individual frames are.
+ * Interpolating afterwards is far cheaper than generating more frames: it runs
+ * on the CPU, costs no VRAM, and does not constrain clip length.
+ *
+ * `mci` is motion-compensated interpolation — it estimates where things moved
+ * and synthesises the in-between, rather than blending or duplicating frames.
+ * Slower than the alternatives and worth it; blending just looks like a smear.
+ */
+async function interpolate(inputPath, outputPath, targetFps, { onProgress } = {}) {
+  const bin = await locate();
+  if (!bin) throw new Error('ffmpeg not available.');
+
+  const filter = `minterpolate=fps=${targetFps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1`;
+
+  if (onProgress) onProgress(`Interpolating to ${targetFps}fps`);
+
+  await run(bin, [
+    '-y', '-i', inputPath,
+    '-vf', filter,
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    '-crf', '17',
+    '-preset', 'medium',
+    outputPath,
+  ], { timeoutMs: 1800000 });
+
+  return outputPath;
+}
+
+/** Frames per second, or null if it cannot be read. */
+async function frameRate(videoPath) {
+  const bin = await locate();
+  if (!bin) return null;
+  try {
+    const { stderr } = await run(bin, ['-i', videoPath]).catch((e) => ({ stderr: e.stderr || '' }));
+    const m = /,\s*([\d.]+)\s*fps/.exec(stderr || '');
+    return m ? parseFloat(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Duration in seconds, or null if it cannot be read. */
 async function duration(videoPath) {
   const bin = await locate();
@@ -161,4 +207,4 @@ async function duration(videoPath) {
   }
 }
 
-module.exports = { locate, reset, lastFrameDataUrl, concat, duration };
+module.exports = { locate, reset, lastFrameDataUrl, concat, interpolate, duration, frameRate };

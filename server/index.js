@@ -262,10 +262,33 @@ function createServer(config = loadConfig()) {
           params.num_inference_steps = catalog.QUALITY[quality].steps;
         }
 
+        // On a custom backend the hosted catalog cannot speak for the machine
+        // doing the work. Ask it for its own per-pass ceiling and whether it
+        // can continue from a frame, and plan against that.
+        let localLimits = null;
+        if ((body.provider || config.provider) === 'custom' && config.customEndpoint) {
+          try {
+            const health = await providers.probeCustom(
+              config.customEndpoint.replace(/\/generate\/?$/, '/health'),
+              config,
+            );
+            localLimits = {
+              maxFrames: health.max_frames,
+              continuation: health.supports_i2v ? (health.model || 'local') : null,
+              label: health.label,
+            };
+            if (health.defaults?.fps && (body.params || {}).fps == null) {
+              params.fps = health.defaults.fps;
+            }
+          } catch { /* fall back to the catalog */ }
+        }
+
         const plan = catalog.planSegments({
           model,
           durationSeconds: body.durationSeconds,
           fps: params.fps,
+          maxFrames: localLimits?.maxFrames,
+          continuation: localLimits ? localLimits.continuation : undefined,
         });
 
         if (plan.segments > 1) {
@@ -291,6 +314,7 @@ function createServer(config = loadConfig()) {
           compiled,
           plan,
           quality,
+          targetFps: Number(body.targetFps) || null,
         });
 
         sendJson(res, 202, { id: job.id, compiled, plan });

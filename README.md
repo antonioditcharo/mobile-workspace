@@ -98,6 +98,15 @@ the catalog) and an ffmpeg binary for the frame extraction and stitching. If
 you've set up the local GPU server, its Python environment already ships one and
 it's found automatically; otherwise set `FFMPEG_PATH`.
 
+### Frame rate
+
+Video models generate at 8-24fps because every frame costs memory and time. The
+**Smoothness** control raises the delivered rate afterwards using
+motion-compensated interpolation — ffmpeg estimates motion between generated
+frames and synthesises the ones between. It runs on the CPU once the clip
+exists, so it costs no GPU budget and does not shorten the clip. Applied after
+stitching, so chained joins are smoothed too.
+
 ### Quality
 
 The **Quality** control sets denoising steps — draft 18, standard 32, high 50,

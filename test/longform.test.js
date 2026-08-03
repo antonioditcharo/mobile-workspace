@@ -428,3 +428,97 @@ test('deleting an unknown job is a 404', async () => {
     assert.strictEqual(res.status, 404);
   });
 });
+
+/* ---------- local backend limits drive the plan ---------- */
+
+test('a local endpoint ceiling overrides the hosted catalog', () => {
+  // Hosted Wan 2.2 allows 81 frames a pass; a 4 GB card at 384x256 allows 51.
+  const hosted = catalog.planSegments({
+    model: 'Wan-AI/Wan2.2-T2V-A14B', durationSeconds: 20, fps: 16,
+  });
+  const local = catalog.planSegments({
+    model: 'Wan-AI/Wan2.2-T2V-A14B',
+    durationSeconds: 20,
+    fps: 16,
+    maxFrames: 51,
+    continuation: 'local',
+  });
+
+  assert.strictEqual(hosted.segments, 4);
+  assert.strictEqual(local.segments, 7, '320 frames at 51 a pass needs 7 passes');
+  assert.ok(local.framesPerSegment <= 51);
+  assert.ok(local.actualSeconds >= 19);
+});
+
+test('a local backend that cannot continue from a frame is not chained', () => {
+  const plan = catalog.planSegments({
+    model: 'Wan-AI/Wan2.2-T2V-A14B',
+    durationSeconds: 20,
+    fps: 16,
+    maxFrames: 33,
+    continuation: null,
+  });
+  assert.strictEqual(plan.segments, 1);
+  assert.strictEqual(plan.chainable, false);
+});
+
+test('interpolation runs after stitching and reports the new rate', { skip: !hasFfmpeg }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-interp-'));
+  const clip = fs.readFileSync(makeClip(dir, 'src.mp4', 1, 'red'));
+
+  const original = providers.generate;
+  providers.generate = async () => clip;
+  const config = testConfig();
+
+  try {
+    await withServer(config, async (base) => {
+      const { id } = await (await fetch(`${base}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: 'a river at dawn',
+          durationSeconds: 2,
+          targetFps: 48,
+          params: { fps: 10 },
+        }),
+      })).json();
+
+      const job = await waitFor(base, id);
+      assert.strictEqual(job.status, 'done', `failed: ${job.error}`);
+      assert.strictEqual(job.interpolatedTo, 48);
+
+      const rate = await ffmpeg.frameRate(path.join(config.outputDir, `${id}.mp4`));
+      assert.ok(rate >= 47 && rate <= 49, `expected ~48fps, got ${rate}`);
+    });
+  } finally {
+    providers.generate = original;
+  }
+});
+
+test('a clip already at the target rate is left alone', { skip: !hasFfmpeg }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-interp2-'));
+  const clip = fs.readFileSync(makeClip(dir, 'src.mp4', 1, 'blue'));
+
+  const original = providers.generate;
+  providers.generate = async () => clip;
+
+  try {
+    await withServer(testConfig(), async (base) => {
+      const { id } = await (await fetch(`${base}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: 'a still pond',
+          targetFps: 24,
+          params: { fps: 24 },
+        }),
+      })).json();
+
+      const job = await waitFor(base, id);
+      assert.strictEqual(job.status, 'done');
+      assert.strictEqual(job.interpolatedTo, undefined, 'no interpolation needed');
+    });
+  } finally {
+    providers.generate = original;
+  }
+});

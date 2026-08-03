@@ -138,9 +138,13 @@ const MAX_DURATION_SECONDS = 20;
  * after the first need an image-to-video model, so a model with no
  * `continuation` cannot be extended.
  */
-function planSegments({ model, durationSeconds, fps }) {
+function planSegments({
+  model, durationSeconds, fps, maxFrames: maxFramesOverride, continuation: continuationOverride,
+}) {
   const spec = findModel(model);
-  const maxFrames = spec?.maxFrames || 81;
+  // A local backend reports its own per-pass ceiling, which depends on its GPU
+  // and frame size rather than on the hosted model named in the UI.
+  const maxFrames = maxFramesOverride || spec?.maxFrames || 81;
   const rate = fps || spec?.defaultParams?.fps || 16;
   const target = Math.max(1, Math.min(durationSeconds || 5, MAX_DURATION_SECONDS));
 
@@ -150,7 +154,9 @@ function planSegments({ model, durationSeconds, fps }) {
   // Spread frames evenly rather than leaving a stub final segment.
   const perSegment = Math.min(maxFrames, Math.ceil(totalFrames / segments));
 
-  const continuation = spec?.continuation || null;
+  const continuation = continuationOverride !== undefined
+    ? continuationOverride
+    : (spec?.continuation || null);
   const chainable = segments === 1 || Boolean(continuation);
 
   return {

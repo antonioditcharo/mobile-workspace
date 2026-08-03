@@ -71,19 +71,40 @@ If a `.env` with an `HF_TOKEN` exists in the main folder, the server reuses it
 for downloads — anonymous Hub traffic is rate limited and slower. Generation
 itself stays entirely local either way.
 
-## Long clips locally
+## 20-second clips
 
-RealFrame builds anything past ~5 seconds by chaining segments, which means each
-continuation needs an **image-to-video** pipeline. `ltx` and `svd` have one;
-`wan-1.3b` and `animatediff` do not. For long clips locally:
+Anything past a single pass is built by **chaining**: generate a segment, take
+its last frame, continue from that frame, repeat, stitch. Each continuation
+needs an **image-to-video** pipeline, which is the whole constraint:
 
-```
-start-local-gpu.bat ltx
-```
+| Model | Can be chained? |
+| --- | --- |
+| `ltx` | Yes |
+| `svd` | Yes (needs a start frame to begin with) |
+| `wan-1.3b` | **No** — the image-to-video version is 14B, far beyond a small card |
+| `animatediff` | **No** |
 
-With `wan-1.3b` loaded, a chained request fails with a message saying exactly
-this. The stitching itself needs ffmpeg — this setup installs one, and RealFrame
-finds it inside `.venv` automatically.
+So **20 seconds locally means LTX**. Double-click `run-max.bat`, set the length
+slider to 20, and click **Check availability** once so RealFrame learns the
+per-pass ceiling and plans the right number of segments.
+
+Two honest caveats. Detail drifts across joins — faces and clothing wander over
+twenty seconds in a way they do not over five. And LTX is softer than Wan to
+begin with, so a 20-second clip trades away the per-frame quality that makes
+Wan worth using. A 5-second Wan clip usually looks better than a 20-second LTX
+one; pick by which matters for the shot.
+
+## Frame rate
+
+Models generate at 8-16fps because every frame costs memory and time, and the
+result reads as choppy however good the frames are. RealFrame's **Smoothness**
+control fills in the gaps afterwards with motion-compensated interpolation —
+ffmpeg estimates where things moved and synthesises the in-between frames.
+
+It runs on the CPU after generation, so it costs no VRAM and does not reduce
+clip length. 48fps is the default and turns 16fps footage into something that
+reads as motion rather than a slideshow. Roughly a second of CPU per second of
+output.
 
 ## Models
 
@@ -94,6 +115,7 @@ finds it inside `.venv` automatically.
 | `run-animatediff.bat` | AnimateDiff — lightest, runs anywhere |
 | `run-wan.bat` | Wan 2.1 T2V 1.3B — best small-model realism |
 | `run-wan-long.bat` | Wan at 320x192 — smaller picture, roughly 5s instead of 2s |
+| `run-max.bat` | LTX at 384x256 — the only local route to 20s clips |
 
 Or pass the name as an argument: `start-local-gpu.bat ltx`. Setting
 `LOCAL_MODEL` before launching still works too.
