@@ -88,12 +88,12 @@ echo.
 %PY% -m pip install --upgrade pip --quiet
 
 echo   [..] Trying CUDA 12.4 build
-%PY% -m pip install torch --index-url https://download.pytorch.org/whl/cu124
+%PY% -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 %PY% -c "import torch" >nul 2>nul
 if not errorlevel 1 goto :torch_ok
 
 echo   [..] Trying CUDA 12.1 build
-%PY% -m pip install torch --index-url https://download.pytorch.org/whl/cu121
+%PY% -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 %PY% -c "import torch" >nul 2>nul
 if not errorlevel 1 goto :torch_ok
 

@@ -165,6 +165,17 @@ or enlarge the page file and retry the heavy one:
 5. Initial size `8192`, Maximum size `65536`
 6. **Set → OK**, then restart the computer
 
+**The video generates but never arrives** — if the server window shows a
+finished progress bar and then a disconnect message, RealFrame's job timeout
+fired while it was still working. Open `.env` in the main folder and set:
+
+```
+JOB_TIMEOUT_MS=0
+```
+
+Zero means no limit; cancel from the page instead. An existing `.env` copied
+from an earlier setup may still carry the old 15-minute value.
+
 **"Out of VRAM"** — lower the frame count in RealFrame, or start the server with
 a smaller frame:
 

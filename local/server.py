@@ -452,6 +452,69 @@ def load_i2v_pipeline():
     return _pipeline_i2v
 
 
+def encode_long_prompt(pipe, prompt, negative_prompt):
+    """
+    Encode prompts longer than CLIP's 77-token window.
+
+    Stable Diffusion 1.5 tokenizers cap at 77 tokens, and the realism engine
+    emits far more than that — the whole subject-detail layer (skin pores,
+    asymmetry, fabric drape) falls off the end and is silently discarded.
+    Encoding in 75-token chunks and concatenating the embeddings keeps all of
+    it, which is the difference between the engine working and not.
+
+    Returns (prompt_embeds, negative_embeds), or None to fall back to the
+    pipeline's own truncating path.
+    """
+    import torch
+
+    tokenizer = getattr(pipe, "tokenizer", None)
+    text_encoder = getattr(pipe, "text_encoder", None)
+    if tokenizer is None or text_encoder is None:
+        return None
+
+    max_len = getattr(tokenizer, "model_max_length", 77)
+    body = max_len - 2
+    bos = tokenizer.bos_token_id
+    eos = tokenizer.eos_token_id
+    if bos is None or eos is None:
+        return None
+
+    device = getattr(pipe, "_execution_device", None) or torch.device("cpu")
+
+    def encode(text, min_chunks):
+        ids = tokenizer(text or "", truncation=False, add_special_tokens=False).input_ids
+        chunks = [ids[i:i + body] for i in range(0, len(ids), body)] or [[]]
+        while len(chunks) < min_chunks:
+            chunks.append([])
+        pieces = []
+        for chunk in chunks:
+            padded = [bos] + chunk + [eos]
+            padded += [eos] * (max_len - len(padded))
+            tensor = torch.tensor([padded[:max_len]], device=device)
+            with torch.no_grad():
+                pieces.append(text_encoder(tensor)[0])
+        return torch.cat(pieces, dim=1), len(chunks)
+
+    try:
+        positive, n_pos = encode(prompt, 1)
+        negative, n_neg = encode(negative_prompt, 1)
+
+        # Classifier-free guidance requires both sides to be the same length.
+        if n_pos != n_neg:
+            target = max(n_pos, n_neg)
+            positive, _ = encode(prompt, target)
+            negative, _ = encode(negative_parts_safe(negative_prompt), target)
+
+        return positive, negative
+    except Exception as exc:
+        log(f"Long-prompt encoding unavailable ({exc}); falling back to truncation.")
+        return None
+
+
+def negative_parts_safe(text):
+    return text or ""
+
+
 def export_video(frames, fps):
     """Write frames to a temporary mp4 and return the bytes."""
     from diffusers.utils import export_to_video
@@ -560,6 +623,17 @@ def generate(payload):
         kwargs["width"] = min(width, 512)
         if start_image is not None:
             log("AnimateDiff ignores start frames; generating from the prompt.")
+
+        # CLIP truncates at 77 tokens, which would cut the realism modifiers off
+        # the end of the prompt. Encode the whole thing instead.
+        embeds = encode_long_prompt(pipe, prompt, negative)
+        if embeds is not None:
+            kwargs.pop("prompt", None)
+            kwargs.pop("negative_prompt", None)
+            kwargs["prompt_embeds"], kwargs["negative_prompt_embeds"] = embeds
+            tokens = embeds[0].shape[1]
+            log(f"Encoded the full prompt in {tokens // 77} chunks (no truncation).")
+
         log(f"Generating: {kwargs['num_frames']}f {kwargs['width']}x{kwargs['height']} steps={steps}")
 
     elif start_image is not None:
@@ -625,12 +699,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(exc)})
             return
 
-        self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
-        self.send_header("Content-Length", str(len(video)))
-        self.end_headers()
-        self.wfile.write(video)
-        log(f"Sent {len(video) / 1024:.0f} KB")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(len(video)))
+            self.end_headers()
+            self.wfile.write(video)
+            log(f"Sent {len(video) / 1024:.0f} KB")
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # The video is finished; the client just stopped waiting. Say so
+            # plainly rather than dumping a traceback that looks like a crash.
+            log(f"Generated {len(video) / 1024:.0f} KB but RealFrame had already "
+                "disconnected — its job timeout fired. Set JOB_TIMEOUT_MS=0 in "
+                ".env to remove the limit.")
 
 
 def main():

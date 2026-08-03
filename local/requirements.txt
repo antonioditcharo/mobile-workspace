@@ -1,5 +1,5 @@
 # Install PyTorch separately, with CUDA support, before these:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 # start-local-gpu.bat does that for you.
 
 diffusers>=0.33.0
