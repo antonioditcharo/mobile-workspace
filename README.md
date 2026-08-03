@@ -98,6 +98,14 @@ the catalog) and an ffmpeg binary for the frame extraction and stitching. If
 you've set up the local GPU server, its Python environment already ships one and
 it's found automatically; otherwise set `FFMPEG_PATH`.
 
+### Continuing a shot
+
+Every finished render has a **continue from this** action. It takes the clip's
+final frame, loads it as the next generation's start frame, and carries the
+description over — the manual form of chaining, one pass at a time, with the
+prompt and settings adjustable in between. Useful when automatic chaining would
+drift: you see each segment before committing to the next.
+
 ### Frame rate
 
 Video models generate at 8-24fps because every frame costs memory and time. The

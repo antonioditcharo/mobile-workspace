@@ -365,6 +365,37 @@ function createServer(config = loadConfig()) {
         return;
       }
 
+      // The final frame of a finished clip, as a data URL. Feeding it back in
+      // as a start frame continues the shot under your control — the manual
+      // form of chaining, one segment at a time, with the prompt and settings
+      // adjustable between passes.
+      const frameMatch = /^\/api\/jobs\/([^/]+)\/last-frame$/.exec(pathname);
+      if (frameMatch && req.method === 'GET') {
+        const id = frameMatch[1];
+        if (!/^[a-f0-9-]{36}$/i.test(id)) {
+          sendJson(res, 400, { error: 'Invalid job id.' });
+          return;
+        }
+        const videoPath = path.join(config.outputDir, `${id}.mp4`);
+        if (!fs.existsSync(videoPath)) {
+          sendJson(res, 404, { error: 'No video for that job.' });
+          return;
+        }
+        if (!(await ffmpeg.locate())) {
+          sendJson(res, 400, {
+            error: 'Extracting a frame needs ffmpeg, and none was found. '
+              + 'Setting up the local GPU server installs one.',
+          });
+          return;
+        }
+        try {
+          sendJson(res, 200, { image: await ffmpeg.lastFrameDataUrl(videoPath) });
+        } catch (err) {
+          sendJson(res, 500, { error: `Could not read the last frame: ${err.message}` });
+        }
+        return;
+      }
+
       const videoMatch = /^\/api\/video\/([^/]+)$/.exec(pathname);
       if (videoMatch && req.method === 'GET') {
         await serveVideo(res, req, config, videoMatch[1]);

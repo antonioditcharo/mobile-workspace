@@ -84,7 +84,7 @@ needs an **image-to-video** pipeline, which is the whole constraint:
 | `wan-1.3b` | **No** — the image-to-video version is 14B, far beyond a small card |
 | `animatediff` | **No** |
 
-So **20 seconds locally means LTX**. Double-click `run-max.bat`, set the length
+So **anything past a single Wan pass means LTX**. Double-click `run-max.bat`, set the length
 slider to 20, and click **Check availability** once so RealFrame learns the
 per-pass ceiling and plans the right number of segments.
 
@@ -114,7 +114,7 @@ output.
 | --- | --- |
 | `run-animatediff.bat` | AnimateDiff — lightest, runs anywhere |
 | `run-wan.bat` | Wan 2.1 T2V 1.3B — best small-model realism |
-| `run-wan-long.bat` | Wan at 320x192 — smaller picture, roughly 5s instead of 2s |
+| `run-long.bat` | LTX at 512x320 — the model that can actually do 5s |
 | `run-max.bat` | LTX at 384x256 — the only local route to 20s clips |
 
 Or pass the name as an argument: `start-local-gpu.bat ltx`. Setting
@@ -167,9 +167,24 @@ pixel-frames:
 | 320×192 | 82 | 5.1s |
 | 256×160 | 123 | 7.7s |
 
-Set `LOCAL_WIDTH` and `LOCAL_HEIGHT` to move along that curve, or double-click
-`run-wan-long.bat` for the 320×192 row. The server reports its current ceiling
-to RealFrame, so the length slider tells you what you can actually get.
+**There is a floor.** Every model stops producing structure below a minimum
+frame size, because what the transformer reasons over is the *latent* grid —
+the frame divided by the VAE's compression factor. Wan compresses 8x spatially,
+so 320×192 leaves it a 40×24 grid: too coarse to form a subject, and the output
+degenerates into coloured smears no matter how many frames you ask for. The
+server refuses to go below these and says so:
+
+| Model | Minimum useful frame |
+| --- | --- |
+| `wan-1.3b` | 480×320 |
+| `ltx` | 448×256 |
+| `animatediff` | 384×384 |
+| `svd` | 512×288 |
+
+This is why **Wan cannot do 5 seconds on a 4 GB card** — the frame it would need
+is below its floor. LTX compresses 32x, roughly sixteen times fewer tokens for
+the same picture, so it holds far more frames at a size that still resolves.
+That is the whole reason to reach for it.
 
 `LOCAL_MAX_FRAMES` overrides the ceiling if you want to push past it and risk
 running out of memory.

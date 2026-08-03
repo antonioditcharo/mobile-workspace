@@ -222,6 +222,26 @@ def pick_dtype(torch, kind=None):
     return torch.float16
 
 
+# Below these sizes a model stops producing structure at all.
+#
+# The latent grid is what the transformer actually reasons over, and its size
+# is the pixel dimensions divided by the VAE's compression factor. Wan
+# compresses 8x spatially, so 320x192 leaves a 40x24 grid — too coarse for it
+# to form a coherent subject, and the output degenerates into smears. LTX
+# compresses 32x, roughly sixteen times fewer tokens for the same picture,
+# which is exactly why it can afford longer clips at a usable size.
+MIN_RESOLUTION = {
+    "wan": (480, 320),
+    "ltx": (448, 256),
+    "animatediff": (384, 384),
+    "svd": (512, 288),
+}
+
+
+def minimum_resolution(kind):
+    return MIN_RESOLUTION.get(kind, (384, 256))
+
+
 # Approximate size of the components that must be resident during a denoising
 # step — the transformer/UNet plus the VAE. The text encoder is excluded: it
 # runs once at the start and can sit on the CPU without costing throughput.
@@ -358,9 +378,19 @@ def auto_defaults():
     if env_width or env_height:
         width = int(env_width) if env_width else width
         height = int(env_height) if env_height else height
-        # A frame size the user chose changes how many frames fit.
-        frames = max_frames_for(width, height)
 
+    # Never go below what the loaded model can actually resolve. Trading
+    # resolution for length is only a real choice above this floor; under it
+    # the extra frames are smears, which is worse than a shorter clip.
+    kind = resolve_model()["kind"]
+    min_w, min_h = minimum_resolution(kind)
+    if width < min_w or height < min_h:
+        log(f"{width}x{height} is below the useful minimum for this model "
+            f"({min_w}x{min_h}) — raising it. Below that it produces smears "
+            "rather than a picture, however many frames you ask for.")
+        width, height = max(width, min_w), max(height, min_h)
+
+    frames = max_frames_for(width, height)
     _auto_defaults = (width, height, frames)
     return _auto_defaults
 

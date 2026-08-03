@@ -586,3 +586,40 @@ test('the frame count sent to the provider matches the plan on a single pass', a
     providers.generate = original;
   }
 });
+
+test('the last frame of a finished clip is served as a data URL', { skip: !hasFfmpeg }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-lastframe-'));
+  const clip = fs.readFileSync(makeClip(dir, 'src.mp4', 1, 'red'));
+
+  const original = providers.generate;
+  providers.generate = async () => clip;
+
+  try {
+    await withServer(testConfig(), async (base) => {
+      const { id } = await (await fetch(`${base}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: 'a doorway' }),
+      })).json();
+      await waitFor(base, id);
+
+      const res = await fetch(`${base}/api/jobs/${id}/last-frame`);
+      assert.strictEqual(res.status, 200);
+      const { image } = await res.json();
+      assert.match(image, /^data:image\/png;base64,/);
+
+      // Must be a real PNG, usable directly as a start frame.
+      const bytes = Buffer.from(image.split(',')[1], 'base64');
+      assert.deepStrictEqual([...bytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+    });
+  } finally {
+    providers.generate = original;
+  }
+});
+
+test('asking for the last frame of an unknown job is a 404', async () => {
+  await withServer(testConfig(), async (base) => {
+    const id = '00000000-0000-4000-8000-000000000000';
+    assert.strictEqual((await fetch(`${base}/api/jobs/${id}/last-frame`)).status, 404);
+  });
+});

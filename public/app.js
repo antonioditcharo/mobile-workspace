@@ -461,6 +461,9 @@ function jobCard(job) {
     actions.push(`<button class="link" data-cancel="${job.id}">cancel</button>`);
   }
   actions.push(`<button class="link" data-reuse="${job.id}">reuse prompt</button>`);
+  if (job.status === 'done') {
+    actions.push(`<button class="link" data-continue="${job.id}">continue from this</button>`);
+  }
   actions.push(`<button class="link danger" data-delete="${job.id}">delete</button>`);
 
   return `
@@ -666,6 +669,38 @@ function wireEvents() {
     const cancelBtn = e.target.closest('[data-cancel]');
     if (cancelBtn) {
       api(`/api/jobs/${cancelBtn.dataset.cancel}`, { method: 'DELETE' }).then(refreshJobs);
+      return;
+    }
+
+    // Continue the shot: take this clip's final frame as the next one's start.
+    const continueBtn = e.target.closest('[data-continue]');
+    if (continueBtn) {
+      const id = continueBtn.dataset.continue;
+      const job = state.jobs?.find((j) => j.id === id);
+      continueBtn.textContent = 'loading frame…';
+
+      api(`/api/jobs/${id}/last-frame`).then((data) => {
+        state.initImage = data.image;
+
+        const note = $('init-image-note');
+        note.textContent = 'Start frame taken from the previous clip. Adjust the '
+          + 'description for what happens next, then generate.';
+        note.classList.remove('hidden');
+
+        // Reuse the subject so the continuation stays in the same scene.
+        if (job?.subject && !$('subject').value.trim()) {
+          $('subject').value = job.subject;
+          compile();
+        }
+
+        // Make sure the advanced panel is open so the start frame is visible.
+        document.querySelector('.advanced').open = true;
+        continueBtn.textContent = 'continue from this';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }).catch((err) => {
+        continueBtn.textContent = 'continue from this';
+        showError(err.message);
+      });
       return;
     }
 
