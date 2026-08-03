@@ -305,6 +305,31 @@ def defaults_for_vram(vram):
     return 832, 480, 81
 
 
+def frame_budget(vram):
+    """
+    Total pixels-times-frames the card can hold in one pass.
+
+    Memory during denoising scales with the product, not with either alone, so
+    a fixed frame cap is the wrong shape: it blocks a longer clip at a smaller
+    frame size that would fit comfortably. Derived from the tier defaults, which
+    are the known-good combinations.
+    """
+    width, height, frames = defaults_for_vram(vram)
+    return width * height * frames
+
+
+def max_frames_for(width, height, vram=None):
+    """How many frames fit at this frame size."""
+    if vram is None:
+        try:
+            import torch
+            vram = total_vram_gb(torch)
+        except Exception:
+            vram = 6.0
+    per_frame = max(1, width * height)
+    return max(9, int(frame_budget(vram) // per_frame))
+
+
 _auto_defaults = None
 
 
@@ -650,11 +675,20 @@ def generate(payload):
     num_frames = int(param("num_frames", auto_frames))
 
     # A frame count sized for a datacenter GPU will not fit a small card, and
-    # failing 20 minutes in is a poor way to find out.
-    cap = int(os.environ.get("LOCAL_MAX_FRAMES", auto_frames))
+    # failing 20 minutes in is a poor way to find out. The ceiling depends on
+    # the frame size, not just the card: memory scales with pixels x frames, so
+    # a smaller frame buys proportionally more of them.
+    override = os.environ.get("LOCAL_MAX_FRAMES")
+    cap = int(override) if override else max_frames_for(width, height)
     if num_frames > cap:
-        log(f"Capping {num_frames} frames to {cap} for the available VRAM "
-            f"(raise with LOCAL_MAX_FRAMES).")
+        seconds = cap / max(1, fps)
+        smaller = max_frames_for(320, 192)
+        log(f"Capping {num_frames} frames to {cap} — that is {seconds:.1f}s at "
+            f"{fps}fps, the most that fits at {width}x{height}.")
+        log(f"  For longer: set LOCAL_WIDTH=320 and LOCAL_HEIGHT=192 for up to "
+            f"{smaller} frames ({smaller / max(1, fps):.1f}s), or raise the")
+        log("  ceiling directly with LOCAL_MAX_FRAMES and accept the risk of "
+            "running out of memory.")
         num_frames = cap
     fps = int(param("fps", 16))
     steps = int(param("num_inference_steps", 30))
@@ -971,6 +1005,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             spec = resolve_model()
             width, height, frames = auto_defaults()
+            override = os.environ.get("LOCAL_MAX_FRAMES")
+            ceiling = int(override) if override else max_frames_for(width, height)
             self._send_json(200, {
                 "status": "error" if _pipeline_error else ("ready" if _pipeline else "idle"),
                 "model": spec["repo"],
@@ -980,9 +1016,10 @@ class Handler(BaseHTTPRequestHandler):
                 "defaults": {
                     "width": width,
                     "height": height,
-                    "num_frames": frames,
+                    "num_frames": min(frames, ceiling),
                     **suggested_params(spec),
                 },
+                "max_frames": ceiling,
                 "gpu": gpu_summary(),
                 "error": _pipeline_error,
             })

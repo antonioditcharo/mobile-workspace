@@ -212,6 +212,27 @@ function updateDurationHint() {
 
   $('duration-value').textContent = `${seconds}s`;
 
+  // A local endpoint knows its own ceiling, which depends on its GPU and the
+  // frame size — the hosted catalog cannot speak for it.
+  const local = state.localInfo;
+  if (local && local.max_frames) {
+    const fps = Number($('fps').value) || local.defaults?.fps || 16;
+    const maxSeconds = local.max_frames / fps;
+    const size = `${local.defaults?.width}x${local.defaults?.height}`;
+
+    if (seconds <= maxSeconds + 0.05) {
+      hint.textContent = `One pass on your GPU — up to ${maxSeconds.toFixed(1)}s at ${size}.`;
+      hint.className = 'hint';
+    } else {
+      hint.innerHTML = `<span class="warn-text">Your GPU tops out at `
+        + `${maxSeconds.toFixed(1)}s at ${size}</span>, so this will come back shorter. `
+        + 'A smaller frame buys more time: restart the GPU server with '
+        + '<code>LOCAL_WIDTH=320 LOCAL_HEIGHT=192</code> for roughly '
+        + `${(local.max_frames * (local.defaults.width * local.defaults.height) / (320 * 192) / fps).toFixed(1)}s.`;
+    }
+    return;
+  }
+
   if (!model) {
     hint.textContent = 'Custom model — length is passed through as requested.';
     return;

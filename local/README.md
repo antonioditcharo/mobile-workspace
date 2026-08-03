@@ -93,6 +93,7 @@ finds it inside `.venv` automatically.
 | --- | --- |
 | `run-animatediff.bat` | AnimateDiff — lightest, runs anywhere |
 | `run-wan.bat` | Wan 2.1 T2V 1.3B — best small-model realism |
+| `run-wan-long.bat` | Wan at 320x192 — smaller picture, roughly 5s instead of 2s |
 
 Or pass the name as an argument: `start-local-gpu.bat ltx`. Setting
 `LOCAL_MODEL` before launching still works too.
@@ -130,20 +131,34 @@ Set these before running the `.bat`, or edit them into it:
 | `LOCAL_DTYPE` | `auto` | Precision. Auto picks `float16` on cards without hardware `bfloat16` (Turing and older) |
 | `LOCAL_PRELOAD` | off | Set to `1` to load the model at startup instead of on first request |
 
-## What your card can do
+## Length is traded against frame size
 
-Frame size drives memory use more sharply than anything else, so the server
-picks a default from the card it finds:
+Memory during generation scales with **pixels multiplied by frames**, not with
+either alone. So a card does not have a fixed clip length — it has a budget, and
+you choose how to spend it. On a 4 GB card that budget is about 5 million
+pixel-frames:
 
-| VRAM | Default frame | Frame ceiling |
+| Frame size | Frames that fit | Length at 16fps |
 | --- | --- | --- |
-| under 5 GB | 480×320 | 33 |
-| 5–7 GB | 640×384 | 49 |
-| 7–11 GB | 832×480 | 49 |
-| 11 GB+ | 832×480 | 81 |
+| 480×320 *(default)* | 33 | 2.1s |
+| 384×256 | 51 | 3.2s |
+| 320×192 | 82 | 5.1s |
+| 256×160 | 123 | 7.7s |
 
-Override with `LOCAL_WIDTH`, `LOCAL_HEIGHT`, and `LOCAL_MAX_FRAMES`. Requests
-above the ceiling are capped rather than left to fail twenty minutes in.
+Set `LOCAL_WIDTH` and `LOCAL_HEIGHT` to move along that curve, or double-click
+`run-wan-long.bat` for the 320×192 row. The server reports its current ceiling
+to RealFrame, so the length slider tells you what you can actually get.
+
+`LOCAL_MAX_FRAMES` overrides the ceiling if you want to push past it and risk
+running out of memory.
+
+Starting frame sizes by card, when you do not set them:
+
+| VRAM | Default frame |
+| --- | --- |
+| under 5 GB | 480×320 |
+| 5–7 GB | 640×384 |
+| 7 GB+ | 832×480 |
 
 - **Roughly 3–10 minutes** for a 3-second clip on a 6 GB card, longer on 4 GB
   where more of the model is shuffled to system RAM. `ltx` is faster.
