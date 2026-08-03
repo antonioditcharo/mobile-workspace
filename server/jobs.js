@@ -165,13 +165,19 @@ class JobQueue extends EventEmitter {
     this.emit('update', job);
 
     // Chained jobs need proportionally longer before the timeout bites.
+    // A configured 0 means no deadline at all; the job then runs until it
+    // finishes, fails, or is cancelled from the UI.
     const segmentCount = job.plan?.segments || 1;
-    const timeout = this.config.jobTimeoutMs * Math.max(1, segmentCount);
+    const timeout = this.config.jobTimeoutMs > 0
+      ? this.config.jobTimeoutMs * Math.max(1, segmentCount)
+      : 0;
     job.timedOut = false;
-    const timer = setTimeout(() => {
-      job.timedOut = true;
-      job.controller.abort();
-    }, timeout);
+    const timer = timeout > 0
+      ? setTimeout(() => {
+        job.timedOut = true;
+        job.controller.abort();
+      }, timeout)
+      : null;
 
     const scratch = [];
 

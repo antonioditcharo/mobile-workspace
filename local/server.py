@@ -53,20 +53,65 @@ def check_python_version():
         return False
     return True
 
+# `ram_gb` is the rough system-memory footprint while loading, which on Windows
+# has to be backed by the page file. It is the number that decides whether a
+# machine can run a model at all — more often the blocker than VRAM.
 MODELS = {
+    "animatediff": {
+        "repo": "emilianJR/epiCRealism",
+        "adapter": "guoyww/animatediff-motion-adapter-v1-5-2",
+        "kind": "animatediff",
+        "vram_gb": 4,
+        "ram_gb": 6,
+        "download_gb": 4,
+        "note": "Lightest text-to-video. Runs where the others cannot.",
+    },
+    "svd": {
+        "repo": "stabilityai/stable-video-diffusion-img2vid-xt",
+        "kind": "svd",
+        "vram_gb": 4,
+        "ram_gb": 8,
+        "download_gb": 5,
+        "note": "Image-to-video only. No text encoder, so a small download.",
+    },
     "wan-1.3b": {
         "repo": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
         "kind": "wan",
         "vram_gb": 6,
-        "note": "Best small-model realism. ~5GB download.",
+        "ram_gb": 32,
+        "download_gb": 28,
+        "note": "Best small-model realism. Needs a large page file.",
     },
     "ltx": {
         "repo": "Lightricks/LTX-Video",
         "kind": "ltx",
         "vram_gb": 6,
-        "note": "Several times faster, softer detail. ~9GB download.",
+        "ram_gb": 24,
+        "download_gb": 19,
+        "note": "Faster than Wan, softer detail. Also needs a large page file.",
     },
 }
+
+PAGEFILE_HELP = """
+  Windows ran out of virtual memory while loading the model (os error 1455).
+  This is the page file, not your graphics card - raising any timeout will
+  not help.
+
+  Two ways forward:
+
+  1. Use a lighter model. Restart with:
+         set LOCAL_MODEL=animatediff
+         start-local-gpu.bat
+     It needs about 6 GB instead of 32, and downloads 4 GB instead of 28.
+
+  2. Or enlarge the Windows page file, then retry this model:
+       - Press Windows key, type "Advanced system settings", open it
+       - Performance -> Settings -> Advanced -> Virtual memory -> Change
+       - Untick "Automatically manage paging file size"
+       - Select your C: drive, choose "Custom size"
+       - Initial size: 8192      Maximum size: 65536
+       - Set -> OK -> restart the computer
+"""
 
 _pipeline = None
 _pipeline_i2v = None
@@ -106,8 +151,35 @@ def adopt_hf_token():
     return False
 
 
+def total_ram_gb():
+    """System memory, or 0 if it cannot be determined."""
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024 ** 3)
+    except Exception:
+        pass
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 ** 3)
+    except (ValueError, OSError, AttributeError):
+        return 0
+
+
+def default_model_name():
+    """
+    Pick a model the machine can actually load.
+
+    Wan and LTX carry an 11 GB text encoder, and loading it on Windows needs
+    that much virtual memory. On a machine without it the load dies with a
+    paging-file error after a 28 GB download — an expensive way to find out.
+    """
+    ram = total_ram_gb()
+    if ram and ram < 16:
+        return "animatediff"
+    return "wan-1.3b"
+
+
 def resolve_model():
-    name = os.environ.get("LOCAL_MODEL", "wan-1.3b").strip()
+    name = os.environ.get("LOCAL_MODEL", "").strip() or default_model_name()
     if name in MODELS:
         return MODELS[name]
     # Anything else is treated as a raw diffusers repo id.
@@ -212,15 +284,49 @@ def load_pipeline():
         w, h, f = defaults_for_vram(vram)
         log(f"Low VRAM — defaulting to {w}x{h} at up to {f} frames.")
         log("Anything larger will run out of memory. Expect slow generation.")
+    ram = total_ram_gb()
     log(f"Model: {spec['repo']}")
     log(f"Precision: {str(dtype).replace('torch.', '')}")
     log(f"Authenticated Hub downloads: {'yes' if os.environ.get('HF_TOKEN') else 'no (slower, rate limited)'}")
-    log("Loading. The first run downloads the full repository — for Wan that is")
-    log("roughly 28 GB, most of it the text encoder, and it can take 20-40")
-    log("minutes. Progress appears below. Nothing is stuck.")
+
+    needed = spec.get("ram_gb", 0)
+    if ram and needed and ram < needed:
+        log(f"System RAM {ram:.0f} GB, this model wants about {needed} GB while")
+        log("loading. Windows can cover the gap from the page file, but the")
+        log("default page file is usually too small. If this fails with error")
+        log("1455, use LOCAL_MODEL=animatediff or enlarge the page file.")
+
+    size = spec.get("download_gb")
+    if size:
+        log(f"Loading. First run downloads about {size} GB. Progress appears below.")
+        log("Nothing is stuck.")
 
     try:
-        if spec["kind"] == "wan":
+        if spec["kind"] == "animatediff":
+            from diffusers import AnimateDiffPipeline, DDIMScheduler, MotionAdapter
+
+            adapter = MotionAdapter.from_pretrained(spec["adapter"], torch_dtype=dtype)
+            pipe = AnimateDiffPipeline.from_pretrained(
+                spec["repo"],
+                motion_adapter=adapter,
+                torch_dtype=dtype,
+                low_cpu_mem_usage=True,
+            )
+            pipe.scheduler = DDIMScheduler.from_pretrained(
+                spec["repo"],
+                subfolder="scheduler",
+                clip_sample=False,
+                timestep_spacing="linspace",
+                beta_schedule="linear",
+                steps_offset=1,
+            )
+        elif spec["kind"] == "svd":
+            from diffusers import StableVideoDiffusionPipeline
+
+            pipe = StableVideoDiffusionPipeline.from_pretrained(
+                spec["repo"], torch_dtype=dtype, variant="fp16", low_cpu_mem_usage=True
+            )
+        elif spec["kind"] == "wan":
             from diffusers import AutoencoderKLWan, WanPipeline
 
             # Wan's VAE is unstable in fp16; keep it in fp32 while the
@@ -228,14 +334,29 @@ def load_pipeline():
             vae = AutoencoderKLWan.from_pretrained(
                 spec["repo"], subfolder="vae", torch_dtype=torch.float32
             )
-            pipe = WanPipeline.from_pretrained(spec["repo"], vae=vae, torch_dtype=dtype)
+            pipe = WanPipeline.from_pretrained(
+                spec["repo"], vae=vae, torch_dtype=dtype, low_cpu_mem_usage=True
+            )
         else:
             from diffusers import LTXPipeline
 
-            pipe = LTXPipeline.from_pretrained(spec["repo"], torch_dtype=dtype)
+            pipe = LTXPipeline.from_pretrained(
+                spec["repo"], torch_dtype=dtype, low_cpu_mem_usage=True
+            )
     except Exception as exc:
-        _pipeline_error = f"Could not load {spec['repo']}: {exc}"
-        traceback.print_exc()
+        # Windows error 1455 is virtual memory exhaustion, which reads as an
+        # inscrutable OSError but has a specific fix.
+        if "1455" in str(exc) or "paging file" in str(exc).lower():
+            _pipeline_error = (
+                f"Not enough Windows virtual memory to load {spec['repo']} "
+                f"(needs roughly {spec.get('ram_gb', 32)} GB). "
+                "Use LOCAL_MODEL=animatediff, or enlarge the page file — the "
+                "server window prints the steps."
+            )
+            print(PAGEFILE_HELP, flush=True)
+        else:
+            _pipeline_error = f"Could not load {spec['repo']}: {exc}"
+            traceback.print_exc()
         return None
 
     # Offloading trades speed for VRAM. Sequential is the aggressive setting
@@ -297,11 +418,13 @@ def load_i2v_pipeline():
         return _pipeline_i2v
 
     spec = resolve_model()
+    if spec["kind"] == "svd":
+        return load_pipeline()  # already image-to-video
     if spec["kind"] != "ltx":
         raise RuntimeError(
-            "This model is text-to-video only, so it cannot continue from a frame. "
-            "Long clips and start frames need an image-to-video model — restart with "
-            "LOCAL_MODEL=ltx."
+            "This model cannot continue from a frame. Start frames and long "
+            "chained clips need an image-to-video model — restart with "
+            "LOCAL_MODEL=ltx, or LOCAL_MODEL=svd on a memory-constrained machine."
         )
 
     import torch
@@ -408,7 +531,38 @@ def generate(payload):
     if generator is not None:
         kwargs["generator"] = generator
 
-    if start_image is not None:
+    spec = resolve_model()
+
+    if spec["kind"] == "svd":
+        # SVD has no text encoder at all — it animates a still and takes a
+        # different argument set.
+        if start_image is None:
+            raise ValueError(
+                "Stable Video Diffusion is image-to-video only. Upload a start "
+                "frame under Model & parameters, or switch to "
+                "LOCAL_MODEL=animatediff for text-to-video."
+            )
+        kwargs = dict(
+            image=start_image.resize((width, height)),
+            num_frames=min(num_frames, 25),
+            num_inference_steps=steps,
+            decode_chunk_size=2,
+        )
+        if generator is not None:
+            kwargs["generator"] = generator
+        log(f"Animating a still: {kwargs['num_frames']}f {width}x{height}")
+
+    elif spec["kind"] == "animatediff":
+        # Built on Stable Diffusion 1.5, so it works in that resolution range
+        # and tops out around 32 frames.
+        kwargs["num_frames"] = min(num_frames, 32)
+        kwargs["height"] = min(height, 512)
+        kwargs["width"] = min(width, 512)
+        if start_image is not None:
+            log("AnimateDiff ignores start frames; generating from the prompt.")
+        log(f"Generating: {kwargs['num_frames']}f {kwargs['width']}x{kwargs['height']} steps={steps}")
+
+    elif start_image is not None:
         pipe = load_i2v_pipeline()
         kwargs["image"] = start_image.resize((width, height))
         log(f"Continuing from a start frame: {num_frames}f {width}x{height} steps={steps}")

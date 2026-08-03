@@ -50,7 +50,10 @@ function loadConfig() {
     // Generous by default: the first local run downloads tens of gigabytes of
     // weights before it generates anything, and a small GPU is slow after
     // that. A ceiling that fits a hosted request would cancel it mid-download.
-    jobTimeoutMs: Number(env.JOB_TIMEOUT_MS) || 60 * 60 * 1000,
+    // JOB_TIMEOUT_MS=0 removes the limit entirely — cancel by hand instead.
+    jobTimeoutMs: env.JOB_TIMEOUT_MS !== undefined && env.JOB_TIMEOUT_MS !== ''
+      ? Number(env.JOB_TIMEOUT_MS)
+      : 60 * 60 * 1000,
     retainJobs: Number(env.RETAIN_JOBS) || 100,
   };
 }

@@ -374,6 +374,54 @@ test('clear removes finished renders but leaves running ones', async () => {
   }
 });
 
+test('JOB_TIMEOUT_MS=0 removes the deadline entirely', async () => {
+  const { loadConfig } = require('../server/config');
+  const previous = process.env.JOB_TIMEOUT_MS;
+
+  try {
+    process.env.JOB_TIMEOUT_MS = '0';
+    assert.strictEqual(loadConfig().jobTimeoutMs, 0);
+
+    // A job under a zero timeout must not be aborted on its own.
+    const original = providers.generate;
+    let sawAbort = false;
+    providers.generate = (job, config, { signal }) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => { sawAbort = true; });
+      setTimeout(() => resolve(Buffer.from('slow-but-finished')), 400);
+    });
+
+    try {
+      await withServer(testConfig({ jobTimeoutMs: 0 }), async (base) => {
+        const { id } = await (await fetch(`${base}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subject: 'a long slow shot' }),
+        })).json();
+
+        const job = await waitFor(base, id);
+        assert.strictEqual(job.status, 'done');
+        assert.strictEqual(sawAbort, false, 'no timeout should have fired');
+      });
+    } finally {
+      providers.generate = original;
+    }
+  } finally {
+    if (previous === undefined) delete process.env.JOB_TIMEOUT_MS;
+    else process.env.JOB_TIMEOUT_MS = previous;
+  }
+});
+
+test('an unset JOB_TIMEOUT_MS still gets the default hour', () => {
+  const { loadConfig } = require('../server/config');
+  const previous = process.env.JOB_TIMEOUT_MS;
+  delete process.env.JOB_TIMEOUT_MS;
+  try {
+    assert.strictEqual(loadConfig().jobTimeoutMs, 3600000);
+  } finally {
+    if (previous !== undefined) process.env.JOB_TIMEOUT_MS = previous;
+  }
+});
+
 test('deleting an unknown job is a 404', async () => {
   await withServer(testConfig(), async (base) => {
     const res = await fetch(`${base}/api/jobs/does-not-exist`, { method: 'DELETE' });

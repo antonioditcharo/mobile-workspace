@@ -8,11 +8,13 @@ models, but it runs as often as you like.
 
 - **An NVIDIA graphics card.** 4 GB of VRAM is the practical minimum; 6 GB or
   more is comfortable. AMD and Intel graphics won't work with this setup.
-- **~50 GB of free disk space.** The libraries are ~8 GB and the Wan repository
-  is roughly 28 GB — most of that is the text encoder, not the video model.
-- **Patience on the first run.** That download takes 20-40 minutes on a normal
-  connection, and it happens before the first frame is generated. It is a
-  one-time cost; later runs start in seconds.
+- **System RAM matters more than you would expect.** Under 16 GB, use the
+  lighter models — see the table below. This is the most common reason a local
+  setup fails.
+- **Disk space:** ~8 GB for the libraries, plus the model — 4 GB for
+  `animatediff`, 28 GB for `wan-1.3b`.
+- **Patience on the first run.** The model downloads before the first frame is
+  generated. It is a one-time cost; later runs start in seconds.
 
 Check your card: **Ctrl+Shift+Esc** → **Performance** → **GPU**.
 
@@ -72,8 +74,8 @@ itself stays entirely local either way.
 ## Long clips locally
 
 RealFrame builds anything past ~5 seconds by chaining segments, which means each
-continuation needs an **image-to-video** pipeline. Of the two models here only
-`ltx` has one, so long clips locally require:
+continuation needs an **image-to-video** pipeline. `ltx` and `svd` have one;
+`wan-1.3b` and `animatediff` do not. For long clips locally:
 
 ```
 set LOCAL_MODEL=ltx
@@ -88,13 +90,18 @@ finds it inside `.venv` automatically.
 
 Set `LOCAL_MODEL` before starting to switch.
 
-| Value | Model | Download | Character |
-| --- | --- | --- | --- |
-| `wan-1.3b` *(default)* | Wan 2.1 T2V 1.3B | ~28 GB | Best small-model realism and motion |
-| `ltx` | LTX-Video | ~19 GB | Several times faster, softer detail |
+| Value | Type | Download | RAM to load | Character |
+| --- | --- | --- | --- | --- |
+| `animatediff` | text-to-video | ~4 GB | ~6 GB | Lightest. Runs where the others cannot |
+| `svd` | image-to-video | ~5 GB | ~8 GB | Animates a still. No text encoder |
+| `wan-1.3b` | text-to-video | ~28 GB | ~32 GB | Best small-model realism and motion |
+| `ltx` | text-to-video | ~19 GB | ~24 GB | Faster than Wan, softer detail |
 
-Both figures are the whole repository. The video model itself is small; the
-text encoder is the bulk of it.
+**The RAM column is what decides whether a model loads at all** — more often
+the blocker than VRAM. Wan and LTX carry an 11 GB text encoder; that is nearly
+all of their size, and Windows must be able to map it. With under 16 GB of
+system RAM the server defaults to `animatediff` rather than failing after a
+28 GB download.
 
 Any diffusers-compatible repo id also works, at your own risk of a shape
 mismatch.
@@ -105,7 +112,7 @@ Set these before running the `.bat`, or edit them into it:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LOCAL_MODEL` | `wan-1.3b` | Which model to run |
+| `LOCAL_MODEL` | from RAM | Which model to run; `animatediff` under 16 GB RAM, else `wan-1.3b` |
 | `LOCAL_PORT` | `8000` | Server port |
 | `LOCAL_WIDTH` / `LOCAL_HEIGHT` | from VRAM | Frame size — lower these if you run out of memory |
 | `LOCAL_OFFLOAD` | `auto` | `sequential` (least VRAM), `model` (balanced), `none` (fastest) |
@@ -139,6 +146,24 @@ above the ceiling are capped rather than left to fail twenty minutes in.
   with hardware acceleration eat into the same VRAM.
 
 ## When it goes wrong
+
+**"The paging file is too small for this operation" (os error 1455)** — Windows
+ran out of virtual memory while loading. This is not the GPU and not a timeout.
+Either switch to a lighter model:
+
+```
+set LOCAL_MODEL=animatediff
+start-local-gpu.bat
+```
+
+or enlarge the page file and retry the heavy one:
+
+1. Press the Windows key, type **Advanced system settings**, open it
+2. **Performance → Settings → Advanced → Virtual memory → Change**
+3. Untick **Automatically manage paging file size**
+4. Select **C:**, choose **Custom size**
+5. Initial size `8192`, Maximum size `65536`
+6. **Set → OK**, then restart the computer
 
 **"Out of VRAM"** — lower the frame count in RealFrame, or start the server with
 a smaller frame:
