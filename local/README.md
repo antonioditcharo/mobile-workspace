@@ -78,8 +78,7 @@ continuation needs an **image-to-video** pipeline. `ltx` and `svd` have one;
 `wan-1.3b` and `animatediff` do not. For long clips locally:
 
 ```
-set LOCAL_MODEL=ltx
-start-local-gpu.bat
+start-local-gpu.bat ltx
 ```
 
 With `wan-1.3b` loaded, a chained request fails with a message saying exactly
@@ -88,7 +87,18 @@ finds it inside `.venv` automatically.
 
 ## Models
 
-Set `LOCAL_MODEL` before starting to switch.
+**To switch models, double-click one of these:**
+
+| File | Model |
+| --- | --- |
+| `run-animatediff.bat` | AnimateDiff — lightest, runs anywhere |
+| `run-wan.bat` | Wan 2.1 T2V 1.3B — best small-model realism |
+
+Or pass the name as an argument: `start-local-gpu.bat ltx`. Setting
+`LOCAL_MODEL` before launching still works too.
+
+After switching, click **Check availability** in RealFrame once — it reads the
+running model from the server and sets the parameters that suit it.
 
 | Value | Type | Download | RAM to load | Character |
 | --- | --- | --- | --- | --- |
@@ -206,8 +216,7 @@ ran out of virtual memory while loading. This is not the GPU and not a timeout.
 Either switch to a lighter model:
 
 ```
-set LOCAL_MODEL=animatediff
-start-local-gpu.bat
+run-animatediff.bat
 ```
 
 or enlarge the page file and retry the heavy one:

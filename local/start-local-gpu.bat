@@ -9,9 +9,16 @@ REM ===================================================================
 setlocal
 cd /d "%~dp0"
 
+REM An optional first argument selects the model, so switching does not mean
+REM typing an interpreter path:
+REM     start-local-gpu.bat wan-1.3b
+if not "%~1"=="" set "LOCAL_MODEL=%~1"
+
 echo.
 echo   RealFrame local GPU setup
 echo   =========================
+echo.
+if not "%LOCAL_MODEL%"=="" echo   Model: %LOCAL_MODEL%
 echo.
 
 REM ===================================================================
