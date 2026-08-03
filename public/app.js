@@ -142,6 +142,31 @@ function updatePresetSummary() {
   $('preset-summary').textContent = preset ? `${preset.summary} — ${preset.camera}.` : '';
 }
 
+/**
+ * Adopt the parameters a local endpoint reports for whatever it loaded.
+ * Without this the fields carry defaults for the hosted model named in the
+ * dropdown, which is a different architecture entirely — that mismatch is what
+ * sends a Wan frame count and guidance value to a Stable Diffusion model.
+ */
+function applyLocalDefaults(info) {
+  const defaults = info.defaults || {};
+  state.localInfo = info;
+
+  for (const [key, value] of Object.entries(defaults)) {
+    const input = $(key);
+    if (input && value != null) {
+      input.value = value;
+      delete input.dataset.touched;
+    }
+  }
+
+  $('model-note').textContent = `Running locally: ${info.label || info.model}. `
+    + 'The model box above is only a label on this backend.';
+
+  updateDurationHint();
+  updateQualityHint();
+}
+
 function applyModelDefaults() {
   const model = state.config.models.find((m) => m.id === $('model').value);
   $('model-note').textContent = model ? model.notes : 'Custom model id — parameters passed through as entered.';
@@ -518,7 +543,24 @@ function wireEvents() {
     out.textContent = 'Checking…';
     try {
       const model = encodeURIComponent($('model').value);
-      const info = await api(`/api/probe?model=${model}`);
+      const provider = $('provider').value;
+      const info = await api(`/api/probe?model=${model}&provider=${provider}`);
+
+      // Custom backend: the endpoint reports what it actually loaded, which
+      // has nothing to do with the model named in the box above.
+      if (info.local) {
+        if (!info.reachable) {
+          out.innerHTML = `<span class="bad">${escapeHtml(info.hint)}</span>`;
+          return;
+        }
+        applyLocalDefaults(info);
+        const bits = [info.hint];
+        if (info.offload && info.offload !== 'unknown') bits.push(`offload: ${info.offload}`);
+        out.innerHTML = `<span class="good">${escapeHtml(bits.join(' · '))}</span>`
+          + '<br>Parameters below set to suit it.';
+        return;
+      }
+
       if (!info.providers.length) {
         out.innerHTML = `<span class="bad">${escapeHtml(info.hint)}</span>`;
         return;

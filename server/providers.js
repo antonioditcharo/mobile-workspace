@@ -462,8 +462,24 @@ async function generate(job, config, opts = {}) {
   throw lastError;
 }
 
+/**
+ * Ask a custom endpoint what it is running. The local GPU server answers on
+ * /health with its model, offload mode, GPU and the parameters that suit the
+ * architecture it loaded.
+ */
+async function probeCustom(healthUrl, config, { fetchImpl = httpRequest, signal } = {}) {
+  const headers = {};
+  if (config.customAuthHeader && config.customAuthValue) {
+    headers[config.customAuthHeader] = config.customAuthValue;
+  }
+  const res = await fetchImpl(healthUrl, { headers, signal, timeoutMs: 5000 });
+  if (!res.ok) throw new ProviderError(`Health check returned HTTP ${res.status}.`);
+  return res.json();
+}
+
 module.exports = {
   generate,
+  probeCustom,
   callHuggingFace,
   callCustom,
   extractVideo,

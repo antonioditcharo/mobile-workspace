@@ -176,6 +176,40 @@ function createServer(config = loadConfig()) {
       // which can reach the Hub, and reports exactly what routing will see.
       if (pathname === '/api/probe' && req.method === 'GET') {
         const model = url.searchParams.get('model') || config.defaultModel;
+
+        // On the custom backend the hosted catalog is irrelevant — ask the
+        // endpoint itself what it is running, so the UI can show the real
+        // model and apply parameters that suit it.
+        if ((url.searchParams.get('provider') || config.provider) === 'custom') {
+          if (!config.customEndpoint) {
+            sendJson(res, 200, {
+              local: true,
+              reachable: false,
+              hint: 'PROVIDER=custom but CUSTOM_ENDPOINT is not set in .env.',
+            });
+            return;
+          }
+          const healthUrl = config.customEndpoint.replace(/\/generate\/?$/, '/health');
+          try {
+            const info = await providers.probeCustom(healthUrl, config);
+            sendJson(res, 200, {
+              local: true,
+              reachable: true,
+              ...info,
+              hint: `Local: ${info.label || info.model}`
+                + (info.gpu?.name ? ` on ${info.gpu.name} (${info.gpu.vram_gb} GB)` : ''),
+            });
+          } catch (err) {
+            sendJson(res, 200, {
+              local: true,
+              reachable: false,
+              hint: `Could not reach the local GPU server at ${healthUrl}. `
+                + `Is its window still running? (${err.message})`,
+            });
+          }
+          return;
+        }
+
         try {
           const mapping = await providers.fetchProviderMapping(model, config, { strict: true });
           sendJson(res, 200, {

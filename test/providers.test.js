@@ -451,3 +451,35 @@ test('prompts with quotes survive template substitution', async () => {
   );
   assert.strictEqual(captured.text, 'a man saying "hello" \\ goodbye');
 });
+
+/* ---------- custom endpoint health probe ---------- */
+
+test('probeCustom returns what the local server reports', async () => {
+  const { probeCustom } = require('../server/providers');
+  let seen = null;
+  const info = await probeCustom('http://localhost:8000/health', CONFIG, {
+    fetchImpl: async (url, opts) => {
+      seen = { url, headers: opts.headers };
+      return jsonResponse({
+        model: 'Wan-AI/Wan2.1-T2V-1.3B-Diffusers',
+        label: 'Wan 2.1 T2V 1.3B',
+        kind: 'wan',
+        defaults: { num_frames: 49, guidance_scale: 5.0 },
+      });
+    },
+  });
+  assert.strictEqual(seen.url, 'http://localhost:8000/health');
+  assert.strictEqual(seen.headers.Authorization, 'Bearer local');
+  assert.strictEqual(info.kind, 'wan');
+  assert.strictEqual(info.defaults.num_frames, 49);
+});
+
+test('probeCustom surfaces a bad health response', async () => {
+  const { probeCustom } = require('../server/providers');
+  await assert.rejects(
+    () => probeCustom('http://localhost:8000/health', CONFIG, {
+      fetchImpl: async () => mockResponse({ status: 502, contentType: 'application/json', body: '{}' }),
+    }),
+    /Health check returned HTTP 502/,
+  );
+});

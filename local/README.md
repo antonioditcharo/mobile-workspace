@@ -115,7 +115,7 @@ Set these before running the `.bat`, or edit them into it:
 | `LOCAL_MODEL` | from RAM | Which model to run; `animatediff` under 16 GB RAM, else `wan-1.3b` |
 | `LOCAL_PORT` | `8000` | Server port |
 | `LOCAL_WIDTH` / `LOCAL_HEIGHT` | from VRAM | Frame size — lower these if you run out of memory |
-| `LOCAL_OFFLOAD` | `auto` | `sequential` (least VRAM), `model` (balanced), `none` (fastest) |
+| `LOCAL_OFFLOAD` | `auto` | `none` (fastest) / `model` (balanced) / `sequential` (least VRAM). Auto picks the fastest that fits |
 | `LOCAL_MAX_FRAMES` | from VRAM | Frame ceiling; requests above it are capped |
 | `LOCAL_DTYPE` | `auto` | Precision. Auto picks `float16` on cards without hardware `bfloat16` (Turing and older) |
 | `LOCAL_PRELOAD` | off | Set to `1` to load the model at startup instead of on first request |
@@ -144,6 +144,60 @@ above the ceiling are capped rather than left to fail twenty minutes in.
 - **Keep clips short.** The frame ceiling above is roughly 2–5 seconds at 16fps.
 - **Close other GPU applications.** Games, video editors, and even a browser
   with hardware acceleration eat into the same VRAM.
+
+## Making it faster
+
+Three levers actually matter. In order of effect:
+
+**1. Offload mode — up to 4x.** Offloading moves weights between system RAM and
+the GPU so a model larger than your VRAM can still run. `sequential` does this
+for every layer of every step and is punishingly slow; `model` moves whole
+components once per step; `none` keeps everything resident. The server now
+estimates the working set and picks the fastest mode that fits, and if a
+generation runs out of memory it retries one step more conservatively rather
+than failing. Force it with `LOCAL_OFFLOAD=model`.
+
+Note the working set is much smaller than the download. Wan's 28 GB is mostly
+its text encoder, which runs once at the start and can live on the CPU; only
+the transformer and VAE — about 3.4 GB — need to be resident while denoising.
+That is why a 4 GB card can run it at all.
+
+**2. Frame size and count — roughly linear.** Cost scales with pixels times
+frames. Halving the frame area nearly halves the time. `LOCAL_WIDTH`,
+`LOCAL_HEIGHT`, and the Frames field in RealFrame.
+
+**3. Steps — exactly linear.** 30 steps takes twice as long as 15 and looks
+only somewhat better. Past ~30 the returns are very small.
+
+### Measure instead of guessing
+
+```
+http://localhost:8000/benchmark
+```
+
+Open that in a browser while the server is running. It times a deliberately
+tiny generation and reports seconds per step, the offload mode in use, an
+estimate for a full 32-step run, and specific advice. Use it to check whether a
+change helped without waiting five minutes for a full clip.
+
+Every real generation also logs its timing:
+
+```
+Done in 4.9 min (9.2s per step, offload=sequential).
+```
+
+### What will not help
+
+- **torch.compile** — long compile times and poor Windows support for the
+  Triton backend; the payoff rarely survives the setup.
+- **More system RAM** — helps a model *load*, not generate. Generation speed is
+  bounded by the GPU and the PCIe bus.
+- **Overclocking** — a few percent, against real thermal risk on a laptop.
+
+The honest ceiling: a 4 GB laptop GPU is roughly 30-50x slower than the
+datacenter cards behind hosted inference. Tuning gets you a few times faster,
+not an order of magnitude. Drafting locally and paying for a final render
+remains the pragmatic split.
 
 ## When it goes wrong
 

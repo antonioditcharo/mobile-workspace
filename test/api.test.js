@@ -13,6 +13,7 @@ function testConfig(overrides = {}) {
     host: '127.0.0.1',
     provider: 'hf',
     hfToken: 'test-token',
+    hfProvider: 'auto',
     defaultModel: 'Wan-AI/Wan2.2-T2V-A14B',
     customEndpoint: '',
     customAuthHeader: 'Authorization',
@@ -222,4 +223,56 @@ test('jobs never expose the init image or abort controller', async () => {
   } finally {
     providers.generate = original;
   }
+});
+
+test('probe against a custom backend asks the endpoint, not the Hub', async () => {
+  const providers = require('../server/providers');
+  const original = providers.probeCustom;
+  let asked = null;
+  providers.probeCustom = async (url) => {
+    asked = url;
+    return { model: 'local/model', label: 'AnimateDiff (SD 1.5)', kind: 'animatediff', defaults: { fps: 8 } };
+  };
+
+  try {
+    const config = testConfig({ provider: 'custom', customEndpoint: 'http://127.0.0.1:9/generate' });
+    await withServer(config, async (base) => {
+      const res = await fetch(`${base}/api/probe?provider=custom`);
+      const body = await res.json();
+      assert.strictEqual(body.local, true);
+      assert.strictEqual(body.reachable, true);
+      assert.strictEqual(body.label, 'AnimateDiff (SD 1.5)');
+      // The /generate path is rewritten to /health.
+      assert.strictEqual(asked, 'http://127.0.0.1:9/health');
+      assert.match(body.hint, /AnimateDiff/);
+    });
+  } finally {
+    providers.probeCustom = original;
+  }
+});
+
+test('probe reports a custom backend that is not answering', async () => {
+  const providers = require('../server/providers');
+  const original = providers.probeCustom;
+  providers.probeCustom = async () => { throw new Error('ECONNREFUSED'); };
+
+  try {
+    const config = testConfig({ provider: 'custom', customEndpoint: 'http://127.0.0.1:9/generate' });
+    await withServer(config, async (base) => {
+      const body = await (await fetch(`${base}/api/probe?provider=custom`)).json();
+      assert.strictEqual(body.reachable, false);
+      assert.match(body.hint, /Is its window still running/);
+    });
+  } finally {
+    providers.probeCustom = original;
+  }
+});
+
+test('probe on a custom backend with no endpoint configured says so', async () => {
+  const config = testConfig({ provider: 'custom', customEndpoint: '' });
+  await withServer(config, async (base) => {
+    const body = await (await fetch(`${base}/api/probe?provider=custom`)).json();
+    assert.strictEqual(body.reachable, false);
+    assert.match(body.hint, /CUSTOM_ENDPOINT is not set/);
+  });
 });

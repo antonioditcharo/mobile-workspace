@@ -117,6 +117,7 @@ PAGEFILE_HELP = """
 _pipeline = None
 _pipeline_i2v = None
 _pipeline_error = None
+_offload_mode = "unknown"
 
 
 def log(msg):
@@ -219,6 +220,42 @@ def pick_dtype(torch, kind=None):
     except Exception:
         pass
     return torch.float16
+
+
+# Approximate size of the components that must be resident during a denoising
+# step — the transformer/UNet plus the VAE. The text encoder is excluded: it
+# runs once at the start and can sit on the CPU without costing throughput.
+WORKING_SET_GB = {
+    "animatediff": 2.2,
+    "svd": 3.0,
+    "wan": 3.4,
+    "ltx": 4.4,
+}
+
+
+def estimate_working_set(spec, dtype):
+    base = WORKING_SET_GB.get(spec["kind"], 3.5)
+    # float32 doubles the resident weights.
+    return base * 2 if "float32" in str(dtype) else base
+
+
+def free_vram_gb(torch):
+    try:
+        free, _total = torch.cuda.mem_get_info()
+        return free / (1024 ** 3)
+    except Exception:
+        return 0
+
+
+def release_vram():
+    """Hand memory back between runs so the next one starts from a clean slate."""
+    try:
+        import gc
+        import torch
+        gc.collect()
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def looks_degenerate(frames):
@@ -391,25 +428,38 @@ def load_pipeline():
             traceback.print_exc()
         return None
 
-    # Offloading trades speed for VRAM. Sequential is the aggressive setting
-    # that makes 6 GB cards viable at all.
+    # Offloading trades speed for VRAM, and the gap is large: sequential moves
+    # weights across the PCIe bus for every single layer of every step, and
+    # commonly runs 2-4x slower than model offload, which moves whole
+    # components once per step. Pick the fastest mode the card can hold rather
+    # than defaulting to the safest.
     offload = os.environ.get("LOCAL_OFFLOAD", "auto").lower()
     if offload == "auto":
-        offload = "sequential" if vram and vram < 10 else "model"
+        working = estimate_working_set(spec, dtype)
+        if vram and vram >= working * 2.2:
+            offload = "none"
+        elif vram and vram >= working * 1.25:
+            offload = "model"
+        else:
+            offload = "sequential"
+        log(f"Offload chosen from {vram:.1f} GB VRAM vs ~{working:.1f} GB working set.")
 
+    global _offload_mode
     try:
         if offload == "sequential":
             pipe.enable_sequential_cpu_offload()
-            log("Offload: sequential (low VRAM, slower)")
+            log("Offload: sequential (least VRAM, slowest)")
         elif offload == "model":
             pipe.enable_model_cpu_offload()
-            log("Offload: model (balanced)")
+            log("Offload: model (balanced - usually 2-4x faster than sequential)")
         else:
             pipe.to("cuda")
-            log("Offload: none (fastest, needs the most VRAM)")
+            log("Offload: none (fastest, whole model resident)")
+        _offload_mode = offload
     except Exception as exc:
         log(f"Offload setup failed ({exc}); falling back to model offload.")
         pipe.enable_model_cpu_offload()
+        _offload_mode = "model"
 
     # Slicing keeps the VAE decode from spiking memory at the end of a run,
     # which is where low-VRAM cards usually fail. It is free of artifacts.
@@ -701,6 +751,21 @@ def generate(payload):
 
         log(f"Generating: {kwargs['num_frames']}f {kwargs['width']}x{kwargs['height']} steps={steps}")
 
+    elif spec["kind"] == "wan":
+        # Wan wants dimensions on a multiple of 16 and a 4n+1 frame count; it
+        # errors rather than rounding. Guidance around 5 is its trained range,
+        # which is also what RealFrame sends by default.
+        kwargs["width"] = (width // 16) * 16
+        kwargs["height"] = (height // 16) * 16
+        if (kwargs["width"], kwargs["height"]) != (width, height):
+            log(f"Rounded to {kwargs['width']}x{kwargs['height']} (Wan needs multiples of 16).")
+
+        if start_image is not None:
+            pipe = load_i2v_pipeline()
+            kwargs["image"] = start_image.resize((kwargs["width"], kwargs["height"]))
+        log(f"Generating: {num_frames}f {kwargs['width']}x{kwargs['height']} "
+            f"steps={steps} cfg={guidance}")
+
     elif start_image is not None:
         pipe = load_i2v_pipeline()
         kwargs["image"] = start_image.resize((width, height))
@@ -708,15 +773,50 @@ def generate(payload):
     else:
         log(f"Generating: {num_frames}f {width}x{height} steps={steps} cfg={guidance}")
 
+    import time
+    started = time.time()
+
     try:
         result = pipe(**kwargs)
     except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        raise RuntimeError(
-            f"Out of VRAM at {width}x{height} with {num_frames} frames. "
-            "Lower the frame count in RealFrame, or set LOCAL_WIDTH=640 and "
-            "LOCAL_HEIGHT=384 before starting this server."
-        )
+        release_vram()
+
+        # An aggressive offload mode is worth retrying more conservatively
+        # rather than failing outright — the user has already waited.
+        global _offload_mode
+        if _offload_mode in ("none", "model"):
+            fallback = "model" if _offload_mode == "none" else "sequential"
+            log(f"Out of VRAM with '{_offload_mode}' offload. Retrying with "
+                f"'{fallback}', which is slower but fits.")
+            try:
+                if fallback == "model":
+                    pipe.enable_model_cpu_offload()
+                else:
+                    pipe.enable_sequential_cpu_offload()
+                _offload_mode = fallback
+                result = pipe(**kwargs)
+            except torch.cuda.OutOfMemoryError:
+                release_vram()
+                raise RuntimeError(
+                    f"Out of VRAM at {kwargs.get('width', width)}x"
+                    f"{kwargs.get('height', height)} with "
+                    f"{kwargs.get('num_frames', num_frames)} frames, even with "
+                    "full offloading. Lower the frame count in RealFrame, or set "
+                    "LOCAL_WIDTH=384 and LOCAL_HEIGHT=256 before starting this server."
+                )
+        else:
+            raise RuntimeError(
+                f"Out of VRAM at {kwargs.get('width', width)}x"
+                f"{kwargs.get('height', height)} with "
+                f"{kwargs.get('num_frames', num_frames)} frames. "
+                "Lower the frame count in RealFrame, or set LOCAL_WIDTH=384 and "
+                "LOCAL_HEIGHT=256 before starting this server."
+            )
+
+    elapsed = time.time() - started
+    per_step = elapsed / max(1, kwargs.get("num_inference_steps", steps))
+    log(f"Done in {elapsed / 60:.1f} min ({per_step:.1f}s per step, "
+        f"offload={_offload_mode}).")
 
     frames = result.frames[0]
 
@@ -741,7 +841,118 @@ def generate(payload):
             log("  raise Steps in RealFrame, or lower Guidance to 3-4.")
         log("")
 
-    return export_video(frames, fps)
+    video = export_video(frames, fps)
+    release_vram()
+    return video
+
+
+MODEL_LABELS = {
+    "animatediff": "AnimateDiff (SD 1.5)",
+    "svd": "Stable Video Diffusion",
+    "wan": "Wan 2.1 T2V 1.3B",
+    "ltx": "LTX-Video",
+}
+
+# Parameters each architecture actually wants. RealFrame sends defaults for
+# whichever model is named in its dropdown, which is unrelated to what is
+# loaded here, so the app asks for these over /health and applies them.
+SUGGESTED = {
+    "animatediff": {"num_inference_steps": 32, "guidance_scale": 7.5, "fps": 8, "num_frames": 16},
+    "svd": {"num_inference_steps": 25, "guidance_scale": 3.0, "fps": 7, "num_frames": 25},
+    "wan": {"num_inference_steps": 30, "guidance_scale": 5.0, "fps": 16},
+    "ltx": {"num_inference_steps": 30, "guidance_scale": 3.0, "fps": 24},
+}
+
+
+def model_label(spec):
+    return MODEL_LABELS.get(spec["kind"], spec["repo"])
+
+
+def suggested_params(spec):
+    return dict(SUGGESTED.get(spec["kind"], {}))
+
+
+def gpu_summary():
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return {"name": "none", "vram_gb": 0}
+        props = torch.cuda.get_device_properties(0)
+        return {
+            "name": props.name,
+            "vram_gb": round(props.total_memory / (1024 ** 3), 1),
+            "free_gb": round(free_vram_gb(torch), 1),
+        }
+    except Exception:
+        return {"name": "unknown", "vram_gb": 0}
+
+
+def run_benchmark():
+    """
+    Time a deliberately tiny generation and report throughput.
+
+    Useful because the levers that matter — offload mode, precision, frame
+    size — are invisible from the outside, and a full clip takes minutes to
+    tell you whether a change helped.
+    """
+    import time
+
+    pipe = load_pipeline()
+    if pipe is None:
+        raise RuntimeError(_pipeline_error or "Pipeline unavailable.")
+
+    spec = resolve_model()
+    width, height, _frames = auto_defaults()
+    frames = 16 if spec["kind"] == "animatediff" else 9
+    if spec["kind"] == "animatediff":
+        width = height = 512
+
+    kwargs = dict(
+        prompt="a street at night",
+        num_frames=frames,
+        num_inference_steps=6,
+        height=height,
+        width=width,
+    )
+    if spec["kind"] == "svd":
+        raise RuntimeError("Benchmarking needs a text prompt; not supported for SVD.")
+
+    release_vram()
+    started = time.time()
+    pipe(**kwargs)
+    elapsed = time.time() - started
+    release_vram()
+
+    per_step = elapsed / 6
+    return {
+        "seconds_total": round(elapsed, 1),
+        "seconds_per_step": round(per_step, 2),
+        "offload": _offload_mode,
+        "frame": f"{width}x{height}",
+        "frames": frames,
+        "estimate_32_steps_min": round(per_step * 32 / 60, 1),
+        "gpu": gpu_summary(),
+        "advice": benchmark_advice(per_step),
+    }
+
+
+def benchmark_advice(per_step):
+    tips = []
+    if _offload_mode == "sequential":
+        tips.append(
+            "Running with sequential offload, the slowest mode. If generation "
+            "succeeds without out-of-memory errors, try LOCAL_OFFLOAD=model for "
+            "roughly 2-4x throughput."
+        )
+    if per_step > 6:
+        tips.append(
+            "Over 6s per step. Lower LOCAL_WIDTH/LOCAL_HEIGHT, or reduce the "
+            "frame count — both scale cost roughly linearly."
+        )
+    if per_step < 2:
+        tips.append("Headroom available; try a larger frame or more steps.")
+    tips.append("Steps trade time for detail almost linearly; 25-30 is usually enough.")
+    return tips
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -759,12 +970,31 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             spec = resolve_model()
+            width, height, frames = auto_defaults()
             self._send_json(200, {
                 "status": "error" if _pipeline_error else ("ready" if _pipeline else "idle"),
                 "model": spec["repo"],
+                "kind": spec["kind"],
+                "label": model_label(spec),
+                "offload": _offload_mode,
+                "defaults": {
+                    "width": width,
+                    "height": height,
+                    "num_frames": frames,
+                    **suggested_params(spec),
+                },
+                "gpu": gpu_summary(),
                 "error": _pipeline_error,
             })
             return
+
+        if self.path.startswith("/benchmark"):
+            try:
+                self._send_json(200, run_benchmark())
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+            return
+
         self._send_json(404, {"error": "Not found"})
 
     def do_POST(self):
