@@ -1,0 +1,16 @@
+# Local state - the database is yours, not the repo's
+data/*.db
+data/*.db-wal
+data/*.db-shm
+reports/
+config.json
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage

@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pokeflip {{ d.kind }} digest</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 24px 16px;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f6f7f9; color: #16181d;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header { margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: #5f6672; font-size: 13px; }
+  section {
+    background: #fff; border: 1px solid #e3e6eb; border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  h2 { font-size: 15px; margin: 0 0 12px; text-transform: uppercase;
+       letter-spacing: 0.06em; color: #5f6672; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eef0f3; }
+  th { color: #6b7280; font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: 0.04em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 10px; }
+  .kpi { flex: 1 1 150px; background: #f8f9fb; border: 1px solid #eceef2;
+         border-radius: 8px; padding: 10px 12px; }
+  .kpi .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+                color: #6b7280; }
+  .kpi .value { font-size: 19px; font-weight: 650; margin-top: 2px;
+                font-variant-numeric: tabular-nums; }
+  .up { color: #0a7d3f; } .down { color: #b4232a; } .flat { color: #6b7280; }
+  ol.actions { margin: 0; padding-left: 20px; }
+  ol.actions li { margin-bottom: 12px; }
+  .tag { display: inline-block; font-size: 10.5px; font-weight: 700;
+         letter-spacing: 0.06em; padding: 2px 7px; border-radius: 4px;
+         text-transform: uppercase; margin-right: 6px; }
+  .tag.buy { background: #e4f5ea; color: #0a7d3f; }
+  .tag.sell { background: #fdecec; color: #b4232a; }
+  .tag.alert { background: #fff3d9; color: #8a5b00; }
+  .tag.bulk { background: #ecefff; color: #3a44a8; }
+  .why { color: #6b7280; font-size: 12.5px; }
+  .alert-row { padding: 8px 0; border-bottom: 1px solid #eef0f3; }
+  .alert-row:last-child { border-bottom: none; }
+  .sev { font-weight: 700; font-size: 11px; letter-spacing: 0.05em; }
+  .sev.urgent { color: #b4232a; } .sev.warn { color: #8a5b00; } .sev.info { color: #3a44a8; }
+  .cols { display: flex; gap: 16px; flex-wrap: wrap; }
+  .cols > div { flex: 1 1 300px; }
+  footer { color: #8b919c; font-size: 12px; text-align: center; padding: 8px 0 24px; }
+  .empty { color: #8b919c; font-size: 13px; font-style: italic; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0f1115; color: #e7e9ee; }
+    section { background: #171a20; border-color: #262b33; }
+    .kpi { background: #1c2027; border-color: #2a3039; }
+    th, td { border-color: #242932; }
+    .kpi .label, th, .sub, h2, .why { color: #99a1af; }
+    .tag.buy { background: #10331f; color: #64d394; }
+    .tag.sell { background: #3a1b1d; color: #f08a8f; }
+    .tag.alert { background: #392c10; color: #e5bb60; }
+    .tag.bulk { background: #1e2350; color: #97a2ee; }
+    .up { color: #64d394; } .down { color: #f08a8f; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>pokeflip &middot; {{ d.kind }} digest</h1>
+    <div class="sub">{{ generated }} &middot; {{ headline }}</div>
+  </header>
+
+  {% set p = d.portfolio %}
+  {% if p %}
+  <section>
+    <h2>Portfolio</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="label">Cards</div>
+        <div class="value">{{ p.cards }}</div></div>
+      <div class="kpi"><div class="label">Cost basis</div>
+        <div class="value">{{ p.cost_basis | money }}</div></div>
+      <div class="kpi"><div class="label">Market value</div>
+        <div class="value">{{ p.market_value | money }}</div></div>
+      <div class="kpi"><div class="label">Net if sold now</div>
+        <div class="value">{{ p.net_liquidation | money }}</div></div>
+      <div class="kpi"><div class="label">Unrealised</div>
+        <div class="value {{ 'up' if (p.unrealized_pnl or 0) >= 0 else 'down' }}">
+          {{ p.unrealized_pnl | money }}</div></div>
+      {% if p.realized and p.realized.sales %}
+      <div class="kpi"><div class="label">Realised</div>
+        <div class="value {{ 'up' if (p.realized.realized_pnl or 0) >= 0 else 'down' }}">
+          {{ p.realized.realized_pnl | money }}</div></div>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Do this</h2>
+    {% if d.actions %}
+    <ol class="actions">
+      {% for a in d.actions %}
+      <li>
+        <span class="tag {{ a.type }}">{{ a.type }}</span><strong>{{ a.card }}</strong><br>
+        {{ a.detail }}
+        {% if a.why %}<br><span class="why">{{ a.why }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="empty">Nothing clears your thresholds today. Sitting out is a position.</p>
+    {% endif %}
+  </section>
+
+  {% if d.sells %}
+  <section>
+    <h2>Sell candidates</h2>
+    <table>
+      <tr><th>Card</th><th class="num">Qty</th><th class="num">Market</th>
+          <th class="num">Net each</th><th class="num">Cost</th>
+          <th class="num">ROI</th><th class="num">Score</th></tr>
+      {% for s in d.sells %}
+      <tr>
+        <td><strong>{{ s.card_name }}</strong><br>
+            <span class="why">{{ s.set_name }} {{ s.number }} &middot;
+            {{ s.reasons[0] if s.reasons else '' }}</span></td>
+        <td class="num">{{ s.quantity }}</td>
+        <td class="num">{{ s.price | money }}</td>
+        <td class="num">{{ s.net_proceeds | money }}</td>
+        <td class="num">{{ s.total_cost | money }}</td>
+        <td class="num {{ 'up' if s.roi >= 0 else 'down' }}">{{ s.roi | pct(0) }}</td>
+        <td class="num">{{ '%.0f' | format(s.score) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  {% if d.buys %}
+  <section>
+    <h2>Buy candidates</h2>
+    <table>
+      <tr><th>Card</th><th class="num">Buy at</th><th class="num">Market</th>
+          <th class="num">Net profit</th><th class="num">ROI</th><th class="num">Score</th></tr>
+      {% for s in d.buys %}
+      <tr>
+        <td><strong>{{ s.card_name }}</strong><br>
+            <span class="why">{{ s.set_name }} {{ s.number }} &middot;
+            {{ s.reasons[0] if s.reasons else '' }}</span></td>
+        <td class="num">{{ s.entry_price | money }}</td>
+        <td class="num">{{ s.price | money }}</td>
+        <td class="num up">{{ s.net_profit | money }}</td>
+        <td class="num">{{ s.roi | pct(0) }}</td>
+        <td class="num">{{ '%.0f' | format(s.score) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  {% if d.movers and (d.movers.gainers or d.movers.losers) %}
+  <section>
+    <h2>Movers &middot; 7 days</h2>
+    <div class="cols">
+      <div>
+        <table>
+          <tr><th>Up</th><th class="num">Price</th><th class="num">7d</th></tr>
+          {% for m in d.movers.gainers %}
+          <tr><td>{{ m.card_name }}<br><span class="why">{{ m.set_name }}</span></td>
+              <td class="num">{{ m.price | money }}</td>
+              <td class="num up">{{ m.change_7d | pct }}</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+      <div>
+        <table>
+          <tr><th>Down</th><th class="num">Price</th><th class="num">7d</th></tr>
+          {% for m in d.movers.losers %}
+          <tr><td>{{ m.card_name }}<br><span class="why">{{ m.set_name }}</span></td>
+              <td class="num">{{ m.price | money }}</td>
+              <td class="num down">{{ m.change_7d | pct }}</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if d.alerts %}
+  <section>
+    <h2>Alerts</h2>
+    {% for a in d.alerts %}
+    <div class="alert-row">
+      <span class="sev {{ a.severity }}">{{ a.severity | upper }}</span>
+      <strong>{{ a.title }}</strong>
+      {% if a.body %}<div class="why">{{ a.body }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if d.bulk and d.bulk.bulk_card_count %}
+  <section>
+    <h2>Bulk</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="label">Cards in bulk tail</div>
+        <div class="value">{{ d.bulk.bulk_card_count }}</div></div>
+      <div class="kpi"><div class="label">Net as a lot</div>
+        <div class="value">{{ d.bulk.bulk_net_total | money }}</div></div>
+      <div class="kpi"><div class="label">Suggested ask</div>
+        <div class="value">{{ d.bulk.suggested_bulk_ask | money }}</div></div>
+      <div class="kpi"><div class="label">Singles net</div>
+        <div class="value">{{ d.bulk.singles_net_total | money }}</div></div>
+    </div>
+  </section>
+  {% endif %}
+
+  <footer>
+    Scanned {{ d.stats.scanned or 0 }} printings &middot;
+    {{ d.stats.tracked_cards or 0 }} tracked cards &middot;
+    {{ d.stats.price_points or 0 }} price points.<br>
+    Estimates only. Verify condition and current listings before trading.
+  </footer>
+</div>
+</body>
+</html>

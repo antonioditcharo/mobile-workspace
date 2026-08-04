@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pokeflip</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%97%88%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">◈</span>
+    <span>pokeflip</span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-view="today" class="active">Today</button>
+    <button data-view="portfolio">Portfolio</button>
+    <button data-view="watchlist">Watchlist</button>
+    <button data-view="cards">Cards</button>
+    <button data-view="bulk">Bulk</button>
+    <button data-view="alerts">Alerts</button>
+  </nav>
+  <div class="topbar-actions">
+    <span id="status" class="status" title="provider and scheduler state"></span>
+    <button id="refresh" class="btn primary">Refresh prices</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ================= TODAY ================= -->
+  <section class="view" id="view-today">
+    <div class="kpis" id="today-kpis"></div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Do this</h2>
+        <div class="panel-actions">
+          <a class="btn ghost" href="/api/digest/html" target="_blank" rel="noopener">
+            Full digest</a>
+          <a class="btn ghost" href="/api/digest/markdown" target="_blank" rel="noopener">
+            Markdown</a>
+        </div>
+      </div>
+      <ol class="actions" id="action-list"></ol>
+    </div>
+
+    <div class="split">
+      <div class="panel">
+        <div class="panel-head"><h2>Sell candidates</h2></div>
+        <div class="scroll" id="sell-table"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Buy candidates</h2></div>
+        <div class="scroll" id="buy-table"></div>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="panel">
+        <div class="panel-head"><h2>Movers &middot; 7 days</h2></div>
+        <div class="scroll" id="movers-table"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Recent jobs</h2></div>
+        <div class="scroll" id="runs-table"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PORTFOLIO ================= -->
+  <section class="view hidden" id="view-portfolio">
+    <div class="kpis" id="pf-kpis"></div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Add a holding</h2>
+      </div>
+      <form class="form-row" id="holding-form">
+        <input name="card_id" placeholder="Card id (e.g. sv3pt5-199)" required>
+        <input name="variant" placeholder="Variant" value="holofoil">
+        <input name="quantity" type="number" min="1" value="1" placeholder="Qty" required>
+        <input name="cost_each" type="number" min="0" step="0.01" placeholder="Cost each" required>
+        <input name="condition" placeholder="Condition" value="NM">
+        <button class="btn primary" type="submit">Add</button>
+      </form>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Positions</h2></div>
+      <div class="scroll" id="pf-positions"></div>
+    </div>
+
+    <div class="split">
+      <div class="panel">
+        <div class="panel-head"><h2>Open lots</h2></div>
+        <div class="scroll" id="pf-lots"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>By set</h2></div>
+        <div class="scroll" id="pf-sets"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= WATCHLIST ================= -->
+  <section class="view hidden" id="view-watchlist">
+    <div class="panel">
+      <div class="panel-head"><h2>Watch a card</h2></div>
+      <form class="form-row" id="watch-form">
+        <input name="card_id" placeholder="Card id" required>
+        <input name="variant" placeholder="Variant" value="any">
+        <input name="max_buy" type="number" step="0.01" placeholder="Alert under $">
+        <input name="target_sell" type="number" step="0.01" placeholder="Alert over $">
+        <input name="note" placeholder="Note">
+        <button class="btn primary" type="submit">Watch</button>
+      </form>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Watchlist</h2></div>
+      <div class="scroll" id="watch-table"></div>
+    </div>
+  </section>
+
+  <!-- ================= CARDS ================= -->
+  <section class="view hidden" id="view-cards">
+    <div class="panel">
+      <div class="panel-head"><h2>Find a card</h2></div>
+      <form class="form-row" id="search-form">
+        <input name="q" placeholder="Name, set or card id" required>
+        <label class="check"><input type="checkbox" name="remote"> search the provider</label>
+        <button class="btn primary" type="submit">Search</button>
+      </form>
+      <div class="scroll" id="search-results"></div>
+    </div>
+    <div class="panel hidden" id="card-detail-panel">
+      <div class="panel-head">
+        <h2 id="card-detail-title">Card</h2>
+        <div class="panel-actions" id="card-detail-actions"></div>
+      </div>
+      <div id="card-detail"></div>
+    </div>
+  </section>
+
+  <!-- ================= BULK ================= -->
+  <section class="view hidden" id="view-bulk">
+    <div class="split">
+      <div class="panel">
+        <div class="panel-head"><h2>Unsorted lot &middot; by card count</h2></div>
+        <form class="form-col" id="estimate-form">
+          <label>How many cards<input name="card_count" type="number" min="1" value="5000" required></label>
+          <label>Restrict to set ids (comma separated, optional)<input name="set_ids" placeholder="sv3pt5, swsh7"></label>
+          <label>Asking price<input name="ask_price" type="number" step="0.01" placeholder="e.g. 150"></label>
+          <label>Shipping<input name="shipping" type="number" step="0.01" value="0"></label>
+          <button class="btn primary" type="submit">Value it</button>
+        </form>
+        <div id="estimate-result"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Itemised lot</h2></div>
+        <form class="form-col" id="lot-form">
+          <label>One card per line: <code>card_id,variant,qty</code>
+            <textarea name="items" rows="7" placeholder="sv3pt5-199,holofoil,1&#10;swsh7-215,holofoil,2"></textarea>
+          </label>
+          <div class="form-row tight">
+            <input name="ask_price" type="number" step="0.01" placeholder="Asking price">
+            <input name="shipping" type="number" step="0.01" placeholder="Shipping" value="0">
+            <button class="btn primary" type="submit">Value it</button>
+          </div>
+        </form>
+        <div id="lot-result"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Your bulk tail</h2>
+        <div class="panel-actions">
+          <button class="btn ghost" id="load-plan">Build sell plan</button>
+        </div>
+      </div>
+      <div id="plan-result"></div>
+    </div>
+  </section>
+
+  <!-- ================= ALERTS ================= -->
+  <section class="view hidden" id="view-alerts">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Alerts</h2>
+        <div class="panel-actions">
+          <button class="btn ghost" id="ack-all">Mark all read</button>
+        </div>
+      </div>
+      <div class="scroll" id="alerts-table"></div>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<footer class="foot">
+  Prices are estimates from your configured source. Verify condition and live
+  listings before trading.
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

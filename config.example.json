@@ -1,0 +1,91 @@
+{
+  "database": "data/pokeflip.db",
+  "tracked_sets": [],
+  "max_cards_per_refresh": 2000,
+  "history_retention_days": 730,
+  "timezone": "UTC",
+  "host": "127.0.0.1",
+  "port": 8787,
+  "provider": {
+    "name": "pokemontcg",
+    "api_key": "",
+    "base_url": "https://api.pokemontcg.io/v2",
+    "preferred_source": "tcgplayer",
+    "timeout_seconds": 30.0,
+    "max_retries": 3,
+    "request_delay": 0.35,
+    "page_size": 250,
+    "eur_to_usd": 1.08,
+    "fixture_dir": "data/fixtures"
+  },
+  "fees": {
+    "name": "tcgplayer",
+    "commission_pct": 0.1025,
+    "payment_pct": 0.025,
+    "payment_flat": 0.3,
+    "shipping_cost": 1.1,
+    "shipping_charged": 0.0
+  },
+  "buy": {
+    "dip_pct": 0.12,
+    "zscore_floor": -0.9,
+    "spread_pct": 0.2,
+    "min_price": 3.0,
+    "max_price": 400.0,
+    "min_net_profit": 2.0,
+    "acquisition_overhead": 0.75,
+    "min_roi": 0.25,
+    "min_history_points": 8,
+    "max_volatility": 0.55,
+    "min_score": 45.0,
+    "max_results": 25
+  },
+  "sell": {
+    "target_roi": 0.35,
+    "overextended_pct": 0.18,
+    "peak_fade_pct": 0.1,
+    "peak_fade_requires_profit": true,
+    "stop_loss_pct": 0.25,
+    "stagnant_days": 120,
+    "stagnant_band_pct": 0.05,
+    "min_score": 45.0,
+    "max_results": 25
+  },
+  "bulk": {
+    "sell_through_rate": 0.55,
+    "bulk_discount": 0.25,
+    "filler_price_ceiling": 1.5,
+    "filler_value_each": 0.03,
+    "target_lot_margin": 0.45,
+    "handling_cost_each": 0.15,
+    "single_out_threshold": 4.0
+  },
+  "schedule": {
+    "enabled": true,
+    "refresh_interval_minutes": 360,
+    "digest_hour": 8,
+    "digest_minute": 0,
+    "weekly_digest_day": "sun",
+    "weekly_digest_hour": 9,
+    "catalog_refresh_days": 7,
+    "run_on_start": false
+  },
+  "notify": {
+    "channels": [
+      "console",
+      "file"
+    ],
+    "webhook_url": "",
+    "slack_webhook_url": "",
+    "discord_webhook_url": "",
+    "email_to": "",
+    "email_from": "pokeflip@localhost",
+    "smtp_host": "",
+    "smtp_port": 587,
+    "smtp_user": "",
+    "smtp_password": "",
+    "smtp_starttls": true,
+    "report_dir": "reports",
+    "realtime_alerts": true
+  }
+}
