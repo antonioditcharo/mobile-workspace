@@ -21,6 +21,7 @@ Environment variables:
     LOCAL_HEIGHT    auto from VRAM
     LOCAL_MAX_FRAMES auto from VRAM
     LOCAL_DTYPE     auto (default) | float16 | bfloat16 | float32
+    LOCAL_PATIENT   1 to trade speed for a larger frame and more frames
 """
 
 import io
@@ -82,6 +83,25 @@ MODELS = {
         "ram_gb": 32,
         "download_gb": 28,
         "note": "Best small-model realism. Needs a large page file.",
+    },
+    # CogVideoX is the quality-per-second option for a small card. It generates
+    # at a fixed 720x480 with 49 frames — six seconds at its native 8fps, which
+    # the Smoothness control fills out afterwards. Slow, and meant to be.
+    "cogvideox-5b": {
+        "repo": "THUDM/CogVideoX-5b",
+        "kind": "cogvideox",
+        "vram_gb": 4,
+        "ram_gb": 24,
+        "download_gb": 20,
+        "note": "Best quality at 5-6 seconds. Very slow on a small card.",
+    },
+    "cogvideox-2b": {
+        "repo": "THUDM/CogVideoX-2b",
+        "kind": "cogvideox",
+        "vram_gb": 4,
+        "ram_gb": 16,
+        "download_gb": 12,
+        "note": "Same shape as the 5B, roughly half the time and some detail.",
     },
     "ltx": {
         "repo": "Lightricks/LTX-Video",
@@ -235,6 +255,15 @@ MIN_RESOLUTION = {
     "ltx": (448, 256),
     "animatediff": (384, 384),
     "svd": (512, 288),
+    # CogVideoX is trained at exactly this and does not generalise off it.
+    "cogvideox": (720, 480),
+}
+
+
+# Models whose geometry is not a choice: trained at one size and frame count,
+# and degraded off it.
+FIXED_GEOMETRY = {
+    "cogvideox": {"width": 720, "height": 480, "frames": 49},
 }
 
 
@@ -250,6 +279,7 @@ WORKING_SET_GB = {
     "svd": 3.0,
     "wan": 3.4,
     "ltx": 4.4,
+    "cogvideox": 3.6,
 }
 
 
@@ -325,6 +355,20 @@ def defaults_for_vram(vram):
     return 832, 480, 81
 
 
+def patient_mode():
+    """
+    Trade time for capability.
+
+    The frame budget below is a conservative estimate, not a measurement, and
+    it is tuned so a first attempt succeeds rather than fails. With sequential
+    offloading the real ceiling is considerably higher — the cost is speed, not
+    correctness — so this raises the budget for anyone willing to wait, and
+    lets the out-of-memory fallback find the true limit instead of guessing
+    under it.
+    """
+    return os.environ.get("LOCAL_PATIENT", "").lower() in ("1", "true", "yes")
+
+
 def frame_budget(vram):
     """
     Total pixels-times-frames the card can hold in one pass.
@@ -335,7 +379,8 @@ def frame_budget(vram):
     are the known-good combinations.
     """
     width, height, frames = defaults_for_vram(vram)
-    return width * height * frames
+    budget = width * height * frames
+    return budget * 3 if patient_mode() else budget
 
 
 def max_frames_for(width, height, vram=None):
@@ -383,6 +428,12 @@ def auto_defaults():
     # resolution for length is only a real choice above this floor; under it
     # the extra frames are smears, which is worse than a shorter clip.
     kind = resolve_model()["kind"]
+
+    fixed = FIXED_GEOMETRY.get(kind)
+    if fixed:
+        _auto_defaults = (fixed["width"], fixed["height"], fixed["frames"])
+        return _auto_defaults
+
     min_w, min_h = minimum_resolution(kind)
     if width < min_w or height < min_h:
         log(f"{width}x{height} is below the useful minimum for this model "
@@ -469,6 +520,13 @@ def load_pipeline():
             pipe = StableVideoDiffusionPipeline.from_pretrained(
                 spec["repo"], torch_dtype=dtype, variant="fp16", low_cpu_mem_usage=True
             )
+        elif spec["kind"] == "cogvideox":
+            from diffusers import CogVideoXPipeline
+
+            pipe = CogVideoXPipeline.from_pretrained(
+                spec["repo"], torch_dtype=dtype, low_cpu_mem_usage=True
+            )
+
         elif spec["kind"] == "wan":
             from diffusers import AutoencoderKLWan, WanPipeline
 
@@ -508,6 +566,9 @@ def load_pipeline():
     # components once per step. Pick the fastest mode the card can hold rather
     # than defaulting to the safest.
     offload = os.environ.get("LOCAL_OFFLOAD", "auto").lower()
+    if offload == "auto" and patient_mode():
+        offload = "sequential"
+        log("Patient mode: sequential offload, for the largest frame the card can hold.")
     if offload == "auto":
         working = estimate_working_set(spec, dtype)
         if vram and vram >= working * 2.2:
@@ -547,7 +608,7 @@ def load_pipeline():
     # cards use it is unnecessary — the whole frame fits — so only enable it
     # when the output is actually large.
     width, height, _ = auto_defaults()
-    if max(width, height) >= 704:
+    if patient_mode() or max(width, height) >= 704:
         try:
             pipe.vae.enable_tiling()
             log("VAE tiling on (large frame).")
@@ -728,7 +789,14 @@ def generate(payload):
     # the frame size, not just the card: memory scales with pixels x frames, so
     # a smaller frame buys proportionally more of them.
     override = os.environ.get("LOCAL_MAX_FRAMES")
-    cap = int(override) if override else max_frames_for(width, height)
+    if override:
+        cap = int(override)
+    elif FIXED_GEOMETRY.get(spec["kind"]):
+        # CogVideoX is trained and validated at one shape and is known to run
+        # there with sequential offload. An estimate should not veto it.
+        cap = FIXED_GEOMETRY[spec["kind"]]["frames"]
+    else:
+        cap = max_frames_for(width, height)
     if num_frames > cap:
         seconds = cap / max(1, fps)
         smaller = max_frames_for(320, 192)
@@ -834,6 +902,20 @@ def generate(payload):
 
         log(f"Generating: {kwargs['num_frames']}f {kwargs['width']}x{kwargs['height']} steps={steps}")
 
+    elif spec["kind"] == "cogvideox":
+        # Fixed geometry: trained at 720x480 with 49 frames, and it degrades
+        # sharply off either. Frame counts must be 8n+1 for its temporal VAE.
+        kwargs["width"], kwargs["height"] = 720, 480
+        frames = min(num_frames, 49)
+        if frames % 8 != 1:
+            frames = (frames // 8) * 8 + 1
+        kwargs["num_frames"] = max(9, frames)
+
+        if (width, height) != (720, 480):
+            log("Using 720x480 — CogVideoX is trained at that size only.")
+        log(f"Generating: {kwargs['num_frames']}f 720x480 steps={steps} "
+            f"({kwargs['num_frames'] / 8:.1f}s at its native 8fps)")
+
     elif spec["kind"] == "wan":
         # Wan wants dimensions on a multiple of 16 and a 4n+1 frame count; it
         # errors rather than rounding. Guidance around 5 is its trained range,
@@ -934,6 +1016,7 @@ MODEL_LABELS = {
     "svd": "Stable Video Diffusion",
     "wan": "Wan 2.1 T2V 1.3B",
     "ltx": "LTX-Video",
+    "cogvideox": "CogVideoX",
 }
 
 # Parameters each architecture actually wants. RealFrame sends defaults for
@@ -944,6 +1027,7 @@ SUGGESTED = {
     "svd": {"num_inference_steps": 25, "guidance_scale": 3.0, "fps": 7, "num_frames": 25},
     "wan": {"num_inference_steps": 30, "guidance_scale": 5.0, "fps": 16},
     "ltx": {"num_inference_steps": 30, "guidance_scale": 3.0, "fps": 24},
+    "cogvideox": {"num_inference_steps": 50, "guidance_scale": 6.0, "fps": 8, "num_frames": 49},
 }
 
 

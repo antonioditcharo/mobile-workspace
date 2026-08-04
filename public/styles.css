@@ -302,6 +302,17 @@ button.link:hover { color: var(--accent); }
 
 .init-note { color: var(--accent); }
 
+.estimate { margin: 0; align-self: center; }
+
+.job-warning {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--warn);
+  border-left: 2px solid var(--warn);
+  padding-left: 8px;
+}
+
 .panel-head {
   display: flex;
   align-items: baseline;

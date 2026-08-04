@@ -237,6 +237,7 @@ class JobQueue extends EventEmitter {
 
       job.status = STATUS.DONE;
       job.finishedAt = new Date().toISOString();
+      job.elapsedSeconds = Math.round((Date.now() - new Date(job.startedAt).getTime()) / 1000);
       job.videoUrl = `/api/video/${job.id}`;
       job.sizeBytes = video.length;
 

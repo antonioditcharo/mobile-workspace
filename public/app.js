@@ -122,6 +122,7 @@ async function boot() {
   updateDurationHint();
   updateQualityHint();
   updateFpsHint();
+  updateEstimate();
 
   cfg.negativeGroups.forEach((g) => state.activeGroups.add(g.key));
   groupBox.addEventListener('click', (e) => {
@@ -136,6 +137,31 @@ async function boot() {
 
   wireEvents();
   refreshJobs();
+
+  // A custom backend knows what it is running; ask on load rather than waiting
+  // for someone to press a button. Every parameter mismatch so far came from
+  // the app assuming the hosted catalog applied to a local machine.
+  if (cfg.provider === 'custom' && cfg.hasCustomEndpoint) {
+    autoProbeLocal();
+  }
+}
+
+async function autoProbeLocal() {
+  try {
+    const info = await api('/api/probe?provider=custom');
+    if (!info.reachable) {
+      $('status-chip').textContent = 'GPU server not responding';
+      $('status-chip').className = 'status warn';
+      $('probe-result').innerHTML = `<span class="bad">${escapeHtml(info.hint)}</span>`;
+      return;
+    }
+    applyLocalDefaults(info);
+    $('status-chip').textContent = info.label || 'local GPU ready';
+    $('status-chip').className = 'status ok';
+    $('probe-result').innerHTML = `<span class="good">${escapeHtml(info.hint)}</span>`;
+  } catch {
+    /* the manual button remains */
+  }
 }
 
 function updatePresetSummary() {
@@ -312,6 +338,43 @@ function updateFpsHint() {
     + 'in-between frames. Costs CPU time after generation, not GPU time.';
 }
 
+/**
+ * Estimate the wait from measured history rather than a guess.
+ *
+ * Cost scales with frames x steps, so a completed run gives a rate that
+ * extrapolates to any other configuration on the same machine. Worth showing
+ * when a run can take the better part of an hour.
+ */
+function estimateSeconds() {
+  const done = (state.jobs || []).filter((j) => j.status === 'done' && j.elapsedSeconds > 0);
+  if (!done.length) return null;
+
+  const recent = done[0];
+  const past = (recent.params?.num_frames || 1) * (recent.params?.num_inference_steps || 1);
+  if (!past) return null;
+
+  const rate = recent.elapsedSeconds / past;
+  const frames = Number($('num_frames').value) || 1;
+  const steps = Number($('num_inference_steps').value) || 1;
+  return rate * frames * steps;
+}
+
+function formatDuration(seconds) {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  const hours = Math.floor(seconds / 3600);
+  return `${hours}h ${Math.round((seconds % 3600) / 60)}m`;
+}
+
+function updateEstimate() {
+  const el = $('estimate');
+  if (!el) return;
+  const seconds = estimateSeconds();
+  el.textContent = seconds
+    ? `Estimated ${formatDuration(seconds)}, from your last run.`
+    : '';
+}
+
 function updateQualityHint() {
   const q = state.config.quality[$('quality').value];
   if (!q) return;
@@ -448,10 +511,12 @@ function jobCard(job) {
     media = `<div class="job-state"><span class="spinner"></span>${label}${retry}…</div>`;
   }
 
+  if (job.params?.width && job.params?.height) meta.push(`${job.params.width}x${job.params.height}`);
   if (job.plan?.segments > 1) meta.push(`${job.plan.segments} segments`);
   if (job.plan?.actualSeconds) meta.push(`${job.plan.actualSeconds}s`);
   if (job.quality) meta.push(job.quality);
   if (job.interpolatedTo) meta.push(`${job.interpolatedTo}fps`);
+  if (job.elapsedSeconds) meta.push(`took ${formatDuration(job.elapsedSeconds)}`);
 
   const actions = [];
   if (job.status === 'done') {
@@ -472,6 +537,8 @@ function jobCard(job) {
       <div class="job-body">
         <p class="job-subject">${escapeHtml(job.subject || '')}</p>
         <div class="job-meta">${meta.map((m) => `<span>${escapeHtml(m)}</span>`).join('')}</div>
+        ${job.warning ? `<p class="job-warning">${escapeHtml(job.warning)}</p>` : ''}
+        ${job.plan?.truncated ? '<p class="job-warning">Shorter than requested — your GPU could not hold the full length in one pass.</p>' : ''}
       </div>
       <div class="job-actions">${actions.join('')}</div>
     </article>`;
@@ -506,6 +573,8 @@ async function refreshJobs() {
     (j) => j.status !== 'running' && j.status !== 'queued',
   ));
 
+  updateEstimate();
+
   const busy = jobs.some((j) => j.status === 'queued' || j.status === 'running');
   clearTimeout(state.pollTimer);
   if (busy) state.pollTimer = setTimeout(refreshJobs, 2500);
@@ -533,6 +602,7 @@ function wireEvents() {
   $('duration').addEventListener('input', () => {
     updateDurationHint();
     updateQualityHint();
+    updateEstimate();
   });
 
   $('target-fps').addEventListener('change', updateFpsHint);
@@ -553,6 +623,7 @@ function wireEvents() {
       delete steps.dataset.touched;
     }
     updateQualityHint();
+    updateEstimate();
   });
 
   $('model').addEventListener('change', () => {

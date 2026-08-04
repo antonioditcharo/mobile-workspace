@@ -114,7 +114,9 @@ output.
 | --- | --- |
 | `run-animatediff.bat` | AnimateDiff — lightest, runs anywhere |
 | `run-wan.bat` | Wan 2.1 T2V 1.3B — best small-model realism |
-| `run-long.bat` | LTX at 512x320 — the model that can actually do 5s |
+| `run-long.bat` | LTX at 512x320 — faster route to 5s, softer detail |
+| `run-quality.bat` | **CogVideoX 5B at 720x480 — best-looking 5-6s. Very slow** |
+| `run-quality-fast.bat` | CogVideoX 2B — same shape, about half the time |
 | `run-max.bat` | LTX at 384x256 — the only local route to 20s clips |
 
 Or pass the name as an argument: `start-local-gpu.bat ltx`. Setting
@@ -127,8 +129,10 @@ running model from the server and sets the parameters that suit it.
 | --- | --- | --- | --- | --- |
 | `animatediff` | text-to-video | ~4 GB | ~6 GB | Lightest. Runs where the others cannot. Fixed at 16 frames / 512x512 |
 | `svd` | image-to-video | ~5 GB | ~8 GB | Animates a still. No text encoder |
-| `wan-1.3b` | text-to-video | ~28 GB | ~32 GB | Best small-model realism and motion |
-| `ltx` | text-to-video | ~19 GB | ~24 GB | Faster than Wan, softer detail |
+| `wan-1.3b` | text-to-video | ~28 GB | ~32 GB | Best per-frame quality, but only ~2s on a 4 GB card |
+| `cogvideox-5b` | text-to-video | ~20 GB | ~24 GB | **Best quality at 5-6s.** Fixed 720x480 x 49 frames |
+| `cogvideox-2b` | text-to-video | ~12 GB | ~16 GB | Same shape, roughly half the time |
+| `ltx` | text-to-video | ~19 GB | ~24 GB | Longest clips, softest detail. Chainable |
 
 **The RAM column is what decides whether a model loads at all** — more often
 the blocker than VRAM. Wan and LTX carry an 11 GB text encoder; that is nearly
@@ -206,6 +210,40 @@ Starting frame sizes by card, when you do not set them:
 - **Keep clips short.** The frame ceiling above is roughly 2–5 seconds at 16fps.
 - **Close other GPU applications.** Games, video editors, and even a browser
   with hardware acceleration eat into the same VRAM.
+
+## Quality at five seconds
+
+Wan has the best individual frames but cannot hold five seconds on a 4 GB card:
+the frame it would need is below the size at which it resolves anything. That is
+an architectural limit, not a setting.
+
+**CogVideoX is the answer to "good, and five seconds long".** It generates a
+fixed 720x480 by 49 frames — six seconds at its native 8fps, which the
+Smoothness control fills out to 48fps afterwards. The frame is more than twice
+the area Wan manages here, which is where the quality comes from.
+
+```
+run-quality.bat
+```
+
+It costs time, and a lot of it: expect **30-60 minutes** for one clip on a 4 GB
+card, against Wan's seven. `run-quality-fast.bat` runs the 2B version at roughly
+half that with some loss of detail — worth trying first to see whether the shape
+suits your prompt before committing an hour to it.
+
+### Patient mode
+
+Both quality presets set `LOCAL_PATIENT=1`, which:
+
+- forces sequential offloading, the slowest mode and the one that holds the
+  largest frame;
+- enables VAE tiling, which is what lets a 720x480 decode finish at all;
+- triples the frame budget, because that budget is a conservative estimate
+  rather than a measurement, and it is tuned so a first attempt succeeds
+  rather than to find the true ceiling.
+
+If a run does exhaust memory, the server retries one step more conservatively
+before giving up, so pushing the limit costs time rather than a failed run.
 
 ## Making it faster
 

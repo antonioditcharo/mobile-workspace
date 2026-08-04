@@ -22,7 +22,7 @@ npm start                 # http://localhost:3000
 No dependencies to install — the server uses only the Node standard library. Node 18+.
 
 ```bash
-npm test                  # 78 tests, no network required
+npm test                  # 106 tests, no network required
 ```
 
 ---
@@ -271,7 +271,7 @@ server/
   ffmpeg.js      Frame extraction and stitching for chained segments
   config.js      .env parsing
 public/          Frontend — no framework, no build step
-test/            78 tests, all offline (providers are faked)
+test/            106 tests, all offline (providers are faked)
 ```
 
 ---
