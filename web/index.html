@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0b0b0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Filmroom">
+<title>Filmroom</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◉</span>
+    <span>Filmroom</span>
+  </div>
+  <button id="status-chip" class="status-chip" data-state="unknown">
+    <span class="dot"></span><span id="status-text">connecting</span>
+  </button>
+</header>
+
+<!-- ============================ CREATE ============================ -->
+<main id="view-create" class="view active">
+
+  <section class="stage" id="stage">
+    <div class="stage-empty" id="stage-empty">
+      <div class="stage-empty-icon">🎞️</div>
+      <p>Describe a moment.<br>Pick a film stock. Shoot.</p>
+    </div>
+    <div class="stage-images" id="stage-images"></div>
+    <div class="stage-progress" id="stage-progress" hidden>
+      <div class="ring">
+        <svg viewBox="0 0 120 120">
+          <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
+          <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"></circle>
+        </svg>
+        <span id="progress-pct">0%</span>
+      </div>
+      <p id="progress-msg">Starting…</p>
+      <button id="btn-cancel" class="btn ghost small">Cancel</button>
+    </div>
+  </section>
+
+  <section class="controls">
+    <div class="prompt-wrap">
+      <textarea id="prompt" rows="2" placeholder="two friends on a couch, mid-laugh, cluttered living room"></textarea>
+      <button id="btn-dice" class="icon-btn" title="Random idea">🎲</button>
+    </div>
+
+    <div class="row-label">
+      <span>Film &amp; era</span>
+      <button id="btn-prompt-peek" class="link-btn">see full prompt</button>
+    </div>
+    <div class="chips" id="preset-chips"></div>
+
+    <div class="row-label"><span>Framing</span></div>
+    <div class="chips small" id="aspect-chips"></div>
+
+    <details class="advanced" id="advanced">
+      <summary>Advanced</summary>
+      <div class="adv-grid">
+        <label class="field">
+          <span>Steps <b id="steps-val">30</b></span>
+          <input type="range" id="steps" min="10" max="60" step="1" value="30">
+        </label>
+        <label class="field">
+          <span>Guidance <b id="guidance-val">6.0</b></span>
+          <input type="range" id="guidance" min="1" max="12" step="0.5" value="6">
+        </label>
+        <label class="field">
+          <span>Batch <b id="batch-val">1</b></span>
+          <input type="range" id="batch" min="1" max="8" step="1" value="1">
+        </label>
+        <label class="field">
+          <span>Sampler</span>
+          <select id="sampler"></select>
+        </label>
+        <label class="field wide">
+          <span>Seed <small>(-1 = random)</small></span>
+          <div class="seed-row">
+            <input type="number" id="seed" value="-1">
+            <button id="btn-reuse-seed" class="btn ghost small">last</button>
+          </div>
+        </label>
+        <label class="field wide toggle">
+          <input type="checkbox" id="hires">
+          <span><b>Detail pass</b><small>Upscale + repaint. Much better faces and hands, ~2× slower.</small></span>
+        </label>
+        <label class="field wide">
+          <span>Extra negative prompt</span>
+          <textarea id="negative" rows="2" placeholder="things to avoid"></textarea>
+        </label>
+      </div>
+    </details>
+  </section>
+
+  <div class="cta-bar">
+    <button id="btn-generate" class="btn primary big">Generate</button>
+  </div>
+</main>
+
+<!-- ============================ GALLERY ============================ -->
+<main id="view-gallery" class="view">
+  <div class="gallery-head">
+    <h2>Gallery</h2>
+    <button id="btn-refresh-gallery" class="btn ghost small">Refresh</button>
+  </div>
+  <div class="grid" id="gallery-grid"></div>
+  <p class="empty-note" id="gallery-empty">Nothing yet. Go shoot something.</p>
+</main>
+
+<!-- ============================ SETTINGS ============================ -->
+<main id="view-settings" class="view">
+  <h2>Settings</h2>
+
+  <section class="card">
+    <h3>Model</h3>
+    <div id="model-list" class="model-list"></div>
+    <p class="hint">First use of a model downloads it (2–7 GB) and takes a while.
+      After that it's cached and offline forever.</p>
+    <button id="btn-unload" class="btn ghost small">Free GPU memory</button>
+  </section>
+
+  <section class="card">
+    <h3>Machine</h3>
+    <dl class="kv" id="hw-info"></dl>
+  </section>
+
+  <section class="card">
+    <h3>Install on your phone</h3>
+    <p class="hint">Chrome menu (⋮) → <b>Add to Home screen</b>. It then opens
+      fullscreen like a normal app.</p>
+    <button id="btn-install" class="btn ghost small" hidden>Install app</button>
+  </section>
+
+  <section class="card">
+    <h3>Privacy</h3>
+    <p class="hint">Everything runs on your laptop. Prompts and images never
+      leave your network. Images are written to
+      <code id="output-path">…</code>. The only outbound traffic this app ever
+      makes is the one-time model download.</p>
+  </section>
+</main>
+
+<!-- ============================ VIEWER ============================ -->
+<div id="viewer" class="viewer" hidden>
+  <div class="viewer-top">
+    <button id="viewer-close" class="icon-btn">✕</button>
+    <span id="viewer-count"></span>
+    <button id="viewer-info-btn" class="icon-btn">ⓘ</button>
+  </div>
+  <div class="viewer-img-wrap" id="viewer-img-wrap"></div>
+  <div class="viewer-info" id="viewer-info" hidden></div>
+  <div class="viewer-actions">
+    <button id="btn-save" class="btn primary">Save to phone</button>
+    <button id="btn-share" class="btn ghost">Share</button>
+    <button id="btn-reuse" class="btn ghost">Reuse</button>
+    <button id="btn-delete" class="btn danger">Delete</button>
+  </div>
+</div>
+
+<!-- ============================ PROMPT PEEK ============================ -->
+<div id="peek" class="sheet" hidden>
+  <div class="sheet-inner">
+    <h3>Exactly what the model receives</h3>
+    <h4>Positive</h4>
+    <pre id="peek-pos"></pre>
+    <h4>Negative</h4>
+    <pre id="peek-neg"></pre>
+    <button id="peek-close" class="btn ghost">Close</button>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<nav class="tabbar">
+  <button class="tab active" data-view="create"><span>◉</span>Create</button>
+  <button class="tab" data-view="gallery"><span>▦</span>Gallery</button>
+  <button class="tab" data-view="settings"><span>⚙</span>Settings</button>
+</nav>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

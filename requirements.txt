@@ -1,0 +1,20 @@
+# NOTE: torch is NOT listed here on purpose.
+# It must come from NVIDIA's wheel index or you get the CPU-only build and
+# generation takes minutes instead of seconds. The setup scripts handle it.
+
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+pillow>=10.0
+
+diffusers>=0.27
+transformers>=4.38
+accelerate>=0.27
+safetensors>=0.4
+
+# Without compel, diffusers silently truncates prompts at 77 CLIP tokens.
+# The style presets are longer than that, so this is effectively required.
+compel>=2.0
+
+# Optional: prints a scannable QR of the LAN URL at startup.
+qrcode>=7.4
