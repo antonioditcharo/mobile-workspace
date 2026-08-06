@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from . import config, presets
 from .jobs import Job, JobManager, JobRequest, encode_preview, save_image
+from .detect import detector_status
 from .pipeline import (
     DEFAULT_MODEL_ID,
     SAMPLERS,
@@ -51,13 +52,21 @@ app.add_middleware(
 )
 
 pipeline = PipelineManager(
-    cache_dir=config.MODEL_CACHE_DIR, checkpoint_dir=config.CHECKPOINT_DIR
+    cache_dir=config.MODEL_CACHE_DIR,
+    checkpoint_dir=config.CHECKPOINT_DIR,
+    lora_dir=config.LORA_DIR,
+    detector_dir=config.DETECTOR_DIR,
 )
 
 
 # --------------------------------------------------------------------------
 # Request models
 # --------------------------------------------------------------------------
+
+class LoraSelection(BaseModel):
+    id: str
+    weight: float = Field(default=0.8, ge=-2.0, le=2.0)
+
 
 class GenerateRequest(BaseModel):
     prompt: str = ""
@@ -71,6 +80,10 @@ class GenerateRequest(BaseModel):
     seed: int = -1
     batch: int = Field(default=1, ge=1, le=config.MAX_BATCH)
     hires: bool = False
+    loras: list[LoraSelection] = Field(default_factory=list)
+    refine_face: bool = False
+    refine_hands: bool = False
+    refine_strength: float = Field(default=0.4, ge=0.1, le=0.8)
 
 
 class LoadRequest(BaseModel):
@@ -129,6 +142,24 @@ def _stub_image(job: Job, index: int):
         time.sleep(0.05)
         _publish_step(job, index, step + 1, total)
 
+    # Mirror the real pipeline's extra phases so their UI states are reachable
+    # without a GPU.
+    if req.loras:
+        _publish_note(job, f"Applying {len(req.loras)} LoRA(s)")
+        time.sleep(0.3)
+    for kind, on in (("face", req.refine_face), ("hand", req.refine_hands)):
+        if not on:
+            continue
+        _publish_note(job, f"Refining {kind} 1/1")
+        time.sleep(0.4)
+        draw.rectangle(
+            [width // 4, height // 4, width * 3 // 4, height * 3 // 4],
+            outline=(255, 138, 76),
+            width=3,
+        )
+        draw.text((width // 4 + 6, height // 4 + 6), f"{kind} refined",
+                  fill=(255, 138, 76))
+
     return image
 
 
@@ -146,6 +177,19 @@ def _publish_step(job: Job, image_index: int, step: int, total: int) -> None:
             "step": step,
             "total_steps": total,
             "image_index": image_index,
+        }
+    )
+
+
+def _publish_note(job: Job, text: str) -> None:
+    """Status text for phases that have no step count (detection, refining)."""
+    job.message = text
+    job.emit(
+        {
+            "type": "progress",
+            "id": job.id,
+            "progress": job.progress,
+            "message": text,
         }
     )
 
@@ -198,10 +242,15 @@ def run_job(job: Job) -> None:
                     sampler=req.sampler,
                     seed=seed,
                     hires=req.hires,
+                    loras=req.loras,
+                    refine_face=req.refine_face,
+                    refine_hands=req.refine_hands,
+                    refine_strength=req.refine_strength,
                     on_step=lambda done, total, i=index: _publish_step(
                         job, i, done, total
                     ),
                     should_cancel=lambda: job.cancelled,
+                    on_note=lambda text: _publish_note(job, text),
                 )
         except GenerationCancelled:
             break
@@ -221,6 +270,9 @@ def run_job(job: Job) -> None:
             "sampler": req.sampler,
             "seed": seed,
             "hires": req.hires,
+            "loras": req.loras,
+            "refine_face": req.refine_face,
+            "refine_hands": req.refine_hands,
             "stub": config.STUB_MODE,
             "created": time.time(),
         }
@@ -257,7 +309,9 @@ def health() -> dict[str, Any]:
         "stub": config.STUB_MODE,
         "hardware": hw,
         "pipeline": pipeline.status(),
+        "detector": detector_status(config.DETECTOR_DIR),
         "output_dir": str(config.OUTPUT_DIR),
+        "lora_dir": str(config.LORA_DIR),
         "lan_url": f"http://{config.lan_ip()}:{config.PORT}",
     }
 
@@ -269,6 +323,8 @@ def options() -> dict[str, Any]:
         "aspects": presets.aspects_payload(),
         "samplers": [{"id": k, "label": v} for k, v in SAMPLERS.items()],
         "models": pipeline.available_models(),
+        "loras": pipeline.discover_loras(),
+        "detector": detector_status(config.DETECTOR_DIR),
         "defaults": {
             "preset": presets.DEFAULT_PRESET_ID,
             "aspect": presets.DEFAULT_ASPECT,
@@ -297,6 +353,35 @@ def load_model(body: LoadRequest) -> dict[str, Any]:
 def unload_model() -> dict[str, Any]:
     pipeline.unload()
     return {"ok": True, "status": pipeline.status()}
+
+
+def _with_lora_triggers(subject: str, loras: list[dict[str, Any]]) -> str:
+    """Prepend each selected LoRA's trigger words to the subject.
+
+    Style LoRAs frequently do nothing without their trigger token, and that
+    failure is silent -- the image just comes out unstyled. Injecting from the
+    .txt sidecar means nobody has to type "analogfilm_v2_style" on a phone.
+    """
+    if not loras:
+        return subject
+
+    available = {entry["id"]: entry for entry in pipeline.discover_loras()}
+    triggers = []
+    for selection in loras:
+        entry = available.get(selection.get("id"))
+        if entry and entry.get("trigger"):
+            triggers.append(entry["trigger"])
+
+    if not triggers:
+        return subject
+
+    joined = ", ".join(triggers)
+    return f"{joined}, {subject}".strip().strip(",") if subject else joined
+
+
+@app.get("/api/loras")
+def loras() -> dict[str, Any]:
+    return {"loras": pipeline.discover_loras(), "dir": str(config.LORA_DIR)}
 
 
 @app.post("/api/preview-prompt")
@@ -334,6 +419,9 @@ def generate(body: GenerateRequest) -> dict[str, Any]:
     if seed is None or seed < 0:
         seed = random.randint(0, 2**31 - 1)
 
+    loras = [{"id": l.id, "weight": l.weight} for l in body.loras]
+    subject = _with_lora_triggers(body.prompt, loras)
+
     request = JobRequest(
         prompt=body.prompt.strip(),
         negative=body.negative.strip(),
@@ -347,7 +435,11 @@ def generate(body: GenerateRequest) -> dict[str, Any]:
         seed=int(seed),
         batch=int(body.batch),
         hires=bool(body.hires),
-        full_prompt=presets.build_prompt(body.prompt, preset),
+        loras=loras,
+        refine_face=bool(body.refine_face),
+        refine_hands=bool(body.refine_hands),
+        refine_strength=float(body.refine_strength),
+        full_prompt=presets.build_prompt(subject, preset),
         full_negative=presets.build_negative(preset, body.negative),
     )
 

@@ -15,6 +15,8 @@ const state = {
   viewer: { items: [], index: 0, source: 'stage' },
   lastSeed: null,
   stage: [],
+  loras: [],          // [{id, label, trigger}]
+  loraPicks: {},      // id -> weight, only for enabled ones
 };
 
 const STORE_KEY = 'filmroom.settings.v1';
@@ -65,6 +67,10 @@ function saveSettings() {
     batch: +$('#batch').value,
     sampler: $('#sampler').value,
     hires: $('#hires').checked,
+    refineFace: $('#refine-face').checked,
+    refineHands: $('#refine-hands').checked,
+    refineStrength: +$('#refine-strength').value,
+    loraPicks: state.loraPicks,
     negative: $('#negative').value,
     prompt: $('#prompt').value,
   };
@@ -97,15 +103,28 @@ async function boot() {
   state.aspect = saved.aspect || d.aspect;
   state.model = saved.model || d.model;
 
+  state.loras = state.options.loras || [];
+  // Drop remembered picks whose file has since been removed from the folder.
+  const known = new Set(state.loras.map((l) => l.id));
+  state.loraPicks = Object.fromEntries(
+    Object.entries(saved.loraPicks || {}).filter(([id]) => known.has(id))
+  );
+
   renderPresets();
   renderAspects();
   renderSamplers(saved.sampler);
   renderModels();
+  renderLoras();
+  renderDetector();
 
   if (saved.steps) $('#steps').value = saved.steps;
   if (saved.guidance) $('#guidance').value = saved.guidance;
   if (saved.batch) $('#batch').value = saved.batch;
   if (saved.hires) $('#hires').checked = true;
+  if (saved.refineFace) $('#refine-face').checked = true;
+  if (saved.refineHands) $('#refine-hands').checked = true;
+  if (saved.refineStrength) $('#refine-strength').value = saved.refineStrength;
+  syncRefineVisibility();
   if (saved.negative) $('#negative').value = saved.negative;
   if (saved.prompt) $('#prompt').value = saved.prompt;
   $('#batch').max = d.max_batch;
@@ -206,6 +225,91 @@ function renderModels() {
   });
 }
 
+function renderLoras() {
+  const list = $('#lora-list');
+  const label = $('#lora-label');
+  const settings = $('#lora-settings');
+  const has = state.loras.length > 0;
+
+  label.hidden = !has;
+  list.hidden = !has;
+  list.innerHTML = '';
+
+  if (!has) {
+    settings.innerHTML =
+      '<p class="hint">No LoRAs found. Drop <code>.safetensors</code> files in ' +
+      'the folder below and reopen the app.</p>';
+    return;
+  }
+
+  settings.innerHTML =
+    `<p class="hint">${state.loras.length} LoRA(s) available. ` +
+    'Enable and weight them on the Create tab.</p>';
+
+  state.loras.forEach((lora) => {
+    const on = Object.prototype.hasOwnProperty.call(state.loraPicks, lora.id);
+    const weight = on ? state.loraPicks[lora.id] : 0.8;
+
+    const row = document.createElement('div');
+    row.className = 'lora';
+    row.dataset.on = String(on);
+    row.innerHTML =
+      `<div class="lora-head">` +
+      `<input type="checkbox" ${on ? 'checked' : ''}>` +
+      `<span class="lora-name">${escapeHtml(lora.label)}</span>` +
+      `<span class="lora-weight">${weight.toFixed(2)}</span></div>` +
+      (lora.trigger
+        ? `<div class="lora-trigger">auto-adds: ${escapeHtml(lora.trigger)}</div>`
+        : '') +
+      `<input type="range" min="-1" max="1.5" step="0.05" value="${weight}"
+        ${on ? '' : 'disabled'}>`;
+
+    const box = row.querySelector('input[type="checkbox"]');
+    const slider = row.querySelector('input[type="range"]');
+    const readout = row.querySelector('.lora-weight');
+
+    box.onchange = () => {
+      if (box.checked) state.loraPicks[lora.id] = +slider.value;
+      else delete state.loraPicks[lora.id];
+      row.dataset.on = String(box.checked);
+      slider.disabled = !box.checked;
+      saveSettings();
+    };
+    slider.oninput = () => {
+      readout.textContent = (+slider.value).toFixed(2);
+      if (box.checked) { state.loraPicks[lora.id] = +slider.value; saveSettings(); }
+    };
+
+    list.appendChild(row);
+  });
+}
+
+function renderDetector() {
+  const det = (state.options && state.options.detector) || {};
+  const rows = [
+    ['Backend', det.backend || 'none'],
+    ['Faces', det.faces ? 'yes' : 'no'],
+    ['Hands', det.hands ? 'yes' : 'no'],
+    ['Notes', det.detail || '—'],
+  ];
+  $('#detector-info').innerHTML = rows
+    .map(([k, v]) => `<div><dt>${k}</dt><dd>${escapeHtml(String(v))}</dd></div>`)
+    .join('');
+
+  // Don't offer a fix the machine can't perform.
+  $('#refine-face').disabled = !det.faces;
+  $('#refine-hands').disabled = !det.hands;
+  if (!det.faces) $('#refine-face').checked = false;
+  if (!det.hands) $('#refine-hands').checked = false;
+  syncRefineVisibility();
+}
+
+function syncRefineVisibility() {
+  const on = $('#refine-face').checked || $('#refine-hands').checked;
+  $('#refine-strength-field').hidden = !on;
+  $('#refine-strength-val').textContent = (+$('#refine-strength').value).toFixed(2);
+}
+
 async function refreshHealth() {
   try {
     const h = await api('/api/health');
@@ -216,6 +320,7 @@ async function refreshHealth() {
     else setStatus('bad', 'no backend');
 
     $('#output-path').textContent = h.output_dir;
+    if (h.lora_dir) $('#lora-path').textContent = h.lora_dir;
 
     const rows = [
       ['Device', hw.device],
@@ -256,6 +361,10 @@ async function generate() {
     seed: +$('#seed').value,
     batch: +$('#batch').value,
     hires: $('#hires').checked,
+    refine_face: $('#refine-face').checked,
+    refine_hands: $('#refine-hands').checked,
+    refine_strength: +$('#refine-strength').value,
+    loras: Object.entries(state.loraPicks).map(([id, weight]) => ({ id, weight })),
   };
 
   saveSettings();
@@ -432,6 +541,10 @@ function reuseSettings() {
   $('#guidance').value = meta.guidance || 6;
   $('#seed').value = meta.seed ?? -1;
   $('#hires').checked = !!meta.hires;
+  $('#refine-face').checked = !!meta.refine_face;
+  $('#refine-hands').checked = !!meta.refine_hands;
+  state.loraPicks = {};
+  (meta.loras || []).forEach((l) => { state.loraPicks[l.id] = l.weight; });
   state.preset = meta.preset;
   if (meta.model) state.model = meta.model;
   $('#sampler').value = meta.sampler || 'dpmpp_2m_karras';
@@ -442,9 +555,11 @@ function reuseSettings() {
   if (match) state.aspect = match.id;
 
   syncSliderLabels();
+  syncRefineVisibility();
   renderPresets();
   renderAspects();
   renderModels();
+  renderLoras();
   saveSettings();
   closeViewer();
   switchView('create');
@@ -480,7 +595,14 @@ function showInfo() {
         `steps: ${meta.steps} · guidance: ${meta.guidance}`,
         `sampler: ${meta.sampler || '—'}`,
         `seed: ${meta.seed}`,
-        `detail pass: ${meta.hires ? 'yes' : 'no'}`,
+        `hi-res pass: ${meta.hires ? 'yes' : 'no'}`,
+        `fix faces: ${meta.refine_face ? 'yes' : 'no'}`,
+        `fix hands: ${meta.refine_hands ? 'yes' : 'no'}`,
+        `loras: ${
+          (meta.loras || []).length
+            ? meta.loras.map((l) => `${l.id}@${l.weight}`).join(', ')
+            : 'none'
+        }`,
       ].join('\n')
     )}</pre>`;
   panel.hidden = false;
@@ -553,6 +675,17 @@ function bindUI() {
   ['sampler', 'hires', 'negative', 'prompt', 'seed'].forEach((id) => {
     $('#' + id).onchange = saveSettings;
   });
+
+  ['refine-face', 'refine-hands'].forEach((id) => {
+    $('#' + id).onchange = () => { syncRefineVisibility(); saveSettings(); };
+  });
+  $('#refine-strength').oninput = () => { syncRefineVisibility(); saveSettings(); };
+
+  $('#btn-lora-clear').onclick = () => {
+    state.loraPicks = {};
+    renderLoras();
+    saveSettings();
+  };
 
   $('#btn-reuse-seed').onclick = () => {
     if (state.lastSeed == null) { toast('No seed yet'); return; }

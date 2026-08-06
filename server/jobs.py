@@ -36,6 +36,10 @@ class JobRequest:
     seed: int
     batch: int
     hires: bool
+    loras: list[dict] = field(default_factory=list)
+    refine_face: bool = False
+    refine_hands: bool = False
+    refine_strength: float = 0.4
     full_prompt: str = ""
     full_negative: str = ""
 
@@ -113,6 +117,9 @@ class Job:
                 "seed": self.request.seed,
                 "batch": self.request.batch,
                 "hires": self.request.hires,
+                "loras": self.request.loras,
+                "refine_face": self.request.refine_face,
+                "refine_hands": self.request.refine_hands,
             },
         }
 

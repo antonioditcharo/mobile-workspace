@@ -16,5 +16,17 @@ safetensors>=0.4
 # The style presets are longer than that, so this is effectively required.
 compel>=2.0
 
+# LoRA adapter loading and weighting.
+peft>=0.9
+
+# Face/hand detection for the Fix faces / Fix hands passes.
+# 0.10.x bundles its models; 1.x fetches small model files on first use.
+# Either works.
+mediapipe>=0.10
+
+# Optional, better detection: put ADetailer YOLO weights in
+# data/models/detectors/ and install this to use them instead of MediaPipe.
+# ultralytics>=8.1
+
 # Optional: prints a scannable QR of the LAN URL at startup.
 qrcode>=7.4

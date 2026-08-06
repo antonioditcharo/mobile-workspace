@@ -223,9 +223,17 @@ def probe_hardware() -> dict[str, Any]:
 class PipelineManager:
     """Owns the loaded pipeline. One model resident at a time."""
 
-    def __init__(self, cache_dir: Path, checkpoint_dir: Path):
+    def __init__(
+        self,
+        cache_dir: Path,
+        checkpoint_dir: Path,
+        lora_dir: Path | None = None,
+        detector_dir: Path | None = None,
+    ):
         self.cache_dir = cache_dir
         self.checkpoint_dir = checkpoint_dir
+        self.lora_dir = lora_dir or (checkpoint_dir.parent / "loras")
+        self.detector_dir = detector_dir or (checkpoint_dir.parent / "detectors")
         self._lock = threading.Lock()
         self._pipe = None
         self._img2img = None
@@ -234,6 +242,7 @@ class PipelineManager:
         self._loaded_family: str | None = None
         self._load_status = "idle"
         self._load_detail = ""
+        self._active_loras: list[str] = []
 
     # -- introspection ----------------------------------------------------
 
@@ -428,6 +437,7 @@ class PipelineManager:
         self._img2img = None
         self._compel = None
         self._loaded_id = None
+        self._active_loras = []
         gc.collect()
         try:
             import torch
@@ -442,6 +452,102 @@ class PipelineManager:
             self._unload_locked()
             self._load_status = "idle"
             self._load_detail = "Model unloaded"
+
+    # -- LoRAs ------------------------------------------------------------
+
+    def discover_loras(self) -> list[dict[str, Any]]:
+        """List .safetensors in the loras folder.
+
+        A matching .txt sidecar holds that LoRA's trigger words -- many style
+        LoRAs do nothing at all unless their trigger appears in the prompt, and
+        expecting anyone to remember them on a phone keyboard is unrealistic.
+        """
+        if not self.lora_dir.is_dir():
+            return []
+
+        found = []
+        for path in sorted(self.lora_dir.glob("*.safetensors")):
+            sidecar = path.with_suffix(".txt")
+            trigger = ""
+            if sidecar.exists():
+                try:
+                    trigger = sidecar.read_text("utf-8").strip()
+                except Exception:
+                    trigger = ""
+            found.append(
+                {
+                    "id": path.stem,
+                    "label": path.stem.replace("_", " ").replace("-", " "),
+                    "trigger": trigger,
+                    "active": path.stem in self._active_loras,
+                }
+            )
+        return found
+
+    def _clear_loras(self) -> None:
+        if not self._active_loras or self._pipe is None:
+            self._active_loras = []
+            return
+        try:
+            self._pipe.unload_lora_weights()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not unload LoRAs: %s", exc)
+        self._active_loras = []
+
+    def _apply_loras(self, requested: list[dict[str, Any]]) -> list[str]:
+        """Load and weight a set of LoRAs, replacing whatever was loaded before.
+
+        Always clears first: adapters accumulate silently otherwise, so the
+        fifth generation of a session would be running five stacked styles.
+        """
+        self._clear_loras()
+
+        if not requested or self._pipe is None:
+            return []
+
+        try:
+            import peft  # noqa: F401
+        except ImportError:
+            log.warning("peft not installed - LoRAs cannot be applied")
+            return []
+
+        names: list[str] = []
+        weights: list[float] = []
+
+        for entry in requested:
+            lora_id = str(entry.get("id", ""))
+            if not lora_id:
+                continue
+            path = self.lora_dir / f"{lora_id}.safetensors"
+            if not path.exists():
+                log.warning("LoRA not found: %s", path)
+                continue
+
+            # diffusers uses adapter names as dict keys; dots and spaces break it.
+            adapter = "".join(c if c.isalnum() else "_" for c in lora_id)
+            try:
+                self._pipe.load_lora_weights(
+                    str(self.lora_dir),
+                    weight_name=path.name,
+                    adapter_name=adapter,
+                )
+                names.append(adapter)
+                weights.append(float(entry.get("weight", 0.8)))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("failed to load LoRA %s: %s", lora_id, exc)
+
+        if not names:
+            return []
+
+        try:
+            self._pipe.set_adapters(names, adapter_weights=weights)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not set adapter weights: %s", exc)
+
+        self._active_loras = [
+            str(e.get("id")) for e in requested if e.get("id")
+        ][: len(names)]
+        return self._active_loras
 
     # -- generation -------------------------------------------------------
 
@@ -481,14 +587,21 @@ class PipelineManager:
         seed: int,
         hires: bool = False,
         hires_strength: float = 0.35,
+        loras: list[dict[str, Any]] | None = None,
+        refine_face: bool = False,
+        refine_hands: bool = False,
+        refine_strength: float = 0.4,
         on_step: Callable[[int, int], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        on_note: Callable[[str], None] | None = None,
     ):
         """Run one generation. Returns a PIL image."""
         import torch
 
         pipe = self.load(model_id)
         is_xl = self._loaded_family == "sdxl"
+
+        self._apply_loras(loras or [])
 
         pipe.scheduler = _build_scheduler(sampler, pipe.scheduler.config)
 
@@ -559,9 +672,122 @@ class PipelineManager:
                 # legitimately fail -- OOM at the larger resolution, or broken
                 # offload hooks when rebuilding from an SDXL pipeline running
                 # under sequential CPU offload. Keep the base image either way.
-                log.warning("Detail pass failed (%s) - keeping base image", exc)
+                log.warning("Hi-res pass failed (%s) - keeping base image", exc)
+
+        if refine_face or refine_hands:
+            image = self.refine_details(
+                image,
+                encoded=encoded,
+                guidance=guidance,
+                steps=steps,
+                strength=refine_strength,
+                is_xl=is_xl,
+                faces=refine_face,
+                hands=refine_hands,
+                generator=generator,
+                on_note=on_note,
+                should_cancel=should_cancel,
+            )
 
         return image
+
+    def refine_details(
+        self,
+        image,
+        *,
+        encoded,
+        guidance,
+        steps,
+        strength,
+        is_xl,
+        faces,
+        hands,
+        generator,
+        on_note=None,
+        should_cancel=None,
+    ):
+        """Detect faces/hands and re-render each at full resolution."""
+        from .detect import detect
+        from .refine import REGION_PROMPTS, refine_regions
+
+        kinds = []
+        if faces:
+            kinds.append("face")
+        if hands:
+            kinds.append("hand")
+
+        try:
+            regions = detect(image, kinds, self.detector_dir)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("detection failed: %s", exc)
+            return image
+
+        if not regions:
+            if on_note:
+                on_note("No faces or hands found to refine")
+            return image
+
+        img2img = self._ensure_img2img(is_xl)
+
+        def _render(crop, kind, size):
+            if should_cancel and should_cancel():
+                raise GenerationCancelled()
+
+            # Region prompts are built fresh rather than reusing the frame's
+            # embeddings: the crop is one face, not the whole scene, and
+            # re-applying the full scene description here fights the model.
+            kwargs: dict[str, Any] = {
+                "image": crop,
+                "strength": strength,
+                "guidance_scale": guidance,
+                "num_inference_steps": max(12, steps // 2),
+                "generator": generator,
+            }
+            if self._compel is not None:
+                region_encoded = self._encode(
+                    REGION_PROMPTS.get(kind, ""), "", is_xl
+                )
+                kwargs.update(region_encoded)
+            else:
+                kwargs["prompt"] = REGION_PROMPTS.get(kind, "")
+                kwargs["negative_prompt"] = ""
+
+            return img2img(**kwargs).images[0]
+
+        def _note(index, total, kind):
+            if on_note:
+                on_note(f"Refining {kind} {index + 1}/{total}")
+
+        try:
+            result, count = refine_regions(
+                image, regions, _render, on_region=_note
+            )
+        except GenerationCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("detail refine failed: %s", exc)
+            return image
+
+        if on_note:
+            on_note(f"Refined {count} region(s)")
+        return result
+
+    def _ensure_img2img(self, is_xl: bool):
+        """img2img pipeline sharing the loaded weights -- no extra VRAM."""
+        if self._img2img is None:
+            from diffusers import (
+                StableDiffusionImg2ImgPipeline,
+                StableDiffusionXLImg2ImgPipeline,
+            )
+
+            cls = (
+                StableDiffusionXLImg2ImgPipeline
+                if is_xl
+                else StableDiffusionImg2ImgPipeline
+            )
+            self._img2img = cls(**self._pipe.components)
+            self._img2img.set_progress_bar_config(disable=True)
+        return self._img2img
 
     def _hires_pass(
         self,
@@ -584,20 +810,7 @@ class PipelineManager:
         the first pass gets composition right, the second pass repaints detail
         at a resolution where eyes and teeth have enough pixels to resolve.
         """
-        from diffusers import (
-            StableDiffusionImg2ImgPipeline,
-            StableDiffusionXLImg2ImgPipeline,
-        )
-
-        if self._img2img is None:
-            cls = (
-                StableDiffusionXLImg2ImgPipeline
-                if is_xl
-                else StableDiffusionImg2ImgPipeline
-            )
-            # Reuses the loaded weights -- no extra VRAM for a second model.
-            self._img2img = cls(**self._pipe.components)
-            self._img2img.set_progress_bar_config(disable=True)
+        self._ensure_img2img(is_xl)
 
         target = (int(image.width * 1.5) // 8 * 8, int(image.height * 1.5) // 8 * 8)
         from PIL import Image

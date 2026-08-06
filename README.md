@@ -119,10 +119,17 @@ negates them, so don't add them back.
 over-baking contrast and saturation, which instantly reads as generated. The
 presets already set sensible values.
 
-**Turn on Detail pass for people.** Faces, eyes, teeth and hands are where local
-models fail. The detail pass upscales and repaints, giving those features
-enough pixels to resolve properly. It roughly doubles generation time and it is
-worth it for anything with a person in it.
+**Turn on Fix faces for people.** Faces, eyes, teeth and hands are where local
+models fail, and the reason is resolution: in a 512×768 frame a face might be
+90 pixels wide, which is about 11×14 in latent space — not enough to resolve an
+eye. **Fix faces** detects each face, crops it, re-renders it at a full 512px,
+and blends it back. **Fix hands** does the same for hands. This is the single
+biggest quality win available and it's worth the extra time on anything with a
+person in it.
+
+Fix strength controls how much is repainted. 0.3–0.45 fixes structure while
+keeping the person recognisable; above ~0.6 you get a clean face that may not
+be the same face.
 
 **Generate batches and throw most away.** Real photographers shoot a roll to
 keep three frames. Set batch to 4, pick the one that works, hit **Reuse** on it
@@ -150,6 +157,67 @@ to lock its seed, then refine the prompt from there.
 **Tip:** the degraded presets (VHS, webcam, CCTV, disposable) are the most
 convincing, because low-quality media hides the artifacts that give models away.
 If an image looks *almost* right but slightly off, re-run it on a lo-fi preset.
+
+---
+
+## Fixing faces and hands
+
+**Fix faces** / **Fix hands** in Advanced. Both need a detector, and the app
+tells you which one it found in **Settings → Face & hand detection**.
+
+Detection is tried best-first:
+
+1. **YOLO (best)** — put ADetailer weights (`face_yolov8m.pt`,
+   `hand_yolov8n.pt`) in `data/models/detectors/` and `pip install ultralytics`.
+   Most accurate, and the only one that reliably catches faces in profile.
+2. **MediaPipe (default)** — installed by setup. Handles faces and hands with
+   no configuration.
+3. **OpenCV Haar** — frontal faces only, last resort.
+
+Two version traps that are handled for you but worth knowing: MediaPipe 0.10
+bundles its models in the wheel, while 1.x ships none and uses a different API
+— the app supports both and downloads the small model files on first use if
+needed. And OpenCV 5 dropped the bundled Haar cascades, so that fallback isn't
+always present despite what most guides claim.
+
+If a face still comes out wrong: frame tighter so it starts with more pixels,
+raise Fix strength, or generate a batch and pick a frame where the base
+generation got the structure roughly right — the fix pass repairs detail, it
+can't rescue a face pointed the wrong way.
+
+---
+
+## Film LoRAs
+
+LoRAs are small style add-ons that stack on top of a checkpoint. Analog film
+emulation, grain structure and era-specific colour LoRAs push realism further
+than prompting alone.
+
+Drop `.safetensors` LoRA files into:
+
+```
+data/models/loras/
+```
+
+They appear on the Create tab under **Film LoRAs**, each with an on/off toggle
+and a weight slider. Stack as many as you like — 0.6–0.9 is the usual range,
+and negative weights invert the effect.
+
+**Trigger words are handled for you.** Many LoRAs do nothing unless a specific
+token appears in the prompt, and that failure is silent — the image just comes
+out unstyled. Put the trigger words in a `.txt` file next to the LoRA:
+
+```
+data/models/loras/analog_film_v2.safetensors
+data/models/loras/analog_film_v2.txt     <- contains: analogfilm style, 35mm
+```
+
+The app prepends them automatically whenever that LoRA is enabled. Tap **see
+full prompt** to confirm they landed.
+
+Search Civitai for "analog", "film grain", or "amateur photo" LoRAs. Make sure
+you get SD 1.5 LoRAs if you're running an SD 1.5 checkpoint — an SDXL LoRA on
+an SD 1.5 model fails to load and is logged in the laptop terminal.
 
 ---
 
@@ -236,9 +304,13 @@ laptop terminal for progress bars.
 **Images look plastic** — Guidance too high (drop to 5), or you're using
 portrait-style prompt words. Re-read the prompting section above.
 
-**Faces are mangled** — Turn on Detail pass. Frame wider so the face isn't tiny,
-or closer so it gets more pixels. Faces at small sizes in a wide shot are the
-hardest case for SD 1.5.
+**Faces are mangled** — Turn on **Fix faces**. If it reports "No faces or hands
+found to refine", the detector didn't see it: faces in profile or very small
+faces defeat MediaPipe, so add the YOLO weights (see above) or frame tighter.
+
+**A LoRA seems to do nothing** — Either it needs trigger words (add a `.txt`
+sidecar), the weight is too low (try 0.8–1.0), or it's an SDXL LoRA on an SD 1.5
+checkpoint. The laptop terminal logs load failures.
 
 ---
 
@@ -248,8 +320,10 @@ hardest case for SD 1.5.
 run.py                 Launcher - prints the phone URL and QR
 server/
   main.py              FastAPI routes, SSE progress, static hosting
-  pipeline.py          Model loading, VRAM tuning, generation, detail pass
+  pipeline.py          Model loading, VRAM tuning, generation, LoRAs
   presets.py           Style presets and prompt construction  <- the realism
+  detect.py            Face/hand detection, three backends
+  refine.py            Crop -> re-render -> feathered composite geometry
   jobs.py              Queue, progress events, image saving
   config.py            Paths and settings
 web/
@@ -257,5 +331,10 @@ web/
   app.js               Client logic
   styles.css           Mobile-first styling
   sw.js                Service worker (installable, offline shell)
-data/                  Models and generated images (gitignored)
+data/
+  outputs/             Generated images + metadata sidecars
+  models/checkpoints/  Drop-in .safetensors checkpoints
+  models/loras/        Drop-in .safetensors LoRAs (+ .txt trigger words)
+  models/detectors/    YOLO / MediaPipe detector weights
 ```
+(all of `data/` is gitignored)

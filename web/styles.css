@@ -178,6 +178,24 @@ code { background: var(--bg-3); padding: 1px 5px; border-radius: 5px;
 .chips.small .chip { min-width: 0; padding: 8px 14px; }
 .chips.small .chip .chip-top { font-size: 12.5px; }
 
+/* ---------------------------------------------------------------- loras */
+.lora-list { display: flex; flex-direction: column; gap: 8px; }
+.lora {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 11px;
+  padding: 10px 12px;
+}
+.lora[data-on="true"] { border-color: var(--accent);
+                        background: rgba(255,138,76,.09); }
+.lora-head { display: flex; align-items: center; gap: 10px; }
+.lora-head input { width: 20px; height: 20px; accent-color: var(--accent);
+                   flex: 0 0 auto; }
+.lora-name { font-size: 13px; font-weight: 600; flex: 1; }
+.lora-weight { font-size: 12px; color: var(--muted);
+               font-variant-numeric: tabular-nums; }
+.lora-trigger { font-size: 10.5px; color: var(--muted); margin-top: 4px;
+                font-style: italic; }
+.lora input[type="range"] { margin-top: 8px; }
+
 /* ---------------------------------------------------------------- advanced */
 .advanced {
   margin-top: 18px; background: var(--bg-2); border: 1px solid var(--line);

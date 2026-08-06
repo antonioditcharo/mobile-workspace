@@ -16,6 +16,11 @@ MODEL_CACHE_DIR = Path(
 CHECKPOINT_DIR = Path(
     os.environ.get("LOCALGEN_CHECKPOINTS", DATA_DIR / "models" / "checkpoints")
 )
+# Style/film LoRAs, and YOLO face/hand detector weights for the detail pass.
+LORA_DIR = Path(os.environ.get("LOCALGEN_LORAS", DATA_DIR / "models" / "loras"))
+DETECTOR_DIR = Path(
+    os.environ.get("LOCALGEN_DETECTORS", DATA_DIR / "models" / "detectors")
+)
 WEB_DIR = ROOT / "web"
 
 HOST = os.environ.get("LOCALGEN_HOST", "0.0.0.0")
@@ -32,7 +37,13 @@ MAX_QUEUE = 32
 
 
 def ensure_dirs() -> None:
-    for directory in (OUTPUT_DIR, MODEL_CACHE_DIR, CHECKPOINT_DIR):
+    for directory in (
+        OUTPUT_DIR,
+        MODEL_CACHE_DIR,
+        CHECKPOINT_DIR,
+        LORA_DIR,
+        DETECTOR_DIR,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
 
 
