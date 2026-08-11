@@ -48,21 +48,54 @@ path, so every example below can drop the `python -m pokeflip.cli` prefix.
 
 ### Going live
 
-`demo` runs on the built-in offline provider. To track real prices:
+`demo` runs on the built-in offline provider. Four commands get you onto real
+prices with your real collection:
 
 ```bash
-python -m pokeflip.cli init            # writes config.json
+pokeflip setup                              # asks ~8 questions, writes config.json
+pokeflip import holdings --file mine.csv    # your collection, in bulk
+pokeflip doctor                             # tells you what is still wrong
+pokeflip serve                              # start it
 ```
 
-Then set `provider.name` to `pokemontcg` (the default) in `config.json` and
-start tracking things:
+`setup` asks only what the app cannot work out for itself — where you sell (it
+sets the fee model), what shipping costs you, your bankroll, timezone, digest
+hour, sets to track — and generates your ntfy topic and API token rather than
+leaving placeholders.
+
+`import` takes a CSV with `card_id,variant,quantity,cost_each,condition` (plus
+optional `acquired_at`, `notes`) and fetches any cards the catalog does not
+know yet. `pokeflip import watchlist` does the same for watch targets with
+`max_buy` / `target_sell` columns.
+
+`doctor` is the one to run after any change. It checks the things that
+silently break an unattended install:
+
+```
+  ok    database         data/pokeflip.db - 25 cards, 4525 price points, 8 open lots
+  ok    tracking         8 holdings, 6 watchlist entries, 0 tracked sets
+  FAIL  price source     pokemontcg unreachable: GET /sets failed: 403 Forbidden
+        -> Check network access to the provider. If it is blocked where this
+           runs, set provider.name to 'fixture' to work offline.
+  ok    fees             12.75% + $0.30 per order, $1.10 shipping
+  warn  phone push       no channel that reaches a phone
+        -> Add 'ntfy' (no account needed), 'pushover' or 'telegram'.
+  FAIL  api security     the server is published but has no API token
+        -> Set server.api_token - anyone who finds the URL can otherwise read
+           and edit your portfolio.
+```
+
+It exits non-zero when something will actually stop it working, so it can gate
+a deploy. Every warning carries the fix.
+
+Adding things one at a time still works:
 
 ```bash
-python -m pokeflip.cli sync --set sv3pt5             # pull and price a whole set
-python -m pokeflip.cli search charizard --remote     # find cards
-python -m pokeflip.cli watch add sv3pt5-199 --max-buy 380 --target-sell 520
-python -m pokeflip.cli hold add sv3pt5-199 --variant holofoil --quantity 2 --cost 402.50
-python -m pokeflip.cli refresh                       # fetch prices now
+pokeflip sync --set sv3pt5                    # pull and price a whole set
+pokeflip search charizard --remote            # find cards
+pokeflip watch add sv3pt5-199 --max-buy 380 --target-sell 520
+pokeflip hold add sv3pt5-199 --variant holofoil --quantity 2 --cost 402.50
+pokeflip refresh                              # fetch prices now
 ```
 
 ### Price sources
@@ -521,7 +554,10 @@ API is authenticated. Worth checking once after deploying.
 ## Command reference
 
 ```
-pokeflip init                     write a starter config.json
+pokeflip setup                    answer a few questions, write config.json
+pokeflip doctor [--offline]       check whether this is set up to actually run
+pokeflip import holdings|watchlist --file F   bulk load from CSV
+pokeflip init                     write a starter config.json from defaults
 pokeflip demo [--days N]          seed offline data with real-looking history
 pokeflip search QUERY [--remote]  find cards
 pokeflip sync --set ID            pull a whole set into the catalog and price it
@@ -692,7 +728,7 @@ Secrets (`api_key`, SMTP password, webhook URLs) are redacted from
 python -m unittest discover -s tests -v
 ```
 
-182 tests, standard library only, no network. The offline provider is
+202 tests, standard library only, no network. The offline provider is
 deterministic, so results are stable run to run.
 
 ---
@@ -719,6 +755,7 @@ pokeflip/
   actions.py      one-tap action tokens from notifications
   bot.py          Telegram command worker
   api.py          REST API, action endpoint, dashboard host
+  setup.py        setup wizard and the doctor checks
   cli.py          command line
   web/            dashboard (vanilla JS, no build step)
 ```

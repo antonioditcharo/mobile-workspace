@@ -1017,6 +1017,174 @@ def cmd_bot(args: argparse.Namespace, db: Database, config: Config) -> int:
     return run_forever(db, config)
 
 
+def cmd_doctor(args: argparse.Namespace, db: Database, config: Config) -> int:
+    from .setup import FAIL, PASS, WARN, diagnose
+
+    checks = diagnose(db, config, check_network=not args.offline)
+
+    def render() -> None:
+        heading("Checkup")
+        marks = {PASS: _c("ok  ", GREEN), WARN: _c("warn", YELLOW),
+                 FAIL: _c("FAIL", RED)}
+        for check in checks:
+            print(f"  {marks[check.status]}  {check.name:<16} {check.detail}")
+            if check.fix:
+                print(_c(f"        -> {check.fix}", DIM))
+        failed = sum(1 for c in checks if c.status == FAIL)
+        warned = sum(1 for c in checks if c.status == WARN)
+        print()
+        if failed:
+            print(_c(f"  {failed} problem(s) will stop this working.", RED))
+        elif warned:
+            print(_c(f"  Working, with {warned} thing(s) worth improving.", YELLOW))
+        else:
+            print(_c("  Everything checks out.", GREEN))
+    emit(args, [c.to_dict() for c in checks], render)
+    return 1 if any(c.status == FAIL for c in checks) else 0
+
+
+def cmd_setup(args: argparse.Namespace, db: Database, config: Config) -> int:
+    from .setup import wizard
+
+    path = Path(args.path)
+    if path.exists() and not args.force:
+        print(f"{path} already exists; pass --force to overwrite it")
+        return 1
+
+    def ask(prompt: str, default: str) -> str:
+        suffix = f" [{default}]" if default else ""
+        try:
+            answer = input(f"{prompt}{suffix}: ").strip()
+        except EOFError:
+            answer = ""
+        return answer or default
+
+    def confirm(prompt: str, default: bool) -> bool:
+        hint = "Y/n" if default else "y/N"
+        try:
+            answer = input(f"{prompt} [{hint}]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        if not answer:
+            return default
+        return answer.startswith("y")
+
+    print(_c("Setting up pokeflip. Press enter to accept each default.\n", BOLD))
+    try:
+        config = wizard(config, ask, confirm)
+    except (KeyboardInterrupt, ValueError) as exc:
+        print(_c(f"\nStopped: {exc or 'cancelled'}", YELLOW))
+        return 1
+
+    config.save(path)
+    print()
+    print(f"Wrote {path}")
+    if config.notify.ntfy_topic:
+        print()
+        print("  Install the ntfy app and subscribe to this topic:")
+        print(_c(f"    {config.notify.ntfy_topic}", BOLD))
+        print(_c("    Keep it private - anyone with it can read your alerts.", DIM))
+    if config.server.api_token:
+        print()
+        print("  Your API token (also saved in the config file):")
+        print(_c(f"    {config.server.api_token}", BOLD))
+    print()
+    print("Next:")
+    print("  pokeflip doctor                          check everything")
+    print("  pokeflip import holdings --file mine.csv  load your collection")
+    print("  pokeflip serve                           start it")
+    return 0
+
+
+def cmd_import(args: argparse.Namespace, db: Database, config: Config) -> int:
+    """Bulk load a collection or watchlist from CSV.
+
+    Adding a real collection one `hold add` at a time is nobody's idea of a
+    good time, and a spreadsheet is where most people already keep it.
+    """
+    path = Path(args.file)
+    if not path.is_file():
+        print(_c(f"No such file: {path}", RED))
+        return 1
+
+    with path.open(newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    if not rows:
+        print("That file has no rows")
+        return 1
+
+    # Pull in any card we do not know about yet, so the import is not a wall
+    # of "unknown card" errors.
+    known = {row["id"] for row in db.query("SELECT id FROM cards")}
+    wanted = {(r.get("card_id") or r.get("id") or "").strip() for r in rows}
+    missing = sorted(cid for cid in wanted if cid and cid not in known)
+    fetched = 0
+    if missing and not args.no_sync:
+        print(_c(f"Fetching {len(missing)} unknown card(s) from the provider...", DIM))
+        try:
+            result = ingest.capture_prices(db, config, missing)
+            fetched = result.get("cards", 0)
+        except ProviderError as exc:
+            print(_c(f"Could not fetch them: {exc}", YELLOW))
+
+    added = 0
+    skipped: list[str] = []
+    for index, row in enumerate(rows, start=2):   # row 1 is the header
+        card_id = (row.get("card_id") or row.get("id") or "").strip()
+        if not card_id:
+            skipped.append(f"row {index}: no card_id")
+            continue
+        try:
+            if args.import_kind == "holdings":
+                portfolio.add_holding(
+                    db, card_id,
+                    variant=(row.get("variant") or "normal").strip(),
+                    quantity=int(row.get("quantity") or row.get("qty") or 1),
+                    cost_each=float(row.get("cost_each") or row.get("cost") or 0),
+                    condition=(row.get("condition") or "NM").strip(),
+                    acquired_at=(row.get("acquired_at") or row.get("acquired")
+                                 or "").strip() or None,
+                    acquired_from=(row.get("source") or "").strip(),
+                    notes=(row.get("notes") or "").strip(),
+                )
+            else:
+                alerts_mod.add_watch(
+                    db, card_id,
+                    variant=(row.get("variant") or "any").strip(),
+                    max_buy=_opt_float(row.get("max_buy")),
+                    target_sell=_opt_float(row.get("target_sell")),
+                    note=(row.get("notes") or row.get("note") or "").strip(),
+                )
+            added += 1
+        except (ValueError, TypeError) as exc:
+            skipped.append(f"row {index} ({card_id}): {exc}")
+
+    result = {"added": added, "skipped": len(skipped), "cards_fetched": fetched,
+              "errors": skipped}
+
+    def render() -> None:
+        print(f"Imported {added} {args.import_kind} entr"
+              f"{'y' if added == 1 else 'ies'}"
+              + (f", fetched {fetched} new card(s)" if fetched else ""))
+        if skipped:
+            print(_c(f"Skipped {len(skipped)}:", YELLOW))
+            for problem in skipped[:15]:
+                print(_c(f"  {problem}", DIM))
+            if len(skipped) > 15:
+                print(_c(f"  ...and {len(skipped) - 15} more", DIM))
+        if added:
+            print()
+            print("Next:  pokeflip refresh   then   pokeflip scan")
+    emit(args, result, render)
+    return 0 if added else 1
+
+
+def _opt_float(value: Any) -> float | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return float(value)
+
+
 def cmd_runs(args: argparse.Namespace, db: Database, config: Config) -> int:
     rows = [dict(r) for r in db.recent_runs(args.limit)]
 
@@ -1294,6 +1462,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--year", type=int)
     p.add_argument("--output", help="write here instead of stdout")
     p.set_defaults(func=cmd_export)
+
+    p = cmd(sub, "setup", help="answer a few questions and write config.json")
+    p.add_argument("--path", default="config.json")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_setup)
+
+    p = cmd(sub, "doctor", help="check whether this is actually set up to run")
+    p.add_argument("--offline", action="store_true",
+                   help="skip the live provider check")
+    p.set_defaults(func=cmd_doctor)
+
+    p = cmd(sub, "import", help="bulk load holdings or a watchlist from CSV")
+    p.add_argument("import_kind", choices=["holdings", "watchlist"])
+    p.add_argument("--file", required=True, help="path to the CSV")
+    p.add_argument("--no-sync", action="store_true",
+                   help="do not fetch cards the catalog does not know yet")
+    p.set_defaults(func=cmd_import)
 
     p = cmd(sub, "notify", help="test delivery and manage snoozed alerts")
     nfy = p.add_subparsers(dest="notify_action", required=True)

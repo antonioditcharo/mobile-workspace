@@ -24,6 +24,7 @@ from pokeflip import (  # noqa: E402
     providers, signals,
 )
 from pokeflip import alerts as alerts_mod  # noqa: E402
+from pokeflip import setup as pfsetup  # noqa: E402
 from pokeflip.alerts import add_watch, evaluate_alerts, store_alerts  # noqa: E402
 from pokeflip.analytics import (  # noqa: E402
     compute_metrics, linear_slope, load_metrics, pct_change, sma, value_days_ago,
@@ -1627,6 +1628,142 @@ class BotTests(TempDbCase):
     def test_it_reports_when_it_is_not_configured(self):
         self.config.notify.telegram_bot_token = ""
         self.assertFalse(bot.TelegramBot(self.db, self.config).configured)
+
+
+# --- setup and doctor ---------------------------------------------------
+
+class DoctorTests(TempDbCase):
+    def statuses(self, **kwargs):
+        checks = pfsetup.diagnose(self.db, self.config, check_network=False, **kwargs)
+        return {c.name: c.status for c in checks}
+
+    def test_an_empty_install_flags_that_nothing_is_tracked(self):
+        result = self.statuses()
+        self.assertEqual(result["tracking"], pfsetup.FAIL)
+        self.assertEqual(result["price freshness"], pfsetup.WARN)
+
+    def test_a_seeded_install_passes_tracking(self):
+        ingest.seed_demo(self.db, self.config, days=30)
+        self.assertEqual(self.statuses()["tracking"], pfsetup.PASS)
+
+    def test_zero_fees_are_a_failure_not_a_warning(self):
+        # Without fees every flip looks profitable, which is worse than useless.
+        self.config.fees.commission_pct = 0.0
+        self.config.fees.payment_pct = 0.0
+        self.assertEqual(self.statuses()["fees"], pfsetup.FAIL)
+
+    def test_missing_shipping_cost_is_flagged(self):
+        self.config.fees.shipping_cost = 0.0
+        self.assertEqual(self.statuses()["fees"], pfsetup.WARN)
+
+    def test_publishing_without_a_token_is_a_failure(self):
+        self.config.server.public_base_url = "https://pokeflip.example"
+        self.config.server.api_token = ""
+        self.assertEqual(self.statuses()["api security"], pfsetup.FAIL)
+
+    def test_publishing_over_plain_http_is_flagged(self):
+        self.config.server.public_base_url = "http://pokeflip.example"
+        self.config.server.api_token = "t"
+        self.assertEqual(self.statuses()["api security"], pfsetup.WARN)
+
+    def test_a_secured_published_server_passes(self):
+        self.config.server.public_base_url = "https://pokeflip.example"
+        self.config.server.api_token = "t"
+        self.assertEqual(self.statuses()["api security"], pfsetup.PASS)
+
+    def test_a_channel_missing_its_credentials_is_a_failure(self):
+        self.config.notify.channels = ["ntfy"]
+        self.config.notify.ntfy_topic = ""
+        self.assertEqual(self.statuses()["delivery"], pfsetup.FAIL)
+
+    def test_a_fully_configured_channel_passes(self):
+        self.config.notify.channels = ["ntfy"]
+        self.config.notify.ntfy_topic = "topic"
+        result = self.statuses()
+        self.assertEqual(result["delivery"], pfsetup.PASS)
+        self.assertEqual(result["phone push"], pfsetup.PASS)
+
+    def test_an_unknown_timezone_is_caught(self):
+        self.config.timezone = "Mars/Olympus"
+        self.assertEqual(self.statuses()["scheduler"], pfsetup.FAIL)
+
+    def test_every_problem_carries_a_fix(self):
+        self.config.notify.channels = ["telegram"]
+        self.config.fees.commission_pct = 0.0
+        self.config.fees.payment_pct = 0.0
+        for check in pfsetup.diagnose(self.db, self.config, check_network=False):
+            if check.status in (pfsetup.WARN, pfsetup.FAIL):
+                self.assertTrue(check.fix, f"{check.name} has no suggested fix")
+
+    def test_an_unreachable_provider_is_reported_not_raised(self):
+        self.config.provider.name = "pokemontcg"
+        self.config.provider.base_url = "http://127.0.0.1:1/v2"
+        self.config.provider.max_retries = 1
+        self.config.provider.timeout_seconds = 0.5
+        checks = {c.name: c for c in pfsetup.diagnose(self.db, self.config)}
+        self.assertEqual(checks["price source"].status, pfsetup.FAIL)
+        self.assertIn("unreachable", checks["price source"].detail)
+
+
+class SetupWizardTests(unittest.TestCase):
+    def run_wizard(self, answers: dict[str, str], confirms: dict[str, bool]):
+        def ask(prompt: str, default: str) -> str:
+            for key, value in answers.items():
+                if key in prompt:
+                    return value
+            return default
+
+        def confirm(prompt: str, default: bool) -> bool:
+            for key, value in confirms.items():
+                if key in prompt:
+                    return value
+            return default
+
+        return pfsetup.wizard(Config(), ask, confirm)
+
+    def test_the_marketplace_sets_the_fee_model(self):
+        config = self.run_wizard({"Where do you sell": "ebay"}, {})
+        self.assertEqual(config.fees.name, "ebay")
+        self.assertAlmostEqual(config.fees.commission_pct, 0.1325)
+
+    def test_an_unrecognised_marketplace_falls_back_safely(self):
+        config = self.run_wizard({"Where do you sell": "carboot"}, {})
+        self.assertGreater(config.fees.commission_pct, 0)
+
+    def test_an_api_token_is_generated_not_left_blank(self):
+        config = self.run_wizard(
+            {"Public URL": "https://pokeflip.example"},
+            {"reach this server": True},
+        )
+        self.assertEqual(config.server.public_base_url, "https://pokeflip.example")
+        self.assertGreaterEqual(len(config.server.api_token), 32)
+
+    def test_no_token_is_generated_when_not_publishing(self):
+        config = self.run_wizard({}, {"reach this server": False})
+        self.assertEqual(config.server.api_token, "")
+
+    def test_a_random_ntfy_topic_is_suggested(self):
+        config = self.run_wizard({}, {"ntfy": True})
+        self.assertTrue(config.notify.ntfy_topic.startswith("pokeflip-"))
+        self.assertIn("ntfy", config.notify.channels)
+
+    def test_declining_push_leaves_only_file_delivery(self):
+        config = self.run_wizard({}, {"ntfy": False, "reach this server": False})
+        self.assertEqual(config.notify.channels, ["file"])
+
+    def test_tracked_sets_are_split_and_trimmed(self):
+        config = self.run_wizard({"Sets to track": " sv3pt5 , swsh7 ,"}, {})
+        self.assertEqual(config.tracked_sets, ["sv3pt5", "swsh7"])
+
+    def test_the_result_survives_a_round_trip_to_disk(self):
+        config = self.run_wizard({"Where do you sell": "ebay",
+                                  "Working capital": "1500"}, {})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            config.save(path)
+            reloaded = Config.load(path)
+        self.assertAlmostEqual(reloaded.capital.bankroll, 1500.0)
+        self.assertAlmostEqual(reloaded.fees.commission_pct, 0.1325)
 
 
 if __name__ == "__main__":
