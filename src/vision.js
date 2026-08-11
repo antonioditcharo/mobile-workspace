@@ -58,7 +58,19 @@ export const MODELS = {
     dtype: 'q4f16',
     label: 'SmolVLM 500M (q4f16)',
     approxDownload: '~450 MB',
-    note: 'Best captions. Needs WebGPU.',
+    note: 'Good captions and pose reading. Needs WebGPU.',
+  },
+  'smolvlm-2.2b-q4f16': {
+    id: 'HuggingFaceTB/SmolVLM-Instruct',
+    dtype: 'q4f16',
+    label: 'SmolVLM 2.2B (q4f16)',
+    approxDownload: '~1.6 GB',
+    // Never auto-selected, and flagged as unverified: the model host is not
+    // reachable from the build sandbox, so this repo/dtype pairing could not be
+    // confirmed to have an ONNX build. Load failures surface readably and the
+    // model can be switched back, so trying it is cheap.
+    note: 'Best pose/action reading. Large, unverified — may fail on some phones.',
+    unverified: true,
   },
 };
 
@@ -119,7 +131,11 @@ export function chooseModel(caps, override = null) {
     };
   }
 
-  const lowMemory = typeof caps.memoryGb === 'number' && caps.memoryGb <= 4;
+  // Only genuinely constrained devices drop to the smallest model. The previous
+  // threshold of 4 GB was too cautious: 4 GB is the common phone reading, and
+  // those devices run the 500M model on the GPU fine — which matters, because
+  // the 500M model is markedly better at reading body position.
+  const lowMemory = typeof caps.memoryGb === 'number' && caps.memoryGb <= 2;
 
   if (caps.webgpu && !lowMemory) {
     return {
@@ -203,7 +219,21 @@ export const PASSES = [
     question: 'What visible clothing is the subject wearing? If none is visible, say none.',
     tokens: 24,
   },
+  {
+    field: 'pose',
+    // Body position was previously buried inside a single vague "what is the
+    // subject doing?" pass, which returned things like "sunning herself" for
+    // someone simply facing the camera. Asked directly, with a bigger budget.
+    question:
+      'Describe the body position: standing, seated, lying down, leaning, kneeling, and how the arms and head are held.',
+    tokens: 36,
+  },
   { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 20 },
+  {
+    field: 'gaze',
+    question: 'Where is the subject looking? Answer in a few words.',
+    tokens: 14,
+  },
   { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 20 },
   {
     field: 'placement',
@@ -220,6 +250,12 @@ export const PASSES = [
     question:
       'How is this framed? Answer with exactly one of: close-up shot, waist-up shot, full-body shot, wide shot.',
     tokens: 12,
+  },
+  {
+    field: 'apparentAge',
+    // Feeds the adult-content safeguard in the compiler. Never emitted as a tag.
+    question: 'Does the main subject appear to be an adult or a child? Answer adult or child.',
+    tokens: 8,
   },
 ];
 

@@ -28,6 +28,13 @@ import {
   LIGHTING_NOUNS,
   SETTING_PREPOSITIONS,
   DEFAULT_SETTING_PREPOSITION,
+  POSE_SYNONYMS,
+  GAZE_SYNONYMS,
+  CONTENT_LEVELS,
+  DEFAULT_CONTENT,
+  MINOR_TERMS,
+  NON_ADULT_ANSWERS,
+  NSFW_QUALITY_TAGS,
 } from './vocab.js';
 
 import {
@@ -52,13 +59,25 @@ export const OBSERVATION_FIELDS = [
   'subject',
   'appearance',
   'clothing',
+  'pose',
   'action',
+  'gaze',
   'setting',
   'placement',
   'colors',
   'lighting',
   'shotType',
+  'apparentAge',
 ];
+
+/** Fields used for reasoning only — never emitted as prompt tags. */
+export const INTERNAL_FIELDS = ['placement', 'apparentAge'];
+
+/** Per-category vocabulary, consulted before the global synonym table. */
+const CATEGORY_SYNONYMS = {
+  pose: POSE_SYNONYMS,
+  gaze: GAZE_SYNONYMS,
+};
 
 /* ------------------------------------------------------------------ *
  * Text cleanup
@@ -107,7 +126,7 @@ export function toTags(phrase) {
 }
 
 /** Lowercase, de-article, and map onto the controlled vocabulary. */
-export function normalizeTag(tag) {
+export function normalizeTag(tag, category = null) {
   let out = String(tag || '')
     .toLowerCase()
     .replace(/\s+/g, ' ')
@@ -115,6 +134,12 @@ export function normalizeTag(tag) {
     .replace(/^(?:a|an|the)\s+/, '')
     .trim();
 
+  // Category vocabulary wins: "camera" means "at the camera" for gaze but not
+  // for a subject.
+  const categoryMap = category ? CATEGORY_SYNONYMS[category] : null;
+  if (categoryMap && Object.prototype.hasOwnProperty.call(categoryMap, out)) {
+    return categoryMap[out];
+  }
   if (Object.prototype.hasOwnProperty.call(SYNONYMS, out)) {
     out = SYNONYMS[out];
   }
@@ -145,11 +170,11 @@ export function dedupeTags(tags) {
 }
 
 /** Full cleanup pipeline for one raw model answer. */
-export function fieldToTags(raw) {
+export function fieldToTags(raw, category = null) {
   const cleaned = cleanAnswer(raw);
   if (isNullAnswer(cleaned)) return [];
   const tags = toTags(cleaned)
-    .map(normalizeTag)
+    .map((t) => normalizeTag(t, category))
     .filter((t) => t && !GENERIC_TAGS.has(t) && !isNullAnswer(t));
   return dedupeTags(tags);
 }
@@ -259,13 +284,17 @@ export function eraContribution(
   intensity = DEFAULT_INTENSITY,
   variant = 0,
   scene = {},
+  contentLevel = DEFAULT_CONTENT,
 ) {
   const era = ERAS[eraId] || ERAS[DEFAULT_ERA];
   const formatKey = formatId && era.formats[formatId] ? formatId : era.defaultFormat;
   const format = era.formats[formatKey] || { camera: [], stock: [], artifacts: [] };
   const level = INTENSITY_LEVELS[intensity] || INTENSITY_LEVELS[DEFAULT_INTENSITY];
 
-  const framing = pick(era.snapshotFraming, variant);
+  // Adult content keeps the era's own intimate framing, so the result still
+  // reads as a period photograph rather than a modern studio shoot.
+  const intimate = CONTENT_LEVELS[contentLevel]?.intimate && era.intimateFraming?.length;
+  const framing = pick(intimate ? era.intimateFraming : era.snapshotFraming, variant);
   const stock = phraseStock(pick(format.stock, variant));
   const camera = pick(format.camera, variant);
 
@@ -332,6 +361,74 @@ export function periodSubjectTags(era, scene = {}, { hasObservedClothing = false
 }
 
 /* ------------------------------------------------------------------ *
+ * Content level
+ * ------------------------------------------------------------------ */
+
+/**
+ * Decide whether adult content styling may be applied.
+ *
+ * Three independent checks, because no single one is reliable:
+ *
+ *  1. The model's age read (`apparentAge`) — cheap, and catches the obvious case.
+ *  2. A lexical scan of the observed subject and appearance — catches it when the
+ *     age pass failed or was edited away, since the fields are user-editable.
+ *  3. The user's explicit affirmation that the subject is an adult — the only one
+ *     that carries any actual accountability.
+ *
+ * Any one of them failing withholds adult styling. This is intentionally not
+ * overridable: the fields are editable precisely so a wrong model answer can be
+ * corrected, which would otherwise make check 1 trivial to defeat on its own.
+ *
+ * `girl` and `woman` are deliberately absent from MINOR_TERMS: they are
+ * ambiguous in prompt vocabulary, and treating them as blocking would make the
+ * feature useless while catching nothing that checks 1 and 3 don't.
+ */
+export function contentDecision(observation = {}, { content = DEFAULT_CONTENT, adultConfirmed = false } = {}) {
+  const level = CONTENT_LEVELS[content] ? content : DEFAULT_CONTENT;
+  const config = CONTENT_LEVELS[level];
+
+  if (!config.requiresAdult) {
+    return { level, config, allowed: true, blocked: false, reason: null };
+  }
+
+  const ageAnswer = String(observation.apparentAge || '');
+  if (ageAnswer && NON_ADULT_ANSWERS.test(ageAnswer)) {
+    return {
+      level: DEFAULT_CONTENT,
+      config: CONTENT_LEVELS[DEFAULT_CONTENT],
+      allowed: false,
+      blocked: true,
+      reason:
+        'The subject does not read as an adult, so adult content settings are disabled for this image.',
+    };
+  }
+
+  const described = `${observation.subject || ''} ${observation.appearance || ''}`.toLowerCase();
+  const hit = MINOR_TERMS.find((term) => new RegExp(`\\b${term}\\b`, 'i').test(described));
+  if (hit) {
+    return {
+      level: DEFAULT_CONTENT,
+      config: CONTENT_LEVELS[DEFAULT_CONTENT],
+      allowed: false,
+      blocked: true,
+      reason: `The subject is described as "${hit}", so adult content settings are disabled for this image.`,
+    };
+  }
+
+  if (!adultConfirmed) {
+    return {
+      level: DEFAULT_CONTENT,
+      config: CONTENT_LEVELS[DEFAULT_CONTENT],
+      allowed: false,
+      blocked: true,
+      reason: 'Confirm the subject is an adult to enable this content level.',
+    };
+  }
+
+  return { level, config, allowed: true, blocked: false, reason: null };
+}
+
+/* ------------------------------------------------------------------ *
  * Negative prompt
  * ------------------------------------------------------------------ */
 
@@ -340,7 +437,7 @@ export function periodSubjectTags(era, scene = {}, { hasObservedClothing = false
  * asks for. Without this an era that wants JPEG blocks or a white print border
  * would simultaneously forbid them.
  */
-export function buildNegative(era, contribution, positiveTags) {
+export function buildNegative(era, contribution, positiveTags, contentConfig = null) {
   const exclude = new Set(contribution.negativeExclude.map((t) => t.toLowerCase()));
 
   // REALISM_NEGATIVE only applies to realism-forcing presets; `suppressQualityTags`
@@ -349,6 +446,7 @@ export function buildNegative(era, contribution, positiveTags) {
     ...BASE_NEGATIVE,
     ...(era.suppressQualityTags ? REALISM_NEGATIVE : []),
     ...(era.negative || []),
+    ...(contentConfig?.negative || []),
   ];
 
   const positive = positiveTags.map((t) => t.toLowerCase());
@@ -504,20 +602,24 @@ export function compile(observation = {}, options = {}) {
     emphasis = true,
     variant = 0,
     source = null,
+    content = DEFAULT_CONTENT,
+    adultConfirmed = false,
+    extra = '',
   } = options;
 
   const scene = inferScene(observation);
-  const contribution = eraContribution(eraId, formatId, intensity, variant, scene);
+  const decision = contentDecision(observation, { content, adultConfirmed });
+  const contribution = eraContribution(eraId, formatId, intensity, variant, scene, decision.level);
   const era = contribution.era;
 
   // Observed fields.
   const groups = {};
   for (const field of OBSERVATION_FIELDS) {
-    groups[field] = fieldToTags(observation[field]);
+    groups[field] = fieldToTags(observation[field], field);
   }
 
-  // `placement` only informs scene inference; it is never a prompt tag.
-  delete groups.placement;
+  // Reasoning-only fields are never prompt tags.
+  for (const field of INTERNAL_FIELDS) delete groups[field];
 
   // A small model invents shot types ("wide shot" for a tight selfie). It can't
   // be made accurate, but it can be kept to real values.
@@ -535,6 +637,21 @@ export function compile(observation = {}, options = {}) {
     groups.appearance = [...groups.appearance, ...period.appearance];
     groups.clothing = [...groups.clothing, ...period.clothing];
     groups.setting = [...groups.setting, ...period.setting];
+  }
+
+  // Anatomy support for figure work. The realism presets already reject the
+  // airbrushed look, so what adult content needs is a push toward natural bodies.
+  if (decision.allowed && decision.config.qualityTags > 0) {
+    groups.appearance = [
+      ...groups.appearance,
+      ...NSFW_QUALITY_TAGS.slice(0, decision.config.qualityTags),
+    ];
+  }
+
+  // Free-text terms the user supplies themselves, kept close to the subject
+  // rather than trailing after the medium tags.
+  if (extra) {
+    groups.action = [...groups.action, ...fieldToTags(extra)];
   }
 
   if (!era.suppressQualityTags) {
@@ -560,7 +677,7 @@ export function compile(observation = {}, options = {}) {
       ? renderNatural(groups, { framing: contribution.framing })
       : renderTagStyle(groups, { emphasis });
 
-  const negative = buildNegative(era, contribution, positiveTags);
+  const negative = buildNegative(era, contribution, positiveTags, decision.config);
 
   const aspect =
     contribution.aspect === 'source'
@@ -583,6 +700,10 @@ export function compile(observation = {}, options = {}) {
     groups,
     scene,
     flash: contribution.flash,
+    content: decision.level,
+    contentRequested: content,
+    contentBlocked: decision.blocked,
+    contentReason: decision.reason,
     suppressedQualityTags: Boolean(era.suppressQualityTags),
   };
 }

@@ -24,6 +24,10 @@ import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+
+// Derived rather than hard-coded, so adding an observation pass doesn't break this.
+const { OBSERVATION_FIELDS } = await import('../src/compiler.js');
+const OBSERVATION_FIELD_COUNT = OBSERVATION_FIELDS.length;
 const require = createRequire(import.meta.url);
 
 const MIME = {
@@ -160,7 +164,11 @@ async function main() {
     check('four era options render', s.eras.length === 4, s.eras.join('|'));
     check('1990s is the default era', s.pressedEra === '1990s', String(s.pressedEra));
     check('formats render for the era', s.formats.length === 3, s.formats.join('|'));
-    check('one input per observation field', s.fieldCount === 9, String(s.fieldCount));
+    check(
+      'one input per observation field',
+      s.fieldCount === OBSERVATION_FIELD_COUNT,
+      `${s.fieldCount} inputs vs ${OBSERVATION_FIELD_COUNT} fields`,
+    );
     check('an era-only prompt compiles with no image', s.prompt.length > 40, s.prompt);
     check('negative prompt is populated', s.negative.length > 60);
     check('1990s Perchance settings shown', s.cfg === '5.5' && s.resolution === '768x512',
@@ -259,6 +267,62 @@ async function main() {
     check('natural style has no weight syntax', !s.prompt.includes(':1.2)'), s.prompt);
     check('no doubled prepositions', !/\bin\s+in\b|\bwearing\s+wearing\b/.test(s.prompt), s.prompt);
     await segButton(page, 'style-seg', 'Tag style').click();
+
+    /* -------------------------------------------------- content level */
+    console.log('\nContent level & minor safeguard');
+    await page.fill('#field-subject', 'a woman');
+    await page.fill('#field-apparentAge', 'adult');
+    s = await readState(page);
+    check('safe is the default', /nsfw|nude/i.test(s.negative), s.negative.slice(0, 80));
+
+    await segButton(page, 'content-seg', 'Explicit').click();
+    let hint = await page.textContent('#content-hint');
+    check('adult level blocked without affirmation', /confirm/i.test(hint || ''), hint || '');
+    s = await readState(page);
+    check('blocked level still negates nudity', /\bnude\b/i.test(s.negative), s.negative.slice(0, 80));
+
+    await page.check('#adult-confirmed');
+    s = await readState(page);
+    hint = await page.textContent('#content-hint');
+    check('affirmation enables the level', !/confirm/i.test(hint || ''), hint || '');
+    check('nudity negatives lifted', !/\bnude\b/i.test(s.negative), s.negative.slice(0, 100));
+    check('anatomy support added', /anatomically correct/i.test(s.prompt), s.prompt);
+    check('era framing kept for adult content', /boudoir|private/i.test(s.prompt), s.prompt);
+    check('era realism still applies', !/masterpiece|\b8k\b/i.test(s.prompt), s.prompt);
+
+    // The safeguard must hold in the real UI, not just in the compiler.
+    await page.fill('#field-subject', 'a child');
+    s = await readState(page);
+    hint = await page.textContent('#content-hint');
+    check('minor subject blocks adult content', /disabled/i.test(hint || ''), hint || '');
+    check('blocked output falls back to safe', /\bnude\b/i.test(s.negative), s.negative.slice(0, 80));
+    check('no anatomy tags when blocked', !/anatomically correct/i.test(s.prompt), s.prompt);
+
+    await page.fill('#field-subject', 'a woman');
+    await page.fill('#field-apparentAge', 'child');
+    s = await readState(page);
+    hint = await page.textContent('#content-hint');
+    check('model age read blocks adult content', /does not read as an adult/i.test(hint || ''), hint || '');
+
+    // Reset for the remaining checks.
+    await page.fill('#field-apparentAge', 'adult');
+    await page.uncheck('#adult-confirmed');
+    await segButton(page, 'content-seg', 'Safe').click();
+    await page.fill('#field-subject', 'a man');
+
+    /* -------------------------------------------------- pose & gaze */
+    console.log('\nPose & gaze');
+    await page.fill('#field-pose', 'sitting');
+    await page.fill('#field-gaze', 'camera');
+    s = await readState(page);
+    check('pose is normalised', s.prompt.includes('seated'), s.prompt);
+    check('gaze is normalised', s.prompt.includes('at the camera'), s.prompt);
+    await page.fill('#extra-terms', 'holding a coffee mug');
+    s = await readState(page);
+    check('extra terms reach the prompt', s.prompt.includes('holding a coffee mug'), s.prompt);
+    await page.fill('#extra-terms', '');
+    await page.fill('#field-pose', '');
+    await page.fill('#field-gaze', '');
 
     /* -------------------------------------------------- reroll */
     console.log('\nVariant reroll');

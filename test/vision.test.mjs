@@ -86,11 +86,40 @@ test('WebGPU with adequate memory picks the 500M model on the GPU', () => {
   assert.match(choice.why, /WebGPU/);
 });
 
-test('WebGPU with low memory drops to the smallest model', () => {
-  const choice = chooseModel({ webgpu: true, memoryGb: 4 });
+test('WebGPU with genuinely low memory drops to the smallest model', () => {
+  const choice = chooseModel({ webgpu: true, memoryGb: 2 });
   assert.equal(choice.key, 'smolvlm-256m-q4');
   assert.equal(choice.device, 'webgpu');
   assert.match(choice.why, /RAM/);
+});
+
+test('a common 4 GB phone still gets the better model', () => {
+  // 4 GB is the typical reading and runs the 500M model fine on the GPU; the
+  // larger model reads body position noticeably better.
+  const choice = chooseModel({ webgpu: true, memoryGb: 4 });
+  assert.equal(choice.key, 'smolvlm-500m-q4f16');
+});
+
+test('the large model is never auto-selected', () => {
+  for (const memoryGb of [2, 4, 8, null]) {
+    for (const webgpu of [true, false]) {
+      const choice = chooseModel({ webgpu, memoryGb });
+      assert.notEqual(choice.key, 'smolvlm-2.2b-q4f16', `auto-picked at ${memoryGb}/${webgpu}`);
+    }
+  }
+  // But it is available on request.
+  assert.equal(
+    chooseModel({ webgpu: true, memoryGb: 8 }, 'smolvlm-2.2b-q4f16').key,
+    'smolvlm-2.2b-q4f16',
+  );
+});
+
+test('unverified models are labelled as such', () => {
+  for (const [key, model] of Object.entries(MODELS)) {
+    if (model.unverified) {
+      assert.match(model.note, /unverified/i, `${key} should say so in its note`);
+    }
+  }
 });
 
 test('no WebGPU falls back to CPU and warns about speed', () => {
@@ -187,6 +216,8 @@ test('passes give short prompts with tight token budgets', () => {
     // Roomy enough for a pass that enumerates its valid answers, which is how
     // the shot-type pass is kept to a closed set.
     assert.ok(pass.question.length < 140, `${pass.field} instruction is too long`);
-    assert.ok(pass.tokens > 0 && pass.tokens <= 32, `${pass.field} token budget looks wrong`);
+    // Pose legitimately needs more room than the terse passes — it describes
+    // posture, arms and head in one answer.
+    assert.ok(pass.tokens > 0 && pass.tokens <= 40, `${pass.field} token budget looks wrong`);
   }
 });

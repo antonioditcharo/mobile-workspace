@@ -430,6 +430,32 @@
       </div>
     </section>
 
+    <!-- Content level -->
+    <section>
+      <h2>Content</h2>
+      <div class="seg" id="content-seg"></div>
+      <label class="toggle" style="margin-top: 6px">
+        <input type="checkbox" id="adult-confirmed" />
+        <span>
+          The subject is an adult
+          <small>Required for Suggestive and Explicit. Applies to this device only.</small>
+        </span>
+      </label>
+      <p class="hint" id="content-hint"></p>
+      <h2 style="margin-top: 14px">Extra prompt terms</h2>
+      <input
+        id="extra-terms"
+        type="text"
+        placeholder="anything you want added, comma separated"
+        autocomplete="off"
+        style="width: 100%; min-height: 38px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px"
+      />
+      <p class="hint">
+        Levels above Safe permit nudity and add anatomy support — they don't invent
+        anything the photo doesn't show. Write what you want here or edit the fields above.
+      </p>
+    </section>
+
     <!-- 4. Output -->
     <section>
       <h2>4 · Prompt</h2>

@@ -216,6 +216,181 @@ export const SHOT_TYPES = [
   'selfie',
 ];
 
+/* ------------------------------------------------------------------ *
+ * Pose and gaze
+ *
+ * Body position was previously folded into a single vague "what is the subject
+ * doing?" pass, which returned things like "sunning herself" for someone simply
+ * facing the camera. Pose, action and gaze are now asked separately, and the
+ * answers normalised toward terms diffusion models respond to.
+ * ------------------------------------------------------------------ */
+
+export const POSE_SYNONYMS = {
+  sitting: 'seated',
+  'sitting down': 'seated',
+  'sat down': 'seated',
+  standing: 'standing upright',
+  'standing up': 'standing upright',
+  'laying down': 'lying down',
+  'lying': 'lying down',
+  'laying': 'lying down',
+  'leaning': 'leaning',
+  'bent over': 'bending forward',
+  crouching: 'crouched',
+  kneeling: 'kneeling',
+  squatting: 'squatting',
+  'arms crossed': 'arms crossed',
+  'hands on hips': 'hands on hips',
+  'arms raised': 'arms raised',
+  'head tilted': 'head tilted',
+  'over the shoulder': 'looking over the shoulder',
+  'three quarter': 'three-quarter view',
+  'side on': 'profile view',
+  'facing away': 'back to the camera',
+  'from behind': 'back to the camera',
+};
+
+/** Where the subject is looking. Kept short — long answers read as noise. */
+export const GAZE_SYNONYMS = {
+  camera: 'at the camera',
+  'at camera': 'at the camera',
+  'the camera': 'at the camera',
+  away: 'away from the camera',
+  down: 'downward',
+  up: 'upward',
+  side: 'to the side',
+  'to the left': 'to the side',
+  'to the right': 'to the side',
+  'off camera': 'away from the camera',
+  'into the distance': 'into the distance',
+};
+
+/* ------------------------------------------------------------------ *
+ * Content level
+ * ------------------------------------------------------------------ */
+
+/**
+ * Terms that indicate the subject is a minor.
+ *
+ * Used to withhold adult content styling. Deliberately errs toward blocking:
+ * "girl"/"woman" are genuinely ambiguous in prompt vocabulary and are handled by
+ * the separate model age check plus the user's explicit adult affirmation, but
+ * anything unambiguous here blocks outright.
+ */
+export const MINOR_TERMS = [
+  'child',
+  'children',
+  'kid',
+  'kids',
+  'baby',
+  'babies',
+  'infant',
+  'toddler',
+  'boy',
+  'little girl',
+  'little boy',
+  'young girl',
+  'young boy',
+  'teen',
+  'teens',
+  'teenager',
+  'teenage',
+  'adolescent',
+  'preteen',
+  'pre-teen',
+  'minor',
+  'schoolgirl',
+  'schoolboy',
+  'schoolchild',
+  'youngster',
+  'juvenile',
+  'underage',
+  'pupil',
+];
+
+/** Answers to the age pass that mean "not an adult". */
+export const NON_ADULT_ANSWERS =
+  /\b(child|kid|baby|infant|toddler|boy|teen|teenager|teenage|adolescent|preteen|minor|underage|young)\b/i;
+
+/**
+ * Anatomy and skin-texture terms for adult content.
+ *
+ * These are corrective rather than decorative: anatomy is the dominant failure
+ * mode for figure work, and the realism presets already reject the airbrushed
+ * look, so what is needed is an explicit push toward natural bodies.
+ */
+export const NSFW_QUALITY_TAGS = [
+  'anatomically correct',
+  'natural body proportions',
+  'natural skin texture',
+  'visible skin pores',
+  'natural body hair',
+  'realistic body',
+];
+
+/**
+ * Failure modes specific to figure work, added to the negative prompt when
+ * adult content is enabled.
+ */
+export const NSFW_NEGATIVE = [
+  'plastic skin',
+  'doll-like',
+  'mannequin',
+  'airbrushed body',
+  'impossible anatomy',
+  'extra nipples',
+  'malformed limbs',
+  'fused limbs',
+  'distorted torso',
+  'unnatural proportions',
+];
+
+/** Keeps unintended nudity out of ordinary prompts. */
+export const SFW_NEGATIVE = [
+  'nsfw',
+  'nude',
+  'nudity',
+  'topless',
+  'explicit content',
+  'sexual content',
+];
+
+/**
+ * Content levels.
+ *
+ * Note what these do and do not do. They control whether nudity is *permitted*
+ * and add anatomy support for figure work — they do not fabricate explicit
+ * content from a clothed photo. This app reads a photograph; inventing acts the
+ * photo does not show would both misrepresent the source and be precisely the
+ * behaviour worth not building. The user writes what they want in the editable
+ * fields and the free-text box; the compiler structures it.
+ */
+export const CONTENT_LEVELS = {
+  sfw: {
+    label: 'Safe',
+    requiresAdult: false,
+    negative: SFW_NEGATIVE,
+    qualityTags: 0,
+    intimate: false,
+  },
+  suggestive: {
+    label: 'Suggestive',
+    requiresAdult: true,
+    negative: [],
+    qualityTags: 3,
+    intimate: true,
+  },
+  explicit: {
+    label: 'Explicit',
+    requiresAdult: true,
+    negative: NSFW_NEGATIVE,
+    qualityTags: 99,
+    intimate: true,
+  },
+};
+
+export const DEFAULT_CONTENT = 'sfw';
+
 /**
  * Bare adjectives the lighting pass returns. "lit by sunny" is not English, so
  * these are mapped to noun phrases before the natural-language joiner runs.
@@ -297,7 +472,9 @@ export const CATEGORY_ORDER = [
   'subject',
   'appearance',
   'clothing',
+  'pose',
   'action',
+  'gaze',
   'setting',
   'colors',
   'lighting',
@@ -318,6 +495,8 @@ export const NL_JOINERS = {
   subject: { lead: '', skipIf: [] },
   appearance: { lead: '', skipIf: [] },
   clothing: { lead: 'wearing ', skipIf: ['wearing', 'dressed', 'in a', 'in an'] },
+  pose: { lead: '', skipIf: [] },
+  gaze: { lead: 'looking ', skipIf: ['looking', 'gazing', 'eyes', 'staring', 'facing'] },
   action: { lead: '', skipIf: [] },
   // The setting preposition is chosen per phrase — see SETTING_PREPOSITIONS.
   setting: { lead: '', skipIf: [] },

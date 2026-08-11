@@ -101,6 +101,9 @@ export const ERAS = {
     steps: 30,
     aspect: '3:2',
     snapshotFraming: ['amateur snapshot', 'vernacular family photograph', 'candid snapshot'],
+    // Used instead of snapshotFraming when content level is not SFW, so adult
+    // prompts stay era-coherent rather than defaulting to a modern studio look.
+    intimateFraming: ['amateur boudoir polaroid', 'private 1980s snapshot'],
     look: [
       'warm amber color cast',
       'corner vignetting',
@@ -181,6 +184,7 @@ export const ERAS = {
     steps: 28,
     aspect: '3:2',
     snapshotFraming: ['amateur snapshot', 'candid family photograph', 'vernacular snapshot'],
+    intimateFraming: ['amateur boudoir snapshot', 'private 1990s bedroom photo'],
     // Universal to the era, true regardless of scene or format.
     look: ['warm color cast', 'slight overexposure'],
     // Only when the photo really is a flash snapshot — never outdoors in daylight,
@@ -269,6 +273,7 @@ export const ERAS = {
     steps: 26,
     aspect: '4:3',
     snapshotFraming: ['amateur digital snapshot', 'candid party snapshot', 'vernacular snapshot'],
+    intimateFraming: ['amateur digital boudoir snapshot', 'private early 2000s photo'],
     look: ['limited dynamic range', 'digital noise in the shadows', 'small sensor look'],
     flashLook: [
       'harsh built-in flash',
@@ -349,6 +354,7 @@ export const ERAS = {
     steps: 30,
     aspect: 'source',
     snapshotFraming: [],
+    intimateFraming: [],
     look: [],
     flashLook: [],
     daylightLook: [],

@@ -429,6 +429,32 @@
       </div>
     </section>
 
+    <!-- Content level -->
+    <section>
+      <h2>Content</h2>
+      <div class="seg" id="content-seg"></div>
+      <label class="toggle" style="margin-top: 6px">
+        <input type="checkbox" id="adult-confirmed" />
+        <span>
+          The subject is an adult
+          <small>Required for Suggestive and Explicit. Applies to this device only.</small>
+        </span>
+      </label>
+      <p class="hint" id="content-hint"></p>
+      <h2 style="margin-top: 14px">Extra prompt terms</h2>
+      <input
+        id="extra-terms"
+        type="text"
+        placeholder="anything you want added, comma separated"
+        autocomplete="off"
+        style="width: 100%; min-height: 38px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px"
+      />
+      <p class="hint">
+        Levels above Safe permit nudity and add anatomy support — they don't invent
+        anything the photo doesn't show. Write what you want here or edit the fields above.
+      </p>
+    </section>
+
     <!-- 4. Output -->
     <section>
       <h2>4 · Prompt</h2>
@@ -719,6 +745,181 @@ const SHOT_TYPES = [
   'selfie',
 ];
 
+/* ------------------------------------------------------------------ *
+ * Pose and gaze
+ *
+ * Body position was previously folded into a single vague "what is the subject
+ * doing?" pass, which returned things like "sunning herself" for someone simply
+ * facing the camera. Pose, action and gaze are now asked separately, and the
+ * answers normalised toward terms diffusion models respond to.
+ * ------------------------------------------------------------------ */
+
+const POSE_SYNONYMS = {
+  sitting: 'seated',
+  'sitting down': 'seated',
+  'sat down': 'seated',
+  standing: 'standing upright',
+  'standing up': 'standing upright',
+  'laying down': 'lying down',
+  'lying': 'lying down',
+  'laying': 'lying down',
+  'leaning': 'leaning',
+  'bent over': 'bending forward',
+  crouching: 'crouched',
+  kneeling: 'kneeling',
+  squatting: 'squatting',
+  'arms crossed': 'arms crossed',
+  'hands on hips': 'hands on hips',
+  'arms raised': 'arms raised',
+  'head tilted': 'head tilted',
+  'over the shoulder': 'looking over the shoulder',
+  'three quarter': 'three-quarter view',
+  'side on': 'profile view',
+  'facing away': 'back to the camera',
+  'from behind': 'back to the camera',
+};
+
+/** Where the subject is looking. Kept short — long answers read as noise. */
+const GAZE_SYNONYMS = {
+  camera: 'at the camera',
+  'at camera': 'at the camera',
+  'the camera': 'at the camera',
+  away: 'away from the camera',
+  down: 'downward',
+  up: 'upward',
+  side: 'to the side',
+  'to the left': 'to the side',
+  'to the right': 'to the side',
+  'off camera': 'away from the camera',
+  'into the distance': 'into the distance',
+};
+
+/* ------------------------------------------------------------------ *
+ * Content level
+ * ------------------------------------------------------------------ */
+
+/**
+ * Terms that indicate the subject is a minor.
+ *
+ * Used to withhold adult content styling. Deliberately errs toward blocking:
+ * "girl"/"woman" are genuinely ambiguous in prompt vocabulary and are handled by
+ * the separate model age check plus the user's explicit adult affirmation, but
+ * anything unambiguous here blocks outright.
+ */
+const MINOR_TERMS = [
+  'child',
+  'children',
+  'kid',
+  'kids',
+  'baby',
+  'babies',
+  'infant',
+  'toddler',
+  'boy',
+  'little girl',
+  'little boy',
+  'young girl',
+  'young boy',
+  'teen',
+  'teens',
+  'teenager',
+  'teenage',
+  'adolescent',
+  'preteen',
+  'pre-teen',
+  'minor',
+  'schoolgirl',
+  'schoolboy',
+  'schoolchild',
+  'youngster',
+  'juvenile',
+  'underage',
+  'pupil',
+];
+
+/** Answers to the age pass that mean "not an adult". */
+const NON_ADULT_ANSWERS =
+  /\b(child|kid|baby|infant|toddler|boy|teen|teenager|teenage|adolescent|preteen|minor|underage|young)\b/i;
+
+/**
+ * Anatomy and skin-texture terms for adult content.
+ *
+ * These are corrective rather than decorative: anatomy is the dominant failure
+ * mode for figure work, and the realism presets already reject the airbrushed
+ * look, so what is needed is an explicit push toward natural bodies.
+ */
+const NSFW_QUALITY_TAGS = [
+  'anatomically correct',
+  'natural body proportions',
+  'natural skin texture',
+  'visible skin pores',
+  'natural body hair',
+  'realistic body',
+];
+
+/**
+ * Failure modes specific to figure work, added to the negative prompt when
+ * adult content is enabled.
+ */
+const NSFW_NEGATIVE = [
+  'plastic skin',
+  'doll-like',
+  'mannequin',
+  'airbrushed body',
+  'impossible anatomy',
+  'extra nipples',
+  'malformed limbs',
+  'fused limbs',
+  'distorted torso',
+  'unnatural proportions',
+];
+
+/** Keeps unintended nudity out of ordinary prompts. */
+const SFW_NEGATIVE = [
+  'nsfw',
+  'nude',
+  'nudity',
+  'topless',
+  'explicit content',
+  'sexual content',
+];
+
+/**
+ * Content levels.
+ *
+ * Note what these do and do not do. They control whether nudity is *permitted*
+ * and add anatomy support for figure work — they do not fabricate explicit
+ * content from a clothed photo. This app reads a photograph; inventing acts the
+ * photo does not show would both misrepresent the source and be precisely the
+ * behaviour worth not building. The user writes what they want in the editable
+ * fields and the free-text box; the compiler structures it.
+ */
+const CONTENT_LEVELS = {
+  sfw: {
+    label: 'Safe',
+    requiresAdult: false,
+    negative: SFW_NEGATIVE,
+    qualityTags: 0,
+    intimate: false,
+  },
+  suggestive: {
+    label: 'Suggestive',
+    requiresAdult: true,
+    negative: [],
+    qualityTags: 3,
+    intimate: true,
+  },
+  explicit: {
+    label: 'Explicit',
+    requiresAdult: true,
+    negative: NSFW_NEGATIVE,
+    qualityTags: 99,
+    intimate: true,
+  },
+};
+
+const DEFAULT_CONTENT = 'sfw';
+
 /**
  * Bare adjectives the lighting pass returns. "lit by sunny" is not English, so
  * these are mapped to noun phrases before the natural-language joiner runs.
@@ -800,7 +1001,9 @@ const CATEGORY_ORDER = [
   'subject',
   'appearance',
   'clothing',
+  'pose',
   'action',
+  'gaze',
   'setting',
   'colors',
   'lighting',
@@ -821,6 +1024,8 @@ const NL_JOINERS = {
   subject: { lead: '', skipIf: [] },
   appearance: { lead: '', skipIf: [] },
   clothing: { lead: 'wearing ', skipIf: ['wearing', 'dressed', 'in a', 'in an'] },
+  pose: { lead: '', skipIf: [] },
+  gaze: { lead: 'looking ', skipIf: ['looking', 'gazing', 'eyes', 'staring', 'facing'] },
   action: { lead: '', skipIf: [] },
   // The setting preposition is chosen per phrase — see SETTING_PREPOSITIONS.
   setting: { lead: '', skipIf: [] },
@@ -978,6 +1183,9 @@ const ERAS = {
     steps: 30,
     aspect: '3:2',
     snapshotFraming: ['amateur snapshot', 'vernacular family photograph', 'candid snapshot'],
+    // Used instead of snapshotFraming when content level is not SFW, so adult
+    // prompts stay era-coherent rather than defaulting to a modern studio look.
+    intimateFraming: ['amateur boudoir polaroid', 'private 1980s snapshot'],
     look: [
       'warm amber color cast',
       'corner vignetting',
@@ -1058,6 +1266,7 @@ const ERAS = {
     steps: 28,
     aspect: '3:2',
     snapshotFraming: ['amateur snapshot', 'candid family photograph', 'vernacular snapshot'],
+    intimateFraming: ['amateur boudoir snapshot', 'private 1990s bedroom photo'],
     // Universal to the era, true regardless of scene or format.
     look: ['warm color cast', 'slight overexposure'],
     // Only when the photo really is a flash snapshot — never outdoors in daylight,
@@ -1146,6 +1355,7 @@ const ERAS = {
     steps: 26,
     aspect: '4:3',
     snapshotFraming: ['amateur digital snapshot', 'candid party snapshot', 'vernacular snapshot'],
+    intimateFraming: ['amateur digital boudoir snapshot', 'private early 2000s photo'],
     look: ['limited dynamic range', 'digital noise in the shadows', 'small sensor look'],
     flashLook: [
       'harsh built-in flash',
@@ -1226,6 +1436,7 @@ const ERAS = {
     steps: 30,
     aspect: 'source',
     snapshotFraming: [],
+    intimateFraming: [],
     look: [],
     flashLook: [],
     daylightLook: [],
@@ -1430,13 +1641,25 @@ const OBSERVATION_FIELDS = [
   'subject',
   'appearance',
   'clothing',
+  'pose',
   'action',
+  'gaze',
   'setting',
   'placement',
   'colors',
   'lighting',
   'shotType',
+  'apparentAge',
 ];
+
+/** Fields used for reasoning only — never emitted as prompt tags. */
+const INTERNAL_FIELDS = ['placement', 'apparentAge'];
+
+/** Per-category vocabulary, consulted before the global synonym table. */
+const CATEGORY_SYNONYMS = {
+  pose: POSE_SYNONYMS,
+  gaze: GAZE_SYNONYMS,
+};
 
 /* ------------------------------------------------------------------ *
  * Text cleanup
@@ -1485,7 +1708,7 @@ function toTags(phrase) {
 }
 
 /** Lowercase, de-article, and map onto the controlled vocabulary. */
-function normalizeTag(tag) {
+function normalizeTag(tag, category = null) {
   let out = String(tag || '')
     .toLowerCase()
     .replace(/\s+/g, ' ')
@@ -1493,6 +1716,12 @@ function normalizeTag(tag) {
     .replace(/^(?:a|an|the)\s+/, '')
     .trim();
 
+  // Category vocabulary wins: "camera" means "at the camera" for gaze but not
+  // for a subject.
+  const categoryMap = category ? CATEGORY_SYNONYMS[category] : null;
+  if (categoryMap && Object.prototype.hasOwnProperty.call(categoryMap, out)) {
+    return categoryMap[out];
+  }
   if (Object.prototype.hasOwnProperty.call(SYNONYMS, out)) {
     out = SYNONYMS[out];
   }
@@ -1523,11 +1752,11 @@ function dedupeTags(tags) {
 }
 
 /** Full cleanup pipeline for one raw model answer. */
-function fieldToTags(raw) {
+function fieldToTags(raw, category = null) {
   const cleaned = cleanAnswer(raw);
   if (isNullAnswer(cleaned)) return [];
   const tags = toTags(cleaned)
-    .map(normalizeTag)
+    .map((t) => normalizeTag(t, category))
     .filter((t) => t && !GENERIC_TAGS.has(t) && !isNullAnswer(t));
   return dedupeTags(tags);
 }
@@ -1637,13 +1866,17 @@ function eraContribution(
   intensity = DEFAULT_INTENSITY,
   variant = 0,
   scene = {},
+  contentLevel = DEFAULT_CONTENT,
 ) {
   const era = ERAS[eraId] || ERAS[DEFAULT_ERA];
   const formatKey = formatId && era.formats[formatId] ? formatId : era.defaultFormat;
   const format = era.formats[formatKey] || { camera: [], stock: [], artifacts: [] };
   const level = INTENSITY_LEVELS[intensity] || INTENSITY_LEVELS[DEFAULT_INTENSITY];
 
-  const framing = pick(era.snapshotFraming, variant);
+  // Adult content keeps the era's own intimate framing, so the result still
+  // reads as a period photograph rather than a modern studio shoot.
+  const intimate = CONTENT_LEVELS[contentLevel]?.intimate && era.intimateFraming?.length;
+  const framing = pick(intimate ? era.intimateFraming : era.snapshotFraming, variant);
   const stock = phraseStock(pick(format.stock, variant));
   const camera = pick(format.camera, variant);
 
@@ -1710,6 +1943,74 @@ function periodSubjectTags(era, scene = {}, { hasObservedClothing = false } = {}
 }
 
 /* ------------------------------------------------------------------ *
+ * Content level
+ * ------------------------------------------------------------------ */
+
+/**
+ * Decide whether adult content styling may be applied.
+ *
+ * Three independent checks, because no single one is reliable:
+ *
+ *  1. The model's age read (`apparentAge`) — cheap, and catches the obvious case.
+ *  2. A lexical scan of the observed subject and appearance — catches it when the
+ *     age pass failed or was edited away, since the fields are user-editable.
+ *  3. The user's explicit affirmation that the subject is an adult — the only one
+ *     that carries any actual accountability.
+ *
+ * Any one of them failing withholds adult styling. This is intentionally not
+ * overridable: the fields are editable precisely so a wrong model answer can be
+ * corrected, which would otherwise make check 1 trivial to defeat on its own.
+ *
+ * `girl` and `woman` are deliberately absent from MINOR_TERMS: they are
+ * ambiguous in prompt vocabulary, and treating them as blocking would make the
+ * feature useless while catching nothing that checks 1 and 3 don't.
+ */
+function contentDecision(observation = {}, { content = DEFAULT_CONTENT, adultConfirmed = false } = {}) {
+  const level = CONTENT_LEVELS[content] ? content : DEFAULT_CONTENT;
+  const config = CONTENT_LEVELS[level];
+
+  if (!config.requiresAdult) {
+    return { level, config, allowed: true, blocked: false, reason: null };
+  }
+
+  const ageAnswer = String(observation.apparentAge || '');
+  if (ageAnswer && NON_ADULT_ANSWERS.test(ageAnswer)) {
+    return {
+      level: DEFAULT_CONTENT,
+      config: CONTENT_LEVELS[DEFAULT_CONTENT],
+      allowed: false,
+      blocked: true,
+      reason:
+        'The subject does not read as an adult, so adult content settings are disabled for this image.',
+    };
+  }
+
+  const described = `${observation.subject || ''} ${observation.appearance || ''}`.toLowerCase();
+  const hit = MINOR_TERMS.find((term) => new RegExp(`\\b${term}\\b`, 'i').test(described));
+  if (hit) {
+    return {
+      level: DEFAULT_CONTENT,
+      config: CONTENT_LEVELS[DEFAULT_CONTENT],
+      allowed: false,
+      blocked: true,
+      reason: `The subject is described as "${hit}", so adult content settings are disabled for this image.`,
+    };
+  }
+
+  if (!adultConfirmed) {
+    return {
+      level: DEFAULT_CONTENT,
+      config: CONTENT_LEVELS[DEFAULT_CONTENT],
+      allowed: false,
+      blocked: true,
+      reason: 'Confirm the subject is an adult to enable this content level.',
+    };
+  }
+
+  return { level, config, allowed: true, blocked: false, reason: null };
+}
+
+/* ------------------------------------------------------------------ *
  * Negative prompt
  * ------------------------------------------------------------------ */
 
@@ -1718,7 +2019,7 @@ function periodSubjectTags(era, scene = {}, { hasObservedClothing = false } = {}
  * asks for. Without this an era that wants JPEG blocks or a white print border
  * would simultaneously forbid them.
  */
-function buildNegative(era, contribution, positiveTags) {
+function buildNegative(era, contribution, positiveTags, contentConfig = null) {
   const exclude = new Set(contribution.negativeExclude.map((t) => t.toLowerCase()));
 
   // REALISM_NEGATIVE only applies to realism-forcing presets; `suppressQualityTags`
@@ -1727,6 +2028,7 @@ function buildNegative(era, contribution, positiveTags) {
     ...BASE_NEGATIVE,
     ...(era.suppressQualityTags ? REALISM_NEGATIVE : []),
     ...(era.negative || []),
+    ...(contentConfig?.negative || []),
   ];
 
   const positive = positiveTags.map((t) => t.toLowerCase());
@@ -1882,20 +2184,24 @@ function compile(observation = {}, options = {}) {
     emphasis = true,
     variant = 0,
     source = null,
+    content = DEFAULT_CONTENT,
+    adultConfirmed = false,
+    extra = '',
   } = options;
 
   const scene = inferScene(observation);
-  const contribution = eraContribution(eraId, formatId, intensity, variant, scene);
+  const decision = contentDecision(observation, { content, adultConfirmed });
+  const contribution = eraContribution(eraId, formatId, intensity, variant, scene, decision.level);
   const era = contribution.era;
 
   // Observed fields.
   const groups = {};
   for (const field of OBSERVATION_FIELDS) {
-    groups[field] = fieldToTags(observation[field]);
+    groups[field] = fieldToTags(observation[field], field);
   }
 
-  // `placement` only informs scene inference; it is never a prompt tag.
-  delete groups.placement;
+  // Reasoning-only fields are never prompt tags.
+  for (const field of INTERNAL_FIELDS) delete groups[field];
 
   // A small model invents shot types ("wide shot" for a tight selfie). It can't
   // be made accurate, but it can be kept to real values.
@@ -1913,6 +2219,21 @@ function compile(observation = {}, options = {}) {
     groups.appearance = [...groups.appearance, ...period.appearance];
     groups.clothing = [...groups.clothing, ...period.clothing];
     groups.setting = [...groups.setting, ...period.setting];
+  }
+
+  // Anatomy support for figure work. The realism presets already reject the
+  // airbrushed look, so what adult content needs is a push toward natural bodies.
+  if (decision.allowed && decision.config.qualityTags > 0) {
+    groups.appearance = [
+      ...groups.appearance,
+      ...NSFW_QUALITY_TAGS.slice(0, decision.config.qualityTags),
+    ];
+  }
+
+  // Free-text terms the user supplies themselves, kept close to the subject
+  // rather than trailing after the medium tags.
+  if (extra) {
+    groups.action = [...groups.action, ...fieldToTags(extra)];
   }
 
   if (!era.suppressQualityTags) {
@@ -1938,7 +2259,7 @@ function compile(observation = {}, options = {}) {
       ? renderNatural(groups, { framing: contribution.framing })
       : renderTagStyle(groups, { emphasis });
 
-  const negative = buildNegative(era, contribution, positiveTags);
+  const negative = buildNegative(era, contribution, positiveTags, decision.config);
 
   const aspect =
     contribution.aspect === 'source'
@@ -1961,6 +2282,10 @@ function compile(observation = {}, options = {}) {
     groups,
     scene,
     flash: contribution.flash,
+    content: decision.level,
+    contentRequested: content,
+    contentBlocked: decision.blocked,
+    contentReason: decision.reason,
     suppressedQualityTags: Boolean(era.suppressQualityTags),
   };
 }
@@ -2053,7 +2378,19 @@ const MODELS = {
     dtype: 'q4f16',
     label: 'SmolVLM 500M (q4f16)',
     approxDownload: '~450 MB',
-    note: 'Best captions. Needs WebGPU.',
+    note: 'Good captions and pose reading. Needs WebGPU.',
+  },
+  'smolvlm-2.2b-q4f16': {
+    id: 'HuggingFaceTB/SmolVLM-Instruct',
+    dtype: 'q4f16',
+    label: 'SmolVLM 2.2B (q4f16)',
+    approxDownload: '~1.6 GB',
+    // Never auto-selected, and flagged as unverified: the model host is not
+    // reachable from the build sandbox, so this repo/dtype pairing could not be
+    // confirmed to have an ONNX build. Load failures surface readably and the
+    // model can be switched back, so trying it is cheap.
+    note: 'Best pose/action reading. Large, unverified — may fail on some phones.',
+    unverified: true,
   },
 };
 
@@ -2114,7 +2451,11 @@ function chooseModel(caps, override = null) {
     };
   }
 
-  const lowMemory = typeof caps.memoryGb === 'number' && caps.memoryGb <= 4;
+  // Only genuinely constrained devices drop to the smallest model. The previous
+  // threshold of 4 GB was too cautious: 4 GB is the common phone reading, and
+  // those devices run the 500M model on the GPU fine — which matters, because
+  // the 500M model is markedly better at reading body position.
+  const lowMemory = typeof caps.memoryGb === 'number' && caps.memoryGb <= 2;
 
   if (caps.webgpu && !lowMemory) {
     return {
@@ -2198,7 +2539,21 @@ const PASSES = [
     question: 'What visible clothing is the subject wearing? If none is visible, say none.',
     tokens: 24,
   },
+  {
+    field: 'pose',
+    // Body position was previously buried inside a single vague "what is the
+    // subject doing?" pass, which returned things like "sunning herself" for
+    // someone simply facing the camera. Asked directly, with a bigger budget.
+    question:
+      'Describe the body position: standing, seated, lying down, leaning, kneeling, and how the arms and head are held.',
+    tokens: 36,
+  },
   { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 20 },
+  {
+    field: 'gaze',
+    question: 'Where is the subject looking? Answer in a few words.',
+    tokens: 14,
+  },
   { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 20 },
   {
     field: 'placement',
@@ -2215,6 +2570,12 @@ const PASSES = [
     question:
       'How is this framed? Answer with exactly one of: close-up shot, waist-up shot, full-body shot, wide shot.',
     tokens: 12,
+  },
+  {
+    field: 'apparentAge',
+    // Feeds the adult-content safeguard in the compiler. Never emitted as a tag.
+    question: 'Does the main subject appear to be an adult or a child? Answer adult or child.',
+    tokens: 8,
   },
 ];
 
@@ -2410,6 +2771,7 @@ function describeError(err) {
 
 
 
+
 const HISTORY_KEY = 'promptforge.history.v1';
 const PREFS_KEY = 'promptforge.prefs.v1';
 const HISTORY_LIMIT = 12;
@@ -2419,11 +2781,14 @@ const FIELD_LABELS = {
   appearance: 'Appearance',
   clothing: 'Clothing',
   action: 'Action',
+  pose: 'Pose',
+  gaze: 'Gaze',
   setting: 'Setting',
   placement: 'Indoor/outdoor',
   colors: 'Colors',
   lighting: 'Lighting',
   shotType: 'Shot type',
+  apparentAge: 'Apparent age',
 };
 
 const state = {
@@ -2434,6 +2799,9 @@ const state = {
   periodSubject: false,
   emphasis: true,
   variant: 0,
+  content: DEFAULT_CONTENT,
+  adultConfirmed: false,
+  extra: '',
   observation: {},
   source: null,
   imageDataUrl: null,
@@ -2462,6 +2830,10 @@ const el = {
   intensitySeg: $('intensity-seg'),
   styleSeg: $('style-seg'),
   periodSubject: $('period-subject'),
+  contentSeg: $('content-seg'),
+  adultConfirmed: $('adult-confirmed'),
+  contentHint: $('content-hint'),
+  extraTerms: $('extra-terms'),
   emphasis: $('emphasis'),
   fields: $('fields'),
   clearFields: $('clear-fields'),
@@ -2589,6 +2961,23 @@ function renderStyle() {
   );
 }
 
+function renderContent() {
+  buildSegment(
+    el.contentSeg,
+    Object.entries(CONTENT_LEVELS).map(([key, level]) => ({ value: key, label: level.label })),
+    state.content,
+    (value) => {
+      state.content = value;
+      renderContent();
+      recompile();
+      savePrefs();
+    },
+  );
+  el.adultConfirmed.checked = state.adultConfirmed;
+  // The affirmation is only meaningful for levels that require it.
+  el.adultConfirmed.disabled = !CONTENT_LEVELS[state.content]?.requiresAdult;
+}
+
 /* ------------------------------------------------------------------ *
  * Observation fields
  * ------------------------------------------------------------------ */
@@ -2642,6 +3031,9 @@ function recompile() {
     emphasis: state.emphasis,
     variant: state.variant,
     source: state.source,
+    content: state.content,
+    adultConfirmed: state.adultConfirmed,
+    extra: state.extra,
   });
   lastResult = result;
 
@@ -2657,6 +3049,19 @@ function recompile() {
 
   el.styleHint.textContent = result.suppressedQualityTags ? STYLE_NOTES : '';
   el.styleHint.style.display = result.suppressedQualityTags ? '' : 'none';
+
+  // Surface exactly why a requested content level was not applied, rather than
+  // silently downgrading it.
+  if (result.contentBlocked) {
+    el.contentHint.textContent = result.contentReason;
+    el.contentHint.className = 'hint warn';
+  } else {
+    el.contentHint.className = 'hint';
+    el.contentHint.textContent =
+      result.content === 'sfw'
+        ? 'Safe: nudity is added to the negative prompt.'
+        : `${CONTENT_LEVELS[result.content].label}: nudity permitted, anatomy support added.`;
+  }
 
   const [lo, hi] = result.cfg.range;
   el.cfgHint.textContent =
@@ -2821,6 +3226,7 @@ function savePrefs() {
         style: state.style,
         periodSubject: state.periodSubject,
         emphasis: state.emphasis,
+        content: state.content,
         modelOverride: state.modelOverride,
       }),
     );
@@ -2838,6 +3244,7 @@ function loadPrefs() {
     if (saved.style === 'tags' || saved.style === 'natural') state.style = saved.style;
     state.periodSubject = Boolean(saved.periodSubject);
     state.emphasis = saved.emphasis !== false;
+    if (saved.content && CONTENT_LEVELS[saved.content]) state.content = saved.content;
     if (saved.modelOverride && MODELS[saved.modelOverride]) {
       state.modelOverride = saved.modelOverride;
     }
@@ -2945,6 +3352,15 @@ function wire() {
     savePrefs();
   });
 
+  el.adultConfirmed.addEventListener('change', () => {
+    state.adultConfirmed = el.adultConfirmed.checked;
+    recompile();
+  });
+  el.extraTerms.addEventListener('input', () => {
+    state.extra = el.extraTerms.value;
+    recompile();
+  });
+
   el.clearFields.addEventListener('click', () => {
     state.observation = {};
     fillFields();
@@ -3017,6 +3433,7 @@ function boot() {
   renderEraControls();
   renderIntensity();
   renderStyle();
+  renderContent();
   renderFields();
   renderModelOptions();
   renderHistory();

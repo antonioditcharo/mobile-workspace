@@ -53,6 +53,33 @@ doesn't need the model.
 | **Tag style / Natural language** | Comma tags suit anime and booru-trained models; natural language suits photoreal models. |
 | **Weight the subject** | Wraps the main subject as `(subject:1.2)`. Tag style only. |
 | **Reroll film** | Rotates through that era's film stocks and camera bodies. |
+| **Content** | Safe (default) adds nudity to the negative prompt. Suggestive and Explicit permit it and add anatomy support. |
+| **Extra prompt terms** | Free text appended near the subject — write whatever you want added. |
+
+### Body position
+
+Pose, action and gaze are asked as three separate questions rather than one vague
+"what is the subject doing?", which used to return things like "sunning herself" for
+someone simply facing the camera. Pose gets the largest token budget of any pass, and the
+answers are normalised per category — `sitting` → `seated`, `from behind` →
+`back to the camera`, and for gaze only, `camera` → `at the camera`.
+
+### Content levels
+
+Levels above Safe **permit** nudity and add anatomy support — they do not fabricate
+explicit content from a clothed photo. This app reads a photograph; inventing acts it
+doesn't show would misrepresent the source. You write what you want in the editable fields
+and the free-text box, and the compiler structures it around the era.
+
+Adult levels are withheld unless all three of these hold, and any one failing falls back to
+Safe with the reason shown on screen:
+
+1. The model's age read doesn't indicate a minor.
+2. The subject and appearance fields don't name a minor.
+3. You've confirmed the subject is an adult.
+
+The three are independent on purpose: the observation fields are editable, so the model
+check alone would be trivial to edit away. This is not configurable.
 
 ---
 
@@ -89,7 +116,7 @@ high guidance produces the over-saturated, crunchy look that gives AI images awa
 
 **The model only observes; code does the structure.** A 256M–500M vision model answers
 "what is the subject wearing?" reliably but cannot be trusted to emit structured prompt
-syntax. So it is asked eight narrow questions, and a deterministic compiler
+syntax. So it is asked a series of narrow questions, and a deterministic compiler
 (`src/compiler.js`) handles cleanup, vocabulary normalisation, ordering, weighting and the
 era overlay. That half is fully unit tested.
 
@@ -142,8 +169,13 @@ Chosen automatically, overridable in **Settings & device**:
 | Device | Model | Download |
 |---|---|---|
 | WebGPU available | SmolVLM-500M (q4f16), on GPU | ~450 MB |
-| WebGPU, low RAM | SmolVLM-256M (q4), on GPU | ~180 MB |
+| WebGPU, ≤2 GB RAM | SmolVLM-256M (q4), on GPU | ~180 MB |
 | No WebGPU | SmolVLM-256M (q8), on CPU | ~280 MB |
+
+A 2.2B model is available in Settings for better pose reading, but is **never
+auto-selected and is unverified** — the model host isn't reachable from the build sandbox,
+so it couldn't be confirmed to have an ONNX build. If it fails you'll get a readable error
+and can switch back.
 
 Downloaded once, then cached — after that it runs with no connection. On CPU expect a
 minute or more per image.
@@ -151,8 +183,8 @@ minute or more per image.
 ## Development
 
 ```bash
-node --test test/compiler.test.mjs test/vision.test.mjs   # 45 unit tests
-node test/ui.smoke.mjs                                    # 39 browser checks (needs playwright)
+node --test test/*.test.mjs                                # 104 unit tests
+node test/ui.smoke.mjs                                    # 64 browser checks (needs playwright)
 node build/bundle.mjs                                     # rebuild the single-file version
 python3 build/make-icons.py                               # regenerate icons
 ```

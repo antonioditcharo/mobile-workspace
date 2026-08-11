@@ -12,7 +12,7 @@
  * worker when sw.js itself differs, so an unchanged version string means a fix
  * can sit on the server while devices keep running the old cached shell.
  */
-const CACHE = 'promptforge-shell-v3';
+const CACHE = 'promptforge-shell-v4';
 
 const SHELL = [
   './',

@@ -9,6 +9,7 @@
  */
 
 import { compile, settingsBlock, OBSERVATION_FIELDS } from './compiler.js';
+import { CONTENT_LEVELS, DEFAULT_CONTENT } from './vocab.js';
 import { perchanceSettings, STYLE_NOTES } from './perchance.js';
 import { ERAS, ERA_IDS, DEFAULT_ERA, INTENSITY_LEVELS, DEFAULT_INTENSITY } from './eras.js';
 import {
@@ -32,11 +33,14 @@ const FIELD_LABELS = {
   appearance: 'Appearance',
   clothing: 'Clothing',
   action: 'Action',
+  pose: 'Pose',
+  gaze: 'Gaze',
   setting: 'Setting',
   placement: 'Indoor/outdoor',
   colors: 'Colors',
   lighting: 'Lighting',
   shotType: 'Shot type',
+  apparentAge: 'Apparent age',
 };
 
 const state = {
@@ -47,6 +51,9 @@ const state = {
   periodSubject: false,
   emphasis: true,
   variant: 0,
+  content: DEFAULT_CONTENT,
+  adultConfirmed: false,
+  extra: '',
   observation: {},
   source: null,
   imageDataUrl: null,
@@ -75,6 +82,10 @@ const el = {
   intensitySeg: $('intensity-seg'),
   styleSeg: $('style-seg'),
   periodSubject: $('period-subject'),
+  contentSeg: $('content-seg'),
+  adultConfirmed: $('adult-confirmed'),
+  contentHint: $('content-hint'),
+  extraTerms: $('extra-terms'),
   emphasis: $('emphasis'),
   fields: $('fields'),
   clearFields: $('clear-fields'),
@@ -202,6 +213,23 @@ function renderStyle() {
   );
 }
 
+function renderContent() {
+  buildSegment(
+    el.contentSeg,
+    Object.entries(CONTENT_LEVELS).map(([key, level]) => ({ value: key, label: level.label })),
+    state.content,
+    (value) => {
+      state.content = value;
+      renderContent();
+      recompile();
+      savePrefs();
+    },
+  );
+  el.adultConfirmed.checked = state.adultConfirmed;
+  // The affirmation is only meaningful for levels that require it.
+  el.adultConfirmed.disabled = !CONTENT_LEVELS[state.content]?.requiresAdult;
+}
+
 /* ------------------------------------------------------------------ *
  * Observation fields
  * ------------------------------------------------------------------ */
@@ -255,6 +283,9 @@ function recompile() {
     emphasis: state.emphasis,
     variant: state.variant,
     source: state.source,
+    content: state.content,
+    adultConfirmed: state.adultConfirmed,
+    extra: state.extra,
   });
   lastResult = result;
 
@@ -270,6 +301,19 @@ function recompile() {
 
   el.styleHint.textContent = result.suppressedQualityTags ? STYLE_NOTES : '';
   el.styleHint.style.display = result.suppressedQualityTags ? '' : 'none';
+
+  // Surface exactly why a requested content level was not applied, rather than
+  // silently downgrading it.
+  if (result.contentBlocked) {
+    el.contentHint.textContent = result.contentReason;
+    el.contentHint.className = 'hint warn';
+  } else {
+    el.contentHint.className = 'hint';
+    el.contentHint.textContent =
+      result.content === 'sfw'
+        ? 'Safe: nudity is added to the negative prompt.'
+        : `${CONTENT_LEVELS[result.content].label}: nudity permitted, anatomy support added.`;
+  }
 
   const [lo, hi] = result.cfg.range;
   el.cfgHint.textContent =
@@ -434,6 +478,7 @@ function savePrefs() {
         style: state.style,
         periodSubject: state.periodSubject,
         emphasis: state.emphasis,
+        content: state.content,
         modelOverride: state.modelOverride,
       }),
     );
@@ -451,6 +496,7 @@ function loadPrefs() {
     if (saved.style === 'tags' || saved.style === 'natural') state.style = saved.style;
     state.periodSubject = Boolean(saved.periodSubject);
     state.emphasis = saved.emphasis !== false;
+    if (saved.content && CONTENT_LEVELS[saved.content]) state.content = saved.content;
     if (saved.modelOverride && MODELS[saved.modelOverride]) {
       state.modelOverride = saved.modelOverride;
     }
@@ -558,6 +604,15 @@ function wire() {
     savePrefs();
   });
 
+  el.adultConfirmed.addEventListener('change', () => {
+    state.adultConfirmed = el.adultConfirmed.checked;
+    recompile();
+  });
+  el.extraTerms.addEventListener('input', () => {
+    state.extra = el.extraTerms.value;
+    recompile();
+  });
+
   el.clearFields.addEventListener('click', () => {
     state.observation = {};
     fillFields();
@@ -630,6 +685,7 @@ function boot() {
   renderEraControls();
   renderIntensity();
   renderStyle();
+  renderContent();
   renderFields();
   renderModelOptions();
   renderHistory();
