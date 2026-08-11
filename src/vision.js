@@ -10,18 +10,29 @@
  * it does not reliably produce structured prompt syntax. Turning those answers
  * into a prompt is `src/compiler.js`'s job.
  *
- * NOTE ON THE RUNTIME CALL SIGNATURE: this file was authored in a sandbox with
- * no network access to the model host, so the exact `transformers.js`
- * image-text-to-text invocation could not be executed here. `runPass` therefore
- * tries the documented pipeline call first and falls back to the lower-level
- * processor/model path, surfacing a readable error if both fail. If a future
- * library version changes the signature, `runPass` is the single place to fix.
+ * WHY THE LOWER-LEVEL API: transformers.js has no `image-text-to-text`
+ * pipeline task — that task exists in Python transformers, but in transformers.js
+ * the same string is only a *model architecture* mapping name. Calling
+ * `pipeline('image-text-to-text', ...)` therefore fails with "Unsupported
+ * pipeline" on every published version. Vision-language models are driven
+ * through AutoProcessor + AutoModelForVision2Seq instead, which is what this
+ * file does.
+ *
+ * The version is pinned deliberately. A floating range (`@3`) means the app's
+ * behaviour can change under it without a commit, which is how the pipeline
+ * mistake above stayed invisible until it hit a real device.
  */
 
 import { OBSERVATION_FIELDS } from './compiler.js';
 
-/** Floating major version so the CDN resolves the newest compatible 3.x. */
-export const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+/**
+ * Pinned, and pointing at an explicit file rather than relying on the CDN to
+ * pick an entry point. `dist/transformers.min.js` is the self-contained browser
+ * build with ESM named exports; `dist/transformers.web.js` cannot be used here
+ * because it imports bare specifiers a browser cannot resolve.
+ */
+export const TRANSFORMERS_VERSION = '3.8.1';
+export const TRANSFORMERS_CDN = `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_VERSION}/dist/transformers.min.js`;
 
 /**
  * Selectable models, smallest first. All are ONNX builds intended for
@@ -143,8 +154,11 @@ export function chooseModel(caps, override = null) {
 /**
  * Downscale to `maxEdge` before inference. These models see a small fixed
  * resolution anyway, and shrinking first saves noticeable time on a phone.
- * Also returns the original dimensions, which the compiler uses to snap the
- * aspect ratio.
+ *
+ * Returns the canvas as well as a data URL: the canvas feeds inference directly
+ * (RawImage reads its pixels, no encode/decode round trip), while the data URL
+ * is what the preview <img> displays. Also returns the original dimensions,
+ * which the compiler uses to snap the aspect ratio.
  */
 export async function prepareImage(blob, maxEdge = 512) {
   const bitmap = await createImageBitmap(blob);
@@ -162,7 +176,7 @@ export async function prepareImage(blob, maxEdge = 512) {
   bitmap.close?.();
 
   const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-  return { dataUrl, original, width, height };
+  return { dataUrl, canvas, original, width, height };
 }
 
 /* ------------------------------------------------------------------ *
@@ -190,68 +204,100 @@ export const PASSES = [
   },
 ];
 
-let cached = { key: null, generator: null, module: null };
+let cached = { key: null, engine: null };
 
 /**
- * Load the model, reusing an already-loaded one when the selection is
- * unchanged. `onProgress` receives `{ phase, loaded, total, file }`.
+ * Load the processor and model, reusing them when the selection is unchanged.
+ * `onProgress` receives `{ phase, loaded, total, file }`.
+ *
+ * Returns an "engine" — the processor, the model, and the RawImage constructor
+ * taken from the same module instance, so callers never need to import the
+ * library themselves.
  */
 export async function loadVision(choice, { onProgress = () => {} } = {}) {
-  if (cached.key === `${choice.id}:${choice.dtype}:${choice.device}` && cached.generator) {
-    return cached.generator;
-  }
+  const key = `${choice.id}:${choice.dtype}:${choice.device}`;
+  if (cached.key === key && cached.engine) return cached.engine;
 
   onProgress({ phase: 'library' });
   const module = await import(/* @vite-ignore */ TRANSFORMERS_CDN);
 
-  onProgress({ phase: 'model' });
-  const generator = await module.pipeline('image-text-to-text', choice.id, {
-    dtype: choice.dtype,
-    device: choice.device,
-    progress_callback: (p) => {
-      if (p.status === 'progress') {
-        onProgress({ phase: 'download', file: p.file, loaded: p.loaded, total: p.total });
-      } else if (p.status === 'ready') {
-        onProgress({ phase: 'ready' });
-      }
-    },
+  const { AutoProcessor, AutoModelForVision2Seq, RawImage } = module;
+  if (!AutoProcessor || !AutoModelForVision2Seq || !RawImage) {
+    throw new Error(
+      `transformers.js ${TRANSFORMERS_VERSION} did not expose AutoProcessor, ` +
+        'AutoModelForVision2Seq and RawImage. The pinned version may have moved.',
+    );
+  }
+
+  // The library reports download progress per file; forward it verbatim so the
+  // UI can show which shard is landing.
+  const relay = (p) => {
+    if (p?.status === 'progress') {
+      onProgress({ phase: 'download', file: p.file, loaded: p.loaded, total: p.total });
+    }
+  };
+
+  onProgress({ phase: 'processor' });
+  const processor = await AutoProcessor.from_pretrained(choice.id, {
+    progress_callback: relay,
   });
 
-  cached = { key: `${choice.id}:${choice.dtype}:${choice.device}`, generator, module };
-  return generator;
+  onProgress({ phase: 'model' });
+  const model = await AutoModelForVision2Seq.from_pretrained(choice.id, {
+    dtype: choice.dtype,
+    device: choice.device,
+    progress_callback: relay,
+  });
+
+  const engine = { processor, model, RawImage, id: choice.id };
+  cached = { key, engine };
+  return engine;
 }
 
 /** Free the loaded model. Useful on a phone when memory is tight. */
 export async function unloadVision() {
   try {
-    await cached.generator?.dispose?.();
+    await cached.engine?.model?.dispose?.();
   } catch {
     /* disposal is best-effort */
   }
-  cached = { key: null, generator: null, module: null };
+  cached = { key: null, engine: null };
 }
 
 /**
- * Run a single question. Isolated so that the one piece of unverified library
- * surface lives in one small function.
+ * Run a single question against an already-decoded image.
+ *
+ * This is the one function that touches the model's call convention, so it is
+ * the only place to adjust if a future library version changes it.
  */
-async function runPass(generator, imageDataUrl, question, maxTokens) {
+async function runPass(engine, image, question, maxTokens) {
   const messages = [
     {
       role: 'user',
-      content: [
-        { type: 'image', image: imageDataUrl },
-        { type: 'text', text: question },
-      ],
+      content: [{ type: 'image' }, { type: 'text', text: question }],
     },
   ];
 
-  const output = await generator(messages, {
+  // The chat template inserts the image placeholder token the processor expands.
+  const text = engine.processor.apply_chat_template(messages, {
+    add_generation_prompt: true,
+  });
+
+  const inputs = await engine.processor(text, [image]);
+
+  const output = await engine.model.generate({
+    ...inputs,
     max_new_tokens: maxTokens,
     do_sample: false,
   });
 
-  return extractText(output);
+  // generate() returns the prompt tokens followed by the completion. Decoding
+  // the whole thing would hand the compiler back its own question, so keep only
+  // the newly generated tail.
+  const promptLength = inputs.input_ids.dims.at(-1);
+  const generated = output.slice(null, [promptLength, null]);
+
+  return extractText(engine.processor.batch_decode(generated, { skip_special_tokens: true }));
 }
 
 /**
@@ -287,21 +333,22 @@ export function extractText(output) {
  * A failed individual pass is left empty rather than aborting the run — seven
  * good fields still make a usable prompt.
  */
-export async function observe(generator, imageDataUrl, { onProgress = () => {}, signal } = {}) {
+export async function observe(engine, source, { onProgress = () => {}, signal } = {}) {
   const observation = {};
   const failures = [];
+
+  // Decode once and reuse across all eight passes — re-decoding per question
+  // would be the single most wasteful thing this loop could do on a phone.
+  // `read` dispatches on type, so a canvas (the fast path, straight from
+  // prepareImage), a Blob, or a URL all work.
+  const image = await engine.RawImage.read(source);
 
   for (let i = 0; i < PASSES.length; i++) {
     if (signal?.aborted) throw new DOMException('Observation cancelled', 'AbortError');
     const pass = PASSES[i];
     onProgress({ index: i, total: PASSES.length, field: pass.field });
     try {
-      observation[pass.field] = await runPass(
-        generator,
-        imageDataUrl,
-        pass.question,
-        pass.tokens,
-      );
+      observation[pass.field] = await runPass(engine, image, pass.question, pass.tokens);
     } catch (err) {
       observation[pass.field] = '';
       failures.push(`${pass.field}: ${err.message}`);

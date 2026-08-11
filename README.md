@@ -124,10 +124,19 @@ module and fail. The smoke test skips itself if Playwright isn't installed.
 
 ## Known limits
 
-- The **model path is unverified end to end**: it was written in a sandbox with no network
-  access to the model host, so first-load download, real speed and caption quality need
-  checking on an actual phone. `runPass` in `src/vision.js` is the one place to adjust if a
-  library version changes the call signature.
+- **What is verified about the model path:** the pinned transformers.js build loads in a
+  browser and exposes `AutoProcessor` / `AutoModelForVision2Seq`; `apply_chat_template`,
+  `batch_decode` and the `Tensor.slice(null, [n, null])` prompt-trim all behave as used;
+  `RawImage.read(canvas)` decodes correctly. **What is not:** the weight download and actual
+  inference, since the sandbox has no egress to the model host. Real speed and caption
+  quality still need a phone.
+- transformers.js has **no `image-text-to-text` pipeline** — that task exists in Python
+  transformers only, where the same string is a model-architecture mapping name. VLMs go
+  through `AutoProcessor` + `AutoModelForVision2Seq`. `runPass` in `src/vision.js` is the
+  single place that touches the model's call convention.
+- The library version is **pinned deliberately**. A floating range lets behaviour change
+  under the app without a commit, which is how the pipeline mistake above stayed hidden
+  until it hit a real device.
 - Perchance's own control labels could not be checked from that sandbox either, so nothing
   depends on them — era styling is emitted as **prompt text**, which works in any prompt
   box, and handoff is copy-to-clipboard rather than a URL scheme.

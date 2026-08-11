@@ -1,8 +1,79 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { chooseModel, extractText, describeError, MODELS, PASSES } from '../src/vision.js';
+import { readFileSync } from 'node:fs';
+
+import {
+  chooseModel,
+  extractText,
+  describeError,
+  MODELS,
+  PASSES,
+  TRANSFORMERS_CDN,
+  TRANSFORMERS_VERSION,
+} from '../src/vision.js';
 import { OBSERVATION_FIELDS } from '../src/compiler.js';
+
+const visionSource = readFileSync(new URL('../src/vision.js', import.meta.url), 'utf8');
+
+/** Source with comments removed, so prose about a mistake can't look like the mistake. */
+const visionCode = visionSource
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+
+/* ------------------------------------------------------------------ *
+ * Runtime wiring — regression guards
+ *
+ * Both of these encode real bugs that shipped. `image-text-to-text` is a
+ * Python-transformers pipeline task that does not exist in transformers.js,
+ * where the same string is only a model-architecture mapping; calling it failed
+ * on device with "Unsupported pipeline". And a floating version range let the
+ * dependency shift under the app without a commit.
+ * ------------------------------------------------------------------ */
+
+test('the transformers.js version is pinned exactly, not a floating range', () => {
+  assert.match(TRANSFORMERS_VERSION, /^\d+\.\d+\.\d+$/, TRANSFORMERS_VERSION);
+  assert.ok(
+    TRANSFORMERS_CDN.includes(`@${TRANSFORMERS_VERSION}/`),
+    `CDN url should embed the pinned version: ${TRANSFORMERS_CDN}`,
+  );
+  assert.match(TRANSFORMERS_CDN, /\.js$/, 'should point at an explicit file');
+});
+
+test('the CDN url uses the self-contained browser build', () => {
+  // transformers.web.js imports bare specifiers a browser cannot resolve.
+  assert.ok(!TRANSFORMERS_CDN.includes('transformers.web.js'), TRANSFORMERS_CDN);
+  assert.ok(TRANSFORMERS_CDN.includes('transformers.min.js'), TRANSFORMERS_CDN);
+});
+
+test('no pipeline() task is used for vision-language inference', () => {
+  const call = visionCode.match(/pipeline\(\s*['"][a-z-]+['"]/);
+  assert.equal(call, null, `vision.js should not call pipeline(): ${call?.[0]}`);
+});
+
+test('vision-language inference goes through the Auto classes', () => {
+  for (const symbol of ['AutoProcessor', 'AutoModelForVision2Seq', 'RawImage']) {
+    assert.ok(visionCode.includes(symbol), `expected ${symbol} to be used`);
+  }
+  assert.ok(
+    visionCode.includes('apply_chat_template'),
+    'expected the chat template to be applied',
+  );
+});
+
+test('images reach the model without a needless encode/decode round trip', () => {
+  // prepareImage already builds a canvas; RawImage.read() takes it directly.
+  // Going back out through a data URL would re-encode to JPEG and re-decode it.
+  assert.ok(visionCode.includes('RawImage.read('), 'expected RawImage.read to be used');
+  assert.ok(!visionCode.includes('RawImage.fromURL('), 'should not round-trip through a URL');
+  assert.ok(visionCode.includes('canvas,'), 'prepareImage should return the canvas');
+});
+
+test('only the generated tail of the output is decoded', () => {
+  // Decoding the full sequence would hand the compiler back its own question.
+  assert.ok(visionCode.includes('input_ids.dims'), 'expected the prompt length to be measured');
+  assert.ok(/\.slice\(\s*null/.test(visionCode), 'expected the prompt tokens to be sliced off');
+});
 
 /* ------------------------------------------------------------------ *
  * Model selection

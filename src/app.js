@@ -48,6 +48,7 @@ const state = {
   observation: {},
   source: null,
   imageDataUrl: null,
+  imageCanvas: null,
   modelOverride: null,
   caps: null,
   running: false,
@@ -279,7 +280,8 @@ async function handleFile(file) {
   try {
     setStatus('Preparing image…');
     const prepared = await prepareImage(file);
-    state.imageDataUrl = prepared.dataUrl;
+    state.imageDataUrl = prepared.dataUrl; // preview only
+    state.imageCanvas = prepared.canvas; // what inference actually reads
     state.source = prepared.original;
 
     el.preview.src = prepared.dataUrl;
@@ -318,7 +320,7 @@ async function runVision() {
     state.abort?.abort();
     return;
   }
-  if (!state.imageDataUrl) return;
+  if (!state.imageCanvas) return;
 
   state.running = true;
   state.abort = new AbortController();
@@ -329,20 +331,22 @@ async function runVision() {
     const choice = chooseModel(caps, state.modelOverride);
 
     setStatus(`Loading ${choice.label} (${choice.approxDownload} first time)…`, '', -1);
-    const generator = await loadVision(choice, {
+    const engine = await loadVision(choice, {
       onProgress: (p) => {
         if (p.phase === 'download' && p.total) {
           const pct = Math.round((p.loaded / p.total) * 100);
           setStatus(`Downloading ${p.file || 'model'} — ${pct}%`, '', pct);
         } else if (p.phase === 'library') {
           setStatus('Loading runtime…', '', -1);
+        } else if (p.phase === 'processor') {
+          setStatus('Loading processor…', '', -1);
         } else if (p.phase === 'model') {
           setStatus('Initialising model…', '', -1);
         }
       },
     });
 
-    const { observation, failures } = await observe(generator, state.imageDataUrl, {
+    const { observation, failures } = await observe(engine, state.imageCanvas, {
       signal: state.abort.signal,
       onProgress: ({ index, total, field }) => {
         setStatus(
