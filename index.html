@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#141416" />
+    <meta
+      name="description"
+      content="Turn a photo into a Perchance-ready text-to-image prompt with era-authentic period photo styling. Runs entirely on your phone."
+    />
+    <title>Perchance Prompt Forge</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <style>
+      :root {
+        --bg: #141416;
+        --panel: #1d1d21;
+        --panel-2: #26262c;
+        --line: #34343c;
+        --ink: #f2f2f4;
+        --ink-dim: #a2a2ae;
+        --accent: #e8a33d;
+        --accent-ink: #241a08;
+        --ok: #6fcf87;
+        --bad: #ef6f6f;
+        --radius: 12px;
+        --tap: 44px;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f4f4f6;
+          --panel: #ffffff;
+          --panel-2: #eeeef2;
+          --line: #d8d8e0;
+          --ink: #1a1a1e;
+          --ink-dim: #61616d;
+          --accent: #b7761a;
+          --accent-ink: #fff8ec;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        padding: 0 14px calc(28px + env(safe-area-inset-bottom));
+        max-width: 780px;
+        margin: 0 auto;
+        -webkit-text-size-adjust: 100%;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: calc(14px + env(safe-area-inset-top)) 0 12px;
+      }
+      header h1 {
+        font-size: 17px;
+        margin: 0;
+        flex: 1;
+        letter-spacing: -0.01em;
+      }
+      header .sub {
+        display: block;
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--ink-dim);
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px;
+        margin-bottom: 12px;
+      }
+      h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--ink-dim);
+        margin: 0 0 10px;
+        font-weight: 600;
+      }
+      button,
+      select,
+      input,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        min-height: var(--tap);
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        padding: 0 14px;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+      button:active {
+        transform: scale(0.985);
+      }
+      button.primary {
+        background: var(--accent);
+        color: var(--accent-ink);
+        border-color: transparent;
+        font-weight: 650;
+        width: 100%;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .row > * {
+        flex: 1 1 0;
+        min-width: 120px;
+      }
+      /* Segmented control */
+      .seg {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .seg button {
+        flex: 1 1 auto;
+        min-width: 68px;
+        padding: 0 10px;
+        font-size: 14px;
+      }
+      .seg button[aria-pressed="true"] {
+        background: var(--accent);
+        color: var(--accent-ink);
+        border-color: transparent;
+        font-weight: 650;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--ink-dim);
+        margin: 8px 0 0;
+      }
+      /* Image picker */
+      #drop {
+        border: 1.5px dashed var(--line);
+        border-radius: var(--radius);
+        padding: 18px;
+        text-align: center;
+        color: var(--ink-dim);
+        font-size: 14px;
+      }
+      #drop.has-image {
+        padding: 8px;
+        border-style: solid;
+      }
+      #preview {
+        display: none;
+        width: 100%;
+        max-height: 42vh;
+        object-fit: contain;
+        border-radius: 8px;
+      }
+      #preview.show {
+        display: block;
+      }
+      /* Field chips */
+      .field {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .field:last-child {
+        border-bottom: 0;
+      }
+      .field label {
+        flex: 0 0 84px;
+        font-size: 12px;
+        color: var(--ink-dim);
+        text-transform: capitalize;
+      }
+      .field input {
+        flex: 1;
+        min-width: 0;
+        min-height: 38px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 10px;
+      }
+      .field input:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+      }
+      /* Output */
+      .out {
+        margin-bottom: 10px;
+      }
+      .out h3 {
+        font-size: 12px;
+        margin: 0 0 6px;
+        color: var(--ink-dim);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+      }
+      .out h3 .count {
+        margin-left: auto;
+        font-weight: 400;
+        font-variant-numeric: tabular-nums;
+      }
+      textarea {
+        width: 100%;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        resize: vertical;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      textarea#prompt {
+        min-height: 132px;
+      }
+      textarea#negative {
+        min-height: 92px;
+      }
+      .settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .stat {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 8px;
+        text-align: center;
+      }
+      .stat b {
+        display: block;
+        font-size: 17px;
+        font-variant-numeric: tabular-nums;
+      }
+      .stat span {
+        font-size: 11px;
+        color: var(--ink-dim);
+      }
+      /* Status */
+      #status {
+        display: none;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        margin-top: 10px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+      }
+      #status.show {
+        display: block;
+      }
+      #status.err {
+        border-color: var(--bad);
+        color: var(--bad);
+      }
+      #status.ok {
+        border-color: var(--ok);
+      }
+      progress {
+        width: 100%;
+        height: 6px;
+        margin-top: 8px;
+      }
+      /* Toggles */
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: var(--tap);
+        cursor: pointer;
+      }
+      .toggle input {
+        width: 20px;
+        height: 20px;
+        accent-color: var(--accent);
+        flex: 0 0 auto;
+      }
+      .toggle span {
+        font-size: 14px;
+      }
+      .toggle small {
+        display: block;
+        color: var(--ink-dim);
+        font-size: 12px;
+      }
+      details summary {
+        cursor: pointer;
+        min-height: var(--tap);
+        display: flex;
+        align-items: center;
+        font-size: 13px;
+        color: var(--ink-dim);
+      }
+      .history-item {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 13px;
+      }
+      .history-item p {
+        margin: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--ink-dim);
+      }
+      .history-item button {
+        min-height: 34px;
+        padding: 0 10px;
+        font-size: 13px;
+        flex: 0 0 auto;
+      }
+      .sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+      footer {
+        color: var(--ink-dim);
+        font-size: 12px;
+        text-align: center;
+        padding: 4px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>
+        Prompt Forge
+        <span class="sub">Photo → Perchance prompt, on your phone</span>
+      </h1>
+      <button id="settings-btn" aria-label="Settings" style="flex: 0 0 auto">⚙</button>
+    </header>
+
+    <!-- 1. Image -->
+    <section>
+      <h2>1 · Photo</h2>
+      <div id="drop">
+        <img id="preview" alt="Selected photo preview" />
+        <span id="drop-label">Tap below to take or choose a photo</span>
+      </div>
+      <div class="row" style="margin-top: 10px">
+        <button id="camera-btn">📷 Camera</button>
+        <button id="gallery-btn">🖼 Gallery</button>
+      </div>
+      <input id="camera-input" class="sr" type="file" accept="image/*" capture="environment" />
+      <input id="gallery-input" class="sr" type="file" accept="image/*" />
+      <button id="read-btn" class="primary" style="margin-top: 10px" disabled>
+        Read image
+      </button>
+      <div id="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <!-- 2. Era -->
+    <section>
+      <h2>2 · Era</h2>
+      <div class="seg" id="era-seg"></div>
+      <p class="hint" id="era-blurb"></p>
+
+      <h2 style="margin-top: 14px">Format</h2>
+      <div class="seg" id="format-seg"></div>
+
+      <h2 style="margin-top: 14px">Artifact intensity</h2>
+      <div class="seg" id="intensity-seg"></div>
+      <p class="hint">
+        Heavier adds more grain, date stamps and compression. Overdone reads as pastiche
+        rather than a real photo.
+      </p>
+
+      <label class="toggle" style="margin-top: 6px">
+        <input type="checkbox" id="period-subject" />
+        <span>
+          Period the subject too
+          <small>Also adds era clothing, hair and decor. Off keeps the subject as shot.</small>
+        </span>
+      </label>
+    </section>
+
+    <!-- 3. Observations -->
+    <section>
+      <h2>3 · What the model saw</h2>
+      <div id="fields"></div>
+      <p class="hint">
+        Every field is editable — fix anything misread, or type them in by hand if you skip
+        the model entirely.
+      </p>
+      <div class="row" style="margin-top: 8px">
+        <button id="clear-fields">Clear all</button>
+        <button id="variant-btn">🎲 Reroll film</button>
+      </div>
+    </section>
+
+    <!-- 4. Output -->
+    <section>
+      <h2>4 · Prompt</h2>
+      <div class="seg" id="style-seg" style="margin-bottom: 10px"></div>
+
+      <div class="settings-grid">
+        <div class="stat"><b id="stat-cfg">–</b><span>CFG</span></div>
+        <div class="stat"><b id="stat-steps">–</b><span>Steps</span></div>
+        <div class="stat"><b id="stat-aspect">–</b><span>Aspect</span></div>
+      </div>
+      <p class="hint" id="cfg-hint" style="margin-top: 0"></p>
+
+      <div class="out">
+        <h3>Prompt <span class="count" id="prompt-count"></span></h3>
+        <textarea id="prompt" spellcheck="false" aria-label="Prompt"></textarea>
+        <button id="copy-prompt" style="width: 100%; margin-top: 6px">Copy prompt</button>
+      </div>
+
+      <div class="out">
+        <h3>Negative prompt <span class="count" id="negative-count"></span></h3>
+        <textarea id="negative" spellcheck="false" aria-label="Negative prompt"></textarea>
+        <button id="copy-negative" style="width: 100%; margin-top: 6px">
+          Copy negative prompt
+        </button>
+      </div>
+
+      <button id="copy-all" class="primary">Copy everything (prompt + settings)</button>
+
+      <label class="toggle" style="margin-top: 6px">
+        <input type="checkbox" id="emphasis" checked />
+        <span>
+          Weight the subject
+          <small>Wraps the main subject as (subject:1.2). Tag style only.</small>
+        </span>
+      </label>
+    </section>
+
+    <!-- History -->
+    <section>
+      <details>
+        <summary>Recent forges</summary>
+        <div id="history"></div>
+        <button id="clear-history" style="width: 100%; margin-top: 8px">Clear history</button>
+      </details>
+    </section>
+
+    <!-- Settings -->
+    <section>
+      <details id="settings-panel">
+        <summary>Settings &amp; device</summary>
+        <h2 style="margin-top: 12px">AI model</h2>
+        <select id="model-select" style="width: 100%; min-height: var(--tap); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px">
+          <option value="">Auto-detect (recommended)</option>
+        </select>
+        <p class="hint" id="model-why">Detecting device capability…</p>
+        <button id="unload-btn" style="width: 100%; margin-top: 8px">
+          Unload model from memory
+        </button>
+        <p class="hint">
+          The model runs entirely in this browser. No account, no API key, no rate limit, no
+          content filter, and your photo is never uploaded. The first run downloads the model
+          once; after that it works offline.
+        </p>
+      </details>
+    </section>
+
+    <footer>Runs on-device · <span id="offline-state">checking…</span></footer>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

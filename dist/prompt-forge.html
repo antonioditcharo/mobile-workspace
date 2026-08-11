@@ -1,0 +1,2497 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#141416" />
+    <meta
+      name="description"
+      content="Turn a photo into a Perchance-ready text-to-image prompt with era-authentic period photo styling. Runs entirely on your phone."
+    />
+    <title>Perchance Prompt Forge (standalone)</title>
+    <link rel="icon" href="data:image/png;base64,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" />
+    <link rel="apple-touch-icon" href="data:image/png;base64,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" />
+    <style>
+      :root {
+        --bg: #141416;
+        --panel: #1d1d21;
+        --panel-2: #26262c;
+        --line: #34343c;
+        --ink: #f2f2f4;
+        --ink-dim: #a2a2ae;
+        --accent: #e8a33d;
+        --accent-ink: #241a08;
+        --ok: #6fcf87;
+        --bad: #ef6f6f;
+        --radius: 12px;
+        --tap: 44px;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f4f4f6;
+          --panel: #ffffff;
+          --panel-2: #eeeef2;
+          --line: #d8d8e0;
+          --ink: #1a1a1e;
+          --ink-dim: #61616d;
+          --accent: #b7761a;
+          --accent-ink: #fff8ec;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        padding: 0 14px calc(28px + env(safe-area-inset-bottom));
+        max-width: 780px;
+        margin: 0 auto;
+        -webkit-text-size-adjust: 100%;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: calc(14px + env(safe-area-inset-top)) 0 12px;
+      }
+      header h1 {
+        font-size: 17px;
+        margin: 0;
+        flex: 1;
+        letter-spacing: -0.01em;
+      }
+      header .sub {
+        display: block;
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--ink-dim);
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px;
+        margin-bottom: 12px;
+      }
+      h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--ink-dim);
+        margin: 0 0 10px;
+        font-weight: 600;
+      }
+      button,
+      select,
+      input,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        min-height: var(--tap);
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        padding: 0 14px;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+      button:active {
+        transform: scale(0.985);
+      }
+      button.primary {
+        background: var(--accent);
+        color: var(--accent-ink);
+        border-color: transparent;
+        font-weight: 650;
+        width: 100%;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .row > * {
+        flex: 1 1 0;
+        min-width: 120px;
+      }
+      /* Segmented control */
+      .seg {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .seg button {
+        flex: 1 1 auto;
+        min-width: 68px;
+        padding: 0 10px;
+        font-size: 14px;
+      }
+      .seg button[aria-pressed="true"] {
+        background: var(--accent);
+        color: var(--accent-ink);
+        border-color: transparent;
+        font-weight: 650;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--ink-dim);
+        margin: 8px 0 0;
+      }
+      /* Image picker */
+      #drop {
+        border: 1.5px dashed var(--line);
+        border-radius: var(--radius);
+        padding: 18px;
+        text-align: center;
+        color: var(--ink-dim);
+        font-size: 14px;
+      }
+      #drop.has-image {
+        padding: 8px;
+        border-style: solid;
+      }
+      #preview {
+        display: none;
+        width: 100%;
+        max-height: 42vh;
+        object-fit: contain;
+        border-radius: 8px;
+      }
+      #preview.show {
+        display: block;
+      }
+      /* Field chips */
+      .field {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .field:last-child {
+        border-bottom: 0;
+      }
+      .field label {
+        flex: 0 0 84px;
+        font-size: 12px;
+        color: var(--ink-dim);
+        text-transform: capitalize;
+      }
+      .field input {
+        flex: 1;
+        min-width: 0;
+        min-height: 38px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 10px;
+      }
+      .field input:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+      }
+      /* Output */
+      .out {
+        margin-bottom: 10px;
+      }
+      .out h3 {
+        font-size: 12px;
+        margin: 0 0 6px;
+        color: var(--ink-dim);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+      }
+      .out h3 .count {
+        margin-left: auto;
+        font-weight: 400;
+        font-variant-numeric: tabular-nums;
+      }
+      textarea {
+        width: 100%;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        resize: vertical;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      textarea#prompt {
+        min-height: 132px;
+      }
+      textarea#negative {
+        min-height: 92px;
+      }
+      .settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .stat {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 8px;
+        text-align: center;
+      }
+      .stat b {
+        display: block;
+        font-size: 17px;
+        font-variant-numeric: tabular-nums;
+      }
+      .stat span {
+        font-size: 11px;
+        color: var(--ink-dim);
+      }
+      /* Status */
+      #status {
+        display: none;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        margin-top: 10px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+      }
+      #status.show {
+        display: block;
+      }
+      #status.err {
+        border-color: var(--bad);
+        color: var(--bad);
+      }
+      #status.ok {
+        border-color: var(--ok);
+      }
+      progress {
+        width: 100%;
+        height: 6px;
+        margin-top: 8px;
+      }
+      /* Toggles */
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: var(--tap);
+        cursor: pointer;
+      }
+      .toggle input {
+        width: 20px;
+        height: 20px;
+        accent-color: var(--accent);
+        flex: 0 0 auto;
+      }
+      .toggle span {
+        font-size: 14px;
+      }
+      .toggle small {
+        display: block;
+        color: var(--ink-dim);
+        font-size: 12px;
+      }
+      details summary {
+        cursor: pointer;
+        min-height: var(--tap);
+        display: flex;
+        align-items: center;
+        font-size: 13px;
+        color: var(--ink-dim);
+      }
+      .history-item {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 13px;
+      }
+      .history-item p {
+        margin: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--ink-dim);
+      }
+      .history-item button {
+        min-height: 34px;
+        padding: 0 10px;
+        font-size: 13px;
+        flex: 0 0 auto;
+      }
+      .sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+      footer {
+        color: var(--ink-dim);
+        font-size: 12px;
+        text-align: center;
+        padding: 4px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>
+        Prompt Forge
+        <span class="sub">Photo → Perchance prompt, on your phone</span>
+      </h1>
+      <button id="settings-btn" aria-label="Settings" style="flex: 0 0 auto">⚙</button>
+    </header>
+
+    <!-- 1. Image -->
+    <section>
+      <h2>1 · Photo</h2>
+      <div id="drop">
+        <img id="preview" alt="Selected photo preview" />
+        <span id="drop-label">Tap below to take or choose a photo</span>
+      </div>
+      <div class="row" style="margin-top: 10px">
+        <button id="camera-btn">📷 Camera</button>
+        <button id="gallery-btn">🖼 Gallery</button>
+      </div>
+      <input id="camera-input" class="sr" type="file" accept="image/*" capture="environment" />
+      <input id="gallery-input" class="sr" type="file" accept="image/*" />
+      <button id="read-btn" class="primary" style="margin-top: 10px" disabled>
+        Read image
+      </button>
+      <div id="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <!-- 2. Era -->
+    <section>
+      <h2>2 · Era</h2>
+      <div class="seg" id="era-seg"></div>
+      <p class="hint" id="era-blurb"></p>
+
+      <h2 style="margin-top: 14px">Format</h2>
+      <div class="seg" id="format-seg"></div>
+
+      <h2 style="margin-top: 14px">Artifact intensity</h2>
+      <div class="seg" id="intensity-seg"></div>
+      <p class="hint">
+        Heavier adds more grain, date stamps and compression. Overdone reads as pastiche
+        rather than a real photo.
+      </p>
+
+      <label class="toggle" style="margin-top: 6px">
+        <input type="checkbox" id="period-subject" />
+        <span>
+          Period the subject too
+          <small>Also adds era clothing, hair and decor. Off keeps the subject as shot.</small>
+        </span>
+      </label>
+    </section>
+
+    <!-- 3. Observations -->
+    <section>
+      <h2>3 · What the model saw</h2>
+      <div id="fields"></div>
+      <p class="hint">
+        Every field is editable — fix anything misread, or type them in by hand if you skip
+        the model entirely.
+      </p>
+      <div class="row" style="margin-top: 8px">
+        <button id="clear-fields">Clear all</button>
+        <button id="variant-btn">🎲 Reroll film</button>
+      </div>
+    </section>
+
+    <!-- 4. Output -->
+    <section>
+      <h2>4 · Prompt</h2>
+      <div class="seg" id="style-seg" style="margin-bottom: 10px"></div>
+
+      <div class="settings-grid">
+        <div class="stat"><b id="stat-cfg">–</b><span>CFG</span></div>
+        <div class="stat"><b id="stat-steps">–</b><span>Steps</span></div>
+        <div class="stat"><b id="stat-aspect">–</b><span>Aspect</span></div>
+      </div>
+      <p class="hint" id="cfg-hint" style="margin-top: 0"></p>
+
+      <div class="out">
+        <h3>Prompt <span class="count" id="prompt-count"></span></h3>
+        <textarea id="prompt" spellcheck="false" aria-label="Prompt"></textarea>
+        <button id="copy-prompt" style="width: 100%; margin-top: 6px">Copy prompt</button>
+      </div>
+
+      <div class="out">
+        <h3>Negative prompt <span class="count" id="negative-count"></span></h3>
+        <textarea id="negative" spellcheck="false" aria-label="Negative prompt"></textarea>
+        <button id="copy-negative" style="width: 100%; margin-top: 6px">
+          Copy negative prompt
+        </button>
+      </div>
+
+      <button id="copy-all" class="primary">Copy everything (prompt + settings)</button>
+
+      <label class="toggle" style="margin-top: 6px">
+        <input type="checkbox" id="emphasis" checked />
+        <span>
+          Weight the subject
+          <small>Wraps the main subject as (subject:1.2). Tag style only.</small>
+        </span>
+      </label>
+    </section>
+
+    <!-- History -->
+    <section>
+      <details>
+        <summary>Recent forges</summary>
+        <div id="history"></div>
+        <button id="clear-history" style="width: 100%; margin-top: 8px">Clear history</button>
+      </details>
+    </section>
+
+    <!-- Settings -->
+    <section>
+      <details id="settings-panel">
+        <summary>Settings &amp; device</summary>
+        <h2 style="margin-top: 12px">AI model</h2>
+        <select id="model-select" style="width: 100%; min-height: var(--tap); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px">
+          <option value="">Auto-detect (recommended)</option>
+        </select>
+        <p class="hint" id="model-why">Detecting device capability…</p>
+        <button id="unload-btn" style="width: 100%; margin-top: 8px">
+          Unload model from memory
+        </button>
+        <p class="hint">
+          The model runs entirely in this browser. No account, no API key, no rate limit, no
+          content filter, and your photo is never uploaded. The first run downloads the model
+          once; after that it works offline.
+        </p>
+      </details>
+    </section>
+
+    <footer>Runs on-device · <span id="offline-state">checking…</span></footer>
+
+    <script type="module">
+/* ===== src/vocab.js ===== */
+/**
+ * Controlled vocabulary and text-cleanup data for the prompt compiler.
+ *
+ * Data only — no logic lives here. The compiler imports these tables so that
+ * tuning the app's language behaviour is a matter of editing lists rather than
+ * editing code.
+ */
+
+/**
+ * Conversational scaffolding that small vision-language models wrap around
+ * their answers. Stripped before anything else happens.
+ *
+ * Order matters: longer, more specific phrases must precede their own
+ * substrings, otherwise the short pattern fires first and leaves a fragment
+ * behind ("this image shows" -> "shows" if "image" went first).
+ */
+const FILLER_PATTERNS = [
+  /^\s*(answer|caption|description|response|output)\s*:\s*/i,
+  /\b(?:in|from)\s+th(?:is|e)\s+(?:image|photo|photograph|picture|scene)\b,?\s*/gi,
+  /\bth(?:is|e)\s+(?:image|photo|photograph|picture|scene)\s+(?:shows|depicts|features|contains|is\s+of)\b\s*/gi,
+  /\bth(?:is|e)\s+is\s+(?:a|an)\s+(?:image|photo|photograph|picture)\s+of\b\s*/gi,
+  /\b(?:we|you|i)\s+can\s+see\b\s*/gi,
+  /\bit\s+(?:appears|seems)\s+to\s+be\b\s*/gi,
+  /\b(?:appears|seems)\s+to\s+be\b\s*/gi,
+  /\bthere\s+(?:is|are)\s+(?:a|an|some)?\b\s*/gi,
+  /^\s*(?:a|an)\s+(?:image|photo|photograph|picture)\s+of\b\s*/i,
+  /\b(?:likely|probably|possibly|perhaps|maybe|apparently)\b\s*/gi,
+  /\b(?:overall|in\s+general|generally\s+speaking)\b,?\s*/gi,
+];
+
+/**
+ * Answers that carry no information. A small model returns these constantly
+ * when it cannot make out the detail being asked about, and emitting them
+ * would poison the prompt with vague tokens.
+ */
+const NULL_ANSWERS = new Set([
+  '',
+  'n/a',
+  'na',
+  'none',
+  'nothing',
+  'no',
+  'yes',
+  'unknown',
+  'unclear',
+  'not sure',
+  'cannot tell',
+  "can't tell",
+  'not visible',
+  'no idea',
+  'unspecified',
+  'indeterminate',
+  'image',
+  'photo',
+  'photograph',
+  'picture',
+  'a photo',
+  'an image',
+  'something',
+  'stuff',
+  'things',
+  'object',
+  'objects',
+]);
+
+/**
+ * Tokens too generic to earn a slot in a prompt. Dropped during compilation
+ * even when they arrive inside an otherwise useful phrase's tag list.
+ */
+const GENERIC_TAGS = new Set([
+  'image',
+  'photo',
+  'photograph',
+  'picture',
+  'background',
+  'foreground',
+  'thing',
+  'things',
+  'object',
+  'objects',
+  'stuff',
+  'area',
+  'scene',
+  'view',
+  'part',
+  'various',
+  'several',
+  'other',
+  'others',
+]);
+
+/**
+ * Normalisation toward conventional diffusion-prompt vocabulary. Keys are
+ * matched whole-phrase, case-insensitively, after filler removal.
+ */
+const SYNONYMS = {
+  // People — models alternate between clinical and colloquial terms.
+  male: 'man',
+  female: 'woman',
+  guy: 'man',
+  gentleman: 'man',
+  lady: 'woman',
+  'young male': 'young man',
+  'young female': 'young woman',
+  'adult male': 'man',
+  'adult female': 'woman',
+  'male child': 'boy',
+  'female child': 'girl',
+  kid: 'child',
+  kids: 'children',
+  people: 'group of people',
+  persons: 'group of people',
+
+  // Framing — map to terms photographers and prompts actually use.
+  'close up': 'close-up shot',
+  closeup: 'close-up shot',
+  'close-up': 'close-up shot',
+  'a close up view': 'close-up shot',
+  'full body': 'full-body shot',
+  'full length': 'full-body shot',
+  'head and shoulders': 'portrait framing',
+  'upper body': 'waist-up shot',
+  'from above': 'high angle shot',
+  'from below': 'low angle shot',
+  'eye level': 'eye-level shot',
+  'wide shot': 'wide shot',
+  'wide angle': 'wide-angle shot',
+  landscape: 'landscape orientation',
+
+  // Lighting.
+  'sun light': 'sunlight',
+  'natural light': 'natural lighting',
+  'day light': 'daylight',
+  daytime: 'daylight',
+  'night time': 'night',
+  nighttime: 'night',
+  'artificial light': 'artificial lighting',
+  'indoor lighting': 'indoor artificial lighting',
+  'bright light': 'bright lighting',
+  'dim light': 'dim lighting',
+  'low light': 'dim lighting',
+  'back light': 'backlighting',
+  backlit: 'backlighting',
+  'over head light': 'overhead lighting',
+  flash: 'camera flash',
+  'flash photography': 'camera flash',
+
+  // Settings.
+  indoors: 'indoor setting',
+  inside: 'indoor setting',
+  outdoors: 'outdoor setting',
+  outside: 'outdoor setting',
+  'living room': 'living room interior',
+  kitchen: 'domestic kitchen',
+  bedroom: 'bedroom interior',
+  street: 'city street',
+  road: 'roadside',
+  field: 'open field',
+  woods: 'forest',
+  beach: 'beach',
+  park: 'public park',
+};
+
+/**
+ * Words ignored when testing two phrases for near-duplication, so that
+ * "a red dress" and "red dress" collapse to one tag.
+ */
+const DEDUPE_STOPWORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'of',
+  'with',
+  'in',
+  'on',
+  'at',
+  'to',
+  'and',
+  'is',
+  'are',
+  'was',
+  'were',
+  'some',
+  'very',
+  'quite',
+  'that',
+  'this',
+  'their',
+  'his',
+  'her',
+  'its',
+  'wearing',
+]);
+
+/**
+ * Assembly order for compiled prompts. Diffusion models weight earlier tokens
+ * more heavily, so the subject leads and the photographic medium trails —
+ * medium tags describe *how* the image was captured and should not compete
+ * with the subject for attention.
+ */
+const CATEGORY_ORDER = [
+  'shotType',
+  'subject',
+  'appearance',
+  'clothing',
+  'action',
+  'setting',
+  'colors',
+  'lighting',
+  'composition',
+  'medium',
+  'artifacts',
+];
+
+/**
+ * Natural-language joining behaviour per category.
+ *
+ * `lead` is prepended unless the phrase already opens with one of `skipIf`,
+ * which prevents "in in a kitchen" when the model's answer already carries
+ * its own preposition.
+ */
+const NL_JOINERS = {
+  shotType: { lead: '', skipIf: [] },
+  subject: { lead: '', skipIf: [] },
+  appearance: { lead: '', skipIf: [] },
+  clothing: { lead: 'wearing ', skipIf: ['wearing', 'dressed', 'in a', 'in an'] },
+  action: { lead: '', skipIf: [] },
+  setting: { lead: 'in ', skipIf: ['in', 'on', 'at', 'inside', 'outside', 'near', 'by'] },
+  colors: { lead: '', skipIf: [] },
+  lighting: { lead: 'lit by ', skipIf: ['lit', 'under', 'backlighting', 'in', 'with'] },
+  composition: { lead: '', skipIf: [] },
+  medium: { lead: '', skipIf: [] },
+  artifacts: { lead: '', skipIf: [] },
+};
+
+/**
+ * Quality boilerplate. Deliberately kept in one place so era presets can
+ * refuse it wholesale: these tags are the single biggest cause of output that
+ * reads as AI-generated rather than as a real photograph.
+ */
+const QUALITY_TAGS = [
+  'masterpiece',
+  'best quality',
+  'highly detailed',
+  'ultra detailed',
+  'sharp focus',
+  '8k',
+  'high resolution',
+  'professional photography',
+];
+
+/** Anatomy and rendering failures worth rejecting regardless of style. */
+const BASE_NEGATIVE = [
+  'watermark',
+  'signature',
+  'text',
+  'caption',
+  'logo',
+  'border',
+  'frame',
+  'cropped',
+  'out of frame',
+  'lowres',
+  'jpeg artifacts',
+  'blurry',
+  'deformed',
+  'disfigured',
+  'mutated',
+  'extra limbs',
+  'extra fingers',
+  'missing fingers',
+  'fused fingers',
+  'malformed hands',
+  'bad anatomy',
+  'bad proportions',
+  'long neck',
+];
+
+/* ===== src/eras.js ===== */
+/**
+ * Era preset bundles — the heart of the app.
+ *
+ * Producing an image that reads as a genuine period photograph is mostly a
+ * matter of *refusing* the conventional prompt boilerplate. Tags like
+ * "masterpiece, 8k, ultra detailed, cinematic lighting" are what make output
+ * look rendered; every era here therefore sets `suppressQualityTags` and leans
+ * instead on concrete period apparatus — film stock, camera body, flash
+ * behaviour, lab-print and sensor artifacts.
+ *
+ * Data only. Lists are ordered most-characteristic-first, because artifact
+ * intensity works by truncation.
+ *
+ * `negativeExclude` exists because the base negative list rejects things some
+ * eras deliberately want. An early-2000s digital compact *should* produce JPEG
+ * blocks; an 80s print *should* have a white border and a date stamp. Any term
+ * an era requests positively must be pulled back out of its negative list, or
+ * the two halves of the prompt fight each other.
+ */
+
+/**
+ * The load-bearing negative block. Rejects modern digital polish and the
+ * "AI look" — applied to every era preset.
+ */
+const REALISM_NEGATIVE = [
+  'digital art',
+  'illustration',
+  'painting',
+  'drawing',
+  'sketch',
+  'render',
+  '3d render',
+  'cgi',
+  'anime',
+  'cartoon',
+  'concept art',
+  'airbrushed',
+  'retouched',
+  'smooth skin',
+  'flawless skin',
+  'poreless skin',
+  'symmetrical face',
+  'glamour',
+  'fashion model',
+  'supermodel',
+  'beauty shot',
+  'hdr',
+  'high dynamic range',
+  'ultra sharp',
+  'hyperdetailed',
+  'ultra detailed',
+  'masterpiece',
+  'best quality',
+  '8k',
+  '4k',
+  'cinematic lighting',
+  'dramatic lighting',
+  'studio lighting',
+  'softbox',
+  'color grading',
+  'teal and orange',
+  'instagram filter',
+  'oversaturated',
+  'vibrant colors',
+  'neon',
+  'artstation',
+  'trending on artstation',
+  'award winning',
+  'professional photography',
+  'modern smartphone photo',
+  'iphone photo',
+  'shallow depth of field',
+  'creamy bokeh',
+  'perfect composition',
+];
+
+/**
+ * How many tags each intensity level emits. "Force real" overdone becomes
+ * obvious pastiche, so subtle is a genuine option rather than a weak one.
+ */
+const INTENSITY_LEVELS = {
+  subtle: { label: 'Subtle', artifacts: 1, look: 3 },
+  medium: { label: 'Medium', artifacts: 3, look: 5 },
+  heavy: { label: 'Heavy', artifacts: 99, look: 99 },
+};
+
+const DEFAULT_INTENSITY = 'medium';
+
+const ERAS = {
+  '1980s': {
+    id: '1980s',
+    label: '1980s',
+    blurb: 'Warm film stock, hard flash, white-bordered lab prints.',
+    suppressQualityTags: true,
+    cfg: { value: 5, range: [3.5, 6.5] },
+    steps: 30,
+    aspect: '3:2',
+    snapshotFraming: ['amateur snapshot', 'vernacular family photograph', 'candid snapshot'],
+    look: [
+      'warm amber color cast',
+      'visible film grain',
+      'corner vignetting',
+      'green-tinted shadows',
+      'halation around highlights',
+      'soft lens character',
+      'low contrast in the shadows',
+    ],
+    subjectPeriod: [
+      '1980s clothing',
+      'feathered hair',
+      'high-waisted jeans',
+      'shoulder pads',
+      'wood-paneled wall',
+      'floral wallpaper',
+      'CRT television in the background',
+    ],
+    negative: ['modern clothing', 'modern interior', 'smartphone', 'flat screen television'],
+    // The white print border and orange date stamp are wanted, so the base
+    // negative must stop rejecting borders, frames and text.
+    negativeExclude: ['border', 'frame', 'text', 'caption'],
+    defaultFormat: '35mm print',
+    formats: {
+      '35mm print': {
+        label: '35mm print',
+        camera: ['manual focus 35mm SLR', 'Canon AE-1', 'Nikon FM2'],
+        stock: ['Kodachrome 64', 'Kodacolor VR 400', 'Ektachrome'],
+        artifacts: [
+          'white-bordered matte lab print',
+          'orange dot-matrix date stamp',
+          'slight color fading',
+          'dust specks',
+          'fine emulsion scratches',
+        ],
+      },
+      instant: {
+        label: 'Instant / Polaroid',
+        camera: ['Polaroid SX-70', 'Polaroid 600'],
+        stock: ['instant film'],
+        aspect: '1:1',
+        artifacts: [
+          'square instant film frame with wide white bottom border',
+          'milky low contrast',
+          'cyan-shifted shadows',
+          // Avoid the literal substring "sharp focus" — it is a quality tag, and
+          // models tokenize those words regardless of the "un-" prefix.
+          'gently out of focus',
+          'uneven chemical development',
+        ],
+        // Instant film is genuinely soft; don't also forbid softness.
+        negativeExclude: ['blurry'],
+      },
+      'flash snapshot': {
+        label: 'Night flash snapshot',
+        camera: ['compact 35mm camera with built-in flash'],
+        stock: ['Kodacolor VR 400'],
+        artifacts: [
+          'harsh direct flash',
+          'background falling off to black',
+          'red-eye',
+          'hard flash shadow behind the subject',
+          'overexposed skin highlights',
+        ],
+      },
+    },
+  },
+
+  '1990s': {
+    id: '1990s',
+    label: '1990s',
+    blurb: 'Drugstore prints, on-camera flash, punchy consumer film.',
+    suppressQualityTags: true,
+    cfg: { value: 5.5, range: [4, 7] },
+    steps: 28,
+    aspect: '3:2',
+    snapshotFraming: ['amateur snapshot', 'candid family photograph', 'vernacular snapshot'],
+    look: [
+      'direct on-camera flash',
+      'hard shadow on the wall behind the subject',
+      'visible film grain',
+      'punchy consumer film saturation',
+      'slight overexposure',
+      'warm color cast',
+      'flat frontal lighting',
+    ],
+    subjectPeriod: [
+      '1990s clothing',
+      'baggy jeans',
+      'windbreaker jacket',
+      'chunky sneakers',
+      'popcorn ceiling',
+      'beige carpet',
+      'boxy CRT television',
+    ],
+    negative: ['modern clothing', 'modern interior', 'smartphone', 'flat screen television'],
+    negativeExclude: ['border', 'frame', 'text', 'caption'],
+    defaultFormat: '35mm print',
+    formats: {
+      '35mm print': {
+        label: '35mm print',
+        camera: ['compact point-and-shoot', 'Canon Sure Shot', 'Olympus Stylus'],
+        stock: ['Kodak Gold 200', 'Fujicolor Superia 400', 'Konica Centuria'],
+        artifacts: [
+          '4x6 glossy drugstore print',
+          'orange dot-matrix date stamp',
+          'one-hour photo lab color balance',
+          'slight print scuffing',
+        ],
+      },
+      disposable: {
+        label: 'Disposable camera',
+        camera: ['Kodak FunSaver disposable camera'],
+        stock: ['ISO 800 consumer film'],
+        artifacts: [
+          'harsh unmodulated flash',
+          'red-eye',
+          'heavy film grain',
+          'soft plastic lens distortion',
+          'light leak streak',
+          'crooked handheld framing',
+        ],
+        negativeExclude: ['blurry'],
+      },
+      'vhs still': {
+        label: 'VHS still',
+        camera: ['consumer camcorder'],
+        stock: ['VHS tape'],
+        aspect: '4:3',
+        artifacts: [
+          'interlaced video still with visible scanlines',
+          'tracking distortion',
+          'chroma bleed',
+          'timecode overlay in the corner',
+          'motion smear',
+          'low video resolution',
+        ],
+        // A VHS frame is legitimately low-resolution and soft.
+        negativeExclude: ['lowres', 'blurry'],
+      },
+    },
+  },
+
+  'early 2000s': {
+    id: 'early 2000s',
+    label: 'Early 2000s',
+    blurb: 'Early digital compacts: JPEG mush, blown flash, yellow timestamp.',
+    suppressQualityTags: true,
+    cfg: { value: 6, range: [4.5, 7.5] },
+    steps: 26,
+    aspect: '4:3',
+    snapshotFraming: ['amateur digital snapshot', 'candid party snapshot', 'vernacular snapshot'],
+    look: [
+      'harsh built-in flash',
+      'background falling off underexposed',
+      'limited dynamic range',
+      'digital noise in the shadows',
+      'cyan-green fluorescent color cast',
+      'flat frontal lighting',
+      'small sensor look',
+    ],
+    subjectPeriod: [
+      'early 2000s clothing',
+      'low-rise jeans',
+      'frosted hair tips',
+      'velour tracksuit',
+      'beige desktop computer',
+      'silver electronics',
+    ],
+    negative: ['modern clothing', 'modern interior', 'smartphone'],
+    // Compression, softness and the burnt-in timestamp are the whole point of
+    // this era, so they cannot also be negated.
+    negativeExclude: ['jpeg artifacts', 'lowres', 'text', 'caption', 'blurry'],
+    defaultFormat: 'digital compact',
+    formats: {
+      'digital compact': {
+        label: 'Digital compact (3MP)',
+        camera: ['3 megapixel Sony Cyber-shot', 'Canon PowerShot A-series', 'Nikon Coolpix'],
+        stock: ['early digital sensor'],
+        artifacts: [
+          'visible JPEG compression blocks',
+          'yellow digital timestamp in the corner',
+          'oversharpening halos',
+          'purple chromatic fringing',
+          'blown-out highlights',
+          'low megapixel softness',
+        ],
+      },
+      cameraphone: {
+        label: 'VGA cameraphone',
+        camera: ['early 2000s VGA cameraphone'],
+        stock: ['640x480 phone sensor'],
+        artifacts: [
+          'extreme JPEG compression',
+          'smeared low-resolution detail',
+          'muddy desaturated color',
+          'heavy sensor noise',
+          'crushed dynamic range',
+        ],
+        negativeExclude: ['blurry'],
+      },
+      '35mm print': {
+        label: '35mm print (still common)',
+        camera: ['compact point-and-shoot'],
+        stock: ['Kodak Max 400', 'Fujicolor Superia 400'],
+        artifacts: [
+          '4x6 glossy lab print',
+          'orange dot-matrix date stamp',
+          'film grain',
+          'one-hour photo lab color balance',
+        ],
+        negativeExclude: ['border', 'frame'],
+      },
+    },
+  },
+
+  /**
+   * Escape hatch: no era forcing. Unlike the period presets this one *keeps*
+   * the quality boilerplate, since without an era to protect there is no
+   * reason to suppress it.
+   */
+  none: {
+    id: 'none',
+    label: 'No era',
+    blurb: 'Plain prompt, no period forcing. Keeps standard quality tags.',
+    suppressQualityTags: false,
+    cfg: { value: 7, range: [6, 9] },
+    steps: 30,
+    aspect: 'source',
+    snapshotFraming: [],
+    look: [],
+    subjectPeriod: [],
+    negative: [],
+    negativeExclude: [],
+    defaultFormat: 'plain',
+    formats: {
+      plain: { label: 'Plain', camera: [], stock: [], artifacts: [] },
+    },
+  },
+};
+
+const ERA_IDS = ['1980s', '1990s', 'early 2000s', 'none'];
+const DEFAULT_ERA = '1990s';
+
+/** Standard aspect ratios, used to snap a source image to an era-plausible frame. */
+const ASPECT_RATIOS = [
+  { label: '1:1', value: 1 },
+  { label: '4:3', value: 4 / 3 },
+  { label: '3:2', value: 3 / 2 },
+  { label: '16:9', value: 16 / 9 },
+  { label: '3:4', value: 3 / 4 },
+  { label: '2:3', value: 2 / 3 },
+  { label: '9:16', value: 9 / 16 },
+];
+
+/* ===== src/compiler.js ===== */
+/**
+ * The prompt compiler.
+ *
+ * Everything here is a pure function of its inputs. The vision model is only
+ * ever trusted to *observe* an image; all structure — cleanup, vocabulary
+ * normalisation, ordering, weighting, era overlay, negative-prompt assembly —
+ * happens deterministically in this file, which is why it can be unit tested
+ * without a model or a browser.
+ */
+
+
+
+
+
+/** Categories the vision stage fills in, in the order it asks about them. */
+const OBSERVATION_FIELDS = [
+  'subject',
+  'appearance',
+  'clothing',
+  'action',
+  'setting',
+  'colors',
+  'lighting',
+  'shotType',
+];
+
+/* ------------------------------------------------------------------ *
+ * Text cleanup
+ * ------------------------------------------------------------------ */
+
+/**
+ * Strip the conversational scaffolding a small VLM wraps around its answers
+ * and reduce the result to a bare descriptive phrase.
+ */
+function cleanAnswer(raw) {
+  if (typeof raw !== 'string') return '';
+  let out = raw.replace(/\s+/g, ' ').trim();
+
+  // Models often answer in several sentences; the first carries the content.
+  out = out.split(/(?<=[.!?])\s+/)[0] || out;
+
+  for (const pattern of FILLER_PATTERNS) {
+    out = out.replace(pattern, ' ');
+  }
+
+  out = out
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:])/g, '$1')
+    .replace(/^[\s,.;:—-]+/, '')
+    .replace(/[\s,.;:]+$/, '')
+    .trim();
+
+  return out;
+}
+
+/** True when an answer carries no usable information. */
+function isNullAnswer(text) {
+  const key = String(text || '')
+    .toLowerCase()
+    .replace(/[.!?]+$/, '')
+    .trim();
+  return key.length === 0 || NULL_ANSWERS.has(key);
+}
+
+/** Split a descriptive phrase into individual tag-sized chunks. */
+function toTags(phrase) {
+  return String(phrase || '')
+    .split(/\s*(?:,|;|\band\b|\bwith\b(?=\s+(?:a|an|the)\b))\s*/i)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/** Lowercase, de-article, and map onto the controlled vocabulary. */
+function normalizeTag(tag) {
+  let out = String(tag || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?]+$/, '')
+    .replace(/^(?:a|an|the)\s+/, '')
+    .trim();
+
+  if (Object.prototype.hasOwnProperty.call(SYNONYMS, out)) {
+    out = SYNONYMS[out];
+  }
+  return out;
+}
+
+/** Comparison key that ignores articles and filler so near-duplicates collapse. */
+function dedupeKey(tag) {
+  return String(tag || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .split(/\s+/)
+    .filter((w) => w && !DEDUPE_STOPWORDS.has(w))
+    .join(' ');
+}
+
+/** Remove near-duplicates, keeping first occurrence. */
+function dedupeTags(tags) {
+  const seen = new Set();
+  const out = [];
+  for (const tag of tags) {
+    const key = dedupeKey(tag);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out;
+}
+
+/** Full cleanup pipeline for one raw model answer. */
+function fieldToTags(raw) {
+  const cleaned = cleanAnswer(raw);
+  if (isNullAnswer(cleaned)) return [];
+  const tags = toTags(cleaned)
+    .map(normalizeTag)
+    .filter((t) => t && !GENERIC_TAGS.has(t) && !isNullAnswer(t));
+  return dedupeTags(tags);
+}
+
+/* ------------------------------------------------------------------ *
+ * Aspect ratio
+ * ------------------------------------------------------------------ */
+
+/** Snap real image dimensions to the nearest conventional ratio label. */
+function snapAspect(width, height) {
+  if (!width || !height) return null;
+  const ratio = width / height;
+  let best = ASPECT_RATIOS[0];
+  let bestDelta = Infinity;
+  for (const candidate of ASPECT_RATIOS) {
+    const delta = Math.abs(candidate.value - ratio);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = candidate;
+    }
+  }
+  return best.label;
+}
+
+/* ------------------------------------------------------------------ *
+ * Era overlay
+ * ------------------------------------------------------------------ */
+
+/** Pick from a list deterministically; `variant` rotates through the options. */
+function pick(list, variant = 0) {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  return list[((variant % list.length) + list.length) % list.length];
+}
+
+/**
+ * Phrase a capture medium. Film stocks read naturally as "shot on X"; digital
+ * sensors and tape do not, so they are emitted bare.
+ */
+function phraseStock(stock) {
+  if (!stock) return null;
+  return /sensor|tape|digital/i.test(stock) ? stock : `shot on ${stock}`;
+}
+
+/**
+ * Build the medium, look and artifact tag groups contributed by an era preset.
+ */
+function eraContribution(eraId, formatId, intensity = DEFAULT_INTENSITY, variant = 0) {
+  const era = ERAS[eraId] || ERAS[DEFAULT_ERA];
+  const formatKey = formatId && era.formats[formatId] ? formatId : era.defaultFormat;
+  const format = era.formats[formatKey] || { camera: [], stock: [], artifacts: [] };
+  const level = INTENSITY_LEVELS[intensity] || INTENSITY_LEVELS[DEFAULT_INTENSITY];
+
+  const framing = pick(era.snapshotFraming, variant);
+  const stock = phraseStock(pick(format.stock, variant));
+  const camera = pick(format.camera, variant);
+
+  return {
+    era,
+    format,
+    formatKey,
+    framing,
+    medium: [framing, stock, camera].filter(Boolean),
+    look: (era.look || []).slice(0, level.look),
+    artifacts: (format.artifacts || []).slice(0, level.artifacts),
+    aspect: format.aspect || era.aspect,
+    cfg: format.cfg || era.cfg,
+    steps: format.steps || era.steps,
+    negativeExclude: [...(era.negativeExclude || []), ...(format.negativeExclude || [])],
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Negative prompt
+ * ------------------------------------------------------------------ */
+
+/**
+ * Assemble the negative prompt, then subtract anything the positive prompt
+ * asks for. Without this an era that wants JPEG blocks or a white print border
+ * would simultaneously forbid them.
+ */
+function buildNegative(era, contribution, positiveTags) {
+  const exclude = new Set(contribution.negativeExclude.map((t) => t.toLowerCase()));
+
+  // REALISM_NEGATIVE only applies to realism-forcing presets; `suppressQualityTags`
+  // is precisely the flag that marks a preset as one.
+  const parts = [
+    ...BASE_NEGATIVE,
+    ...(era.suppressQualityTags ? REALISM_NEGATIVE : []),
+    ...(era.negative || []),
+  ];
+
+  const positive = positiveTags.map((t) => t.toLowerCase());
+
+  const out = [];
+  const seen = new Set();
+  for (const raw of parts) {
+    const term = raw.toLowerCase();
+    if (exclude.has(term) || seen.has(term)) continue;
+    // Safety net for direct overlaps between the two halves of the prompt.
+    const conflicts = positive.some((p) => p.includes(term) || term.includes(p));
+    if (conflicts) continue;
+    seen.add(term);
+    out.push(raw);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendering
+ * ------------------------------------------------------------------ */
+
+function renderTagStyle(groups, { emphasis }) {
+  const flat = [];
+  for (const category of CATEGORY_ORDER) {
+    const tags = groups[category] || [];
+    tags.forEach((tag, i) => {
+      const isSubjectAnchor = emphasis && category === 'subject' && i === 0;
+      flat.push(isSubjectAnchor ? `(${tag}:1.2)` : tag);
+    });
+  }
+  if (groups.quality) flat.push(...groups.quality);
+  return flat.join(', ');
+}
+
+function applyJoiner(category, tags) {
+  const joiner = NL_JOINERS[category] || { lead: '', skipIf: [] };
+  const phrase = tags.join(', ');
+  if (!joiner.lead) return phrase;
+  const opensWith = joiner.skipIf.some((word) =>
+    new RegExp(`^${word}\\b`, 'i').test(phrase),
+  );
+  return opensWith ? phrase : `${joiner.lead}${phrase}`;
+}
+
+/**
+ * Put an indefinite article back on a subject phrase for prose output.
+ * `normalizeTag` strips articles, which is right for tag style but reads wrong
+ * in a sentence ("amateur snapshot of man").
+ */
+function withArticle(phrase) {
+  const text = String(phrase || '').trim();
+  if (!text) return text;
+  // Already determined, counted, or plural — leave alone.
+  if (/^(?:a|an|the|his|her|their|some|one|two|three|several|group|\d)\b/i.test(text)) return text;
+  if (/^(?:people|men|women|children|kids|couples?|crowd)\b/i.test(text)) return text;
+  const head = text.split(/\s+/)[0];
+  if (/[^s]s$/.test(head) && !/(?:ss|us|is)$/.test(head)) return text; // plural head noun
+  return /^[aeiou]/i.test(text) ? `an ${text}` : `a ${text}`;
+}
+
+function renderNatural(groups, { framing }) {
+  const clauses = [];
+
+  const shot = groups.shotType || [];
+  const subject = groups.subject || [];
+
+  // Lead clause: "close-up shot" + "amateur snapshot of a man"
+  if (shot.length) clauses.push(shot.join(', '));
+  const subjectPhrase = subject.length ? withArticle(subject[0]) + subject.slice(1).map((t) => `, ${t}`).join('') : '';
+  if (framing && subjectPhrase) clauses.push(`${framing} of ${subjectPhrase}`);
+  else if (subjectPhrase) clauses.push(subjectPhrase);
+  else if (framing) clauses.push(framing);
+
+  for (const category of CATEGORY_ORDER) {
+    if (category === 'shotType' || category === 'subject') continue;
+    const tags = groups[category] || [];
+    if (!tags.length) continue;
+    // The framing term already opened the sentence; don't repeat it.
+    const filtered = category === 'medium' ? tags.filter((t) => t !== framing) : tags;
+    if (!filtered.length) continue;
+    clauses.push(applyJoiner(category, filtered));
+  }
+
+  if (groups.quality) clauses.push(groups.quality.join(', '));
+  return clauses.join(', ');
+}
+
+/* ------------------------------------------------------------------ *
+ * Entry point
+ * ------------------------------------------------------------------ */
+
+/**
+ * Compile a set of raw observations into a Perchance-ready prompt bundle.
+ *
+ * @param {Object} observation  Raw per-field answers from the vision stage.
+ * @param {Object} [options]
+ * @param {string} [options.era]            Era id from ERAS.
+ * @param {string} [options.format]         Format key within that era.
+ * @param {string} [options.intensity]      'subtle' | 'medium' | 'heavy'.
+ * @param {string} [options.style]          'tags' | 'natural'.
+ * @param {boolean} [options.periodSubject] Also period-style the subject.
+ * @param {boolean} [options.emphasis]      Weight the subject anchor.
+ * @param {number} [options.variant]        Rotates stock/camera/framing choices.
+ * @param {{width:number,height:number}} [options.source] Source image dimensions.
+ */
+function compile(observation = {}, options = {}) {
+  const {
+    era: eraId = DEFAULT_ERA,
+    format: formatId = null,
+    intensity = DEFAULT_INTENSITY,
+    style = 'tags',
+    periodSubject = false,
+    emphasis = true,
+    variant = 0,
+    source = null,
+  } = options;
+
+  const contribution = eraContribution(eraId, formatId, intensity, variant);
+  const era = contribution.era;
+
+  // Observed fields.
+  const groups = {};
+  for (const field of OBSERVATION_FIELDS) {
+    groups[field] = fieldToTags(observation[field]);
+  }
+
+  // Era contributions.
+  groups.medium = [...(groups.medium || []), ...contribution.medium];
+  groups.lighting = [...(groups.lighting || []), ...contribution.look];
+  groups.artifacts = [...(groups.artifacts || []), ...contribution.artifacts];
+
+  if (periodSubject && era.subjectPeriod?.length) {
+    groups.appearance = [...groups.appearance, ...era.subjectPeriod];
+  }
+
+  if (!era.suppressQualityTags) {
+    groups.quality = [...QUALITY_TAGS];
+  }
+
+  // Global dedupe: earlier categories win, so the subject keeps its terms.
+  const seen = new Set();
+  for (const category of [...CATEGORY_ORDER, 'quality']) {
+    if (!groups[category]) continue;
+    groups[category] = groups[category].filter((tag) => {
+      const key = dedupeKey(tag);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  const positiveTags = [...CATEGORY_ORDER, 'quality'].flatMap((c) => groups[c] || []);
+
+  const prompt =
+    style === 'natural'
+      ? renderNatural(groups, { framing: contribution.framing })
+      : renderTagStyle(groups, { emphasis });
+
+  const negative = buildNegative(era, contribution, positiveTags);
+
+  const aspect =
+    contribution.aspect === 'source'
+      ? snapAspect(source?.width, source?.height) || '1:1'
+      : contribution.aspect;
+
+  return {
+    prompt,
+    negative: negative.join(', '),
+    negativeList: negative,
+    cfg: contribution.cfg,
+    steps: contribution.steps,
+    aspect,
+    era: era.id,
+    eraLabel: era.label,
+    format: contribution.formatKey,
+    formatLabel: contribution.format.label || contribution.formatKey,
+    intensity,
+    style,
+    groups,
+    suppressedQualityTags: Boolean(era.suppressQualityTags),
+  };
+}
+
+/** Human-readable settings block for pasting alongside the prompt. */
+function settingsBlock(result) {
+  const [lo, hi] = result.cfg.range;
+  return [
+    `Prompt: ${result.prompt}`,
+    '',
+    `Negative prompt: ${result.negative}`,
+    '',
+    `Guidance / CFG: ${result.cfg.value}  (usable range ${lo}-${hi})`,
+    `Steps: ${result.steps}`,
+    `Aspect ratio: ${result.aspect}`,
+    `Era: ${result.eraLabel} — ${result.formatLabel}`,
+    `Artifact intensity: ${result.intensity}`,
+  ].join('\n');
+}
+
+/* ===== src/vision.js ===== */
+/**
+ * The vision (observation) stage.
+ *
+ * Runs a small vision-language model entirely in the browser, so the app needs
+ * no API key, no account, no server, and applies no content filter — and the
+ * image never leaves the device.
+ *
+ * The model is asked a series of *narrow* questions rather than "write me a
+ * prompt". A 256M-500M model answers "what is the subject wearing?" reliably;
+ * it does not reliably produce structured prompt syntax. Turning those answers
+ * into a prompt is `src/compiler.js`'s job.
+ *
+ * NOTE ON THE RUNTIME CALL SIGNATURE: this file was authored in a sandbox with
+ * no network access to the model host, so the exact `transformers.js`
+ * image-text-to-text invocation could not be executed here. `runPass` therefore
+ * tries the documented pipeline call first and falls back to the lower-level
+ * processor/model path, surfacing a readable error if both fail. If a future
+ * library version changes the signature, `runPass` is the single place to fix.
+ */
+
+
+
+/** Floating major version so the CDN resolves the newest compatible 3.x. */
+const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+
+/**
+ * Selectable models, smallest first. All are ONNX builds intended for
+ * in-browser use.
+ */
+const MODELS = {
+  'smolvlm-256m-q4': {
+    id: 'HuggingFaceTB/SmolVLM-256M-Instruct',
+    dtype: 'q4',
+    label: 'SmolVLM 256M (q4)',
+    approxDownload: '~180 MB',
+    note: 'Smallest. Runs on low-RAM devices.',
+  },
+  'smolvlm-256m-q8': {
+    id: 'HuggingFaceTB/SmolVLM-256M-Instruct',
+    dtype: 'q8',
+    label: 'SmolVLM 256M (q8)',
+    approxDownload: '~280 MB',
+    note: 'Small and CPU-friendly.',
+  },
+  'smolvlm-500m-q4f16': {
+    id: 'HuggingFaceTB/SmolVLM-500M-Instruct',
+    dtype: 'q4f16',
+    label: 'SmolVLM 500M (q4f16)',
+    approxDownload: '~450 MB',
+    note: 'Best captions. Needs WebGPU.',
+  },
+};
+
+const DEFAULT_MODEL_KEY = 'smolvlm-256m-q8';
+
+/* ------------------------------------------------------------------ *
+ * Capability detection
+ * ------------------------------------------------------------------ */
+
+/**
+ * Probe the device. `navigator.deviceMemory` is not standard; `deviceMemory`
+ * on Chrome is `navigator.deviceMemory` in some builds and
+ * `navigator.hardwareConcurrency` is the only widely available signal, so
+ * treat every reading as a hint rather than a fact.
+ */
+async function detectCapabilities() {
+  const caps = {
+    webgpu: false,
+    adapter: null,
+    memoryGb: typeof navigator !== 'undefined' ? navigator.deviceMemory ?? null : null,
+    cores: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? null : null,
+    notes: [],
+  };
+
+  if (typeof navigator !== 'undefined' && navigator.gpu?.requestAdapter) {
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (adapter) {
+        caps.webgpu = true;
+        caps.adapter = adapter.info?.vendor || 'unknown';
+        const limit = adapter.limits?.maxBufferSize;
+        if (limit) caps.notes.push(`max buffer ${(limit / 1024 / 1024) | 0} MB`);
+      } else {
+        caps.notes.push('WebGPU present but no adapter granted');
+      }
+    } catch (err) {
+      caps.notes.push(`WebGPU probe failed: ${err.message}`);
+    }
+  } else {
+    caps.notes.push('navigator.gpu unavailable');
+  }
+
+  return caps;
+}
+
+/**
+ * Choose a model from detected capabilities. Returns the choice plus a plain
+ * sentence explaining it, which the UI shows so a bad auto-detect is visible
+ * and overridable rather than mysterious.
+ */
+function chooseModel(caps, override = null) {
+  if (override && MODELS[override]) {
+    return {
+      key: override,
+      ...MODELS[override],
+      device: caps.webgpu ? 'webgpu' : 'wasm',
+      why: 'Chosen manually in settings.',
+    };
+  }
+
+  const lowMemory = typeof caps.memoryGb === 'number' && caps.memoryGb <= 4;
+
+  if (caps.webgpu && !lowMemory) {
+    return {
+      key: 'smolvlm-500m-q4f16',
+      ...MODELS['smolvlm-500m-q4f16'],
+      device: 'webgpu',
+      why: `WebGPU is available${caps.adapter ? ` (${caps.adapter})` : ''}, so the larger 500M model can run on the GPU for the best captions.`,
+    };
+  }
+
+  if (caps.webgpu && lowMemory) {
+    return {
+      key: 'smolvlm-256m-q4',
+      ...MODELS['smolvlm-256m-q4'],
+      device: 'webgpu',
+      why: `WebGPU is available but the device reports only ${caps.memoryGb} GB of RAM, so the smallest model is used to avoid running out of memory.`,
+    };
+  }
+
+  return {
+    key: 'smolvlm-256m-q8',
+    ...MODELS['smolvlm-256m-q8'],
+    device: 'wasm',
+    why: 'No WebGPU on this browser, so the model runs on the CPU. It works, but expect it to be slow — a minute or more per image is normal.',
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Image preparation
+ * ------------------------------------------------------------------ */
+
+/**
+ * Downscale to `maxEdge` before inference. These models see a small fixed
+ * resolution anyway, and shrinking first saves noticeable time on a phone.
+ * Also returns the original dimensions, which the compiler uses to snap the
+ * aspect ratio.
+ */
+async function prepareImage(blob, maxEdge = 512) {
+  const bitmap = await createImageBitmap(blob);
+  const original = { width: bitmap.width, height: bitmap.height };
+
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close?.();
+
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  return { dataUrl, original, width, height };
+}
+
+/* ------------------------------------------------------------------ *
+ * Extraction passes
+ * ------------------------------------------------------------------ */
+
+/**
+ * One narrow question per observation field. Phrasing is deliberately blunt and
+ * length-capped: small models ramble, and every extra word is filler the
+ * compiler has to strip back out.
+ */
+const PASSES = [
+  { field: 'subject', question: 'In a few words, what is the main subject of this photo?', tokens: 20 },
+  { field: 'appearance', question: "Describe the main subject's appearance in a few words.", tokens: 28 },
+  { field: 'clothing', question: 'What is the subject wearing? Answer in a few words.', tokens: 24 },
+  { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 20 },
+  { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 20 },
+  { field: 'colors', question: 'List the two or three most dominant colors.', tokens: 18 },
+  { field: 'lighting', question: 'Describe the lighting in a few words.', tokens: 20 },
+  {
+    field: 'shotType',
+    question:
+      'Is this a close-up, waist-up shot, full-body shot, or wide shot? Answer with just one.',
+    tokens: 12,
+  },
+];
+
+let cached = { key: null, generator: null, module: null };
+
+/**
+ * Load the model, reusing an already-loaded one when the selection is
+ * unchanged. `onProgress` receives `{ phase, loaded, total, file }`.
+ */
+async function loadVision(choice, { onProgress = () => {} } = {}) {
+  if (cached.key === `${choice.id}:${choice.dtype}:${choice.device}` && cached.generator) {
+    return cached.generator;
+  }
+
+  onProgress({ phase: 'library' });
+  const module = await import(/* @vite-ignore */ TRANSFORMERS_CDN);
+
+  onProgress({ phase: 'model' });
+  const generator = await module.pipeline('image-text-to-text', choice.id, {
+    dtype: choice.dtype,
+    device: choice.device,
+    progress_callback: (p) => {
+      if (p.status === 'progress') {
+        onProgress({ phase: 'download', file: p.file, loaded: p.loaded, total: p.total });
+      } else if (p.status === 'ready') {
+        onProgress({ phase: 'ready' });
+      }
+    },
+  });
+
+  cached = { key: `${choice.id}:${choice.dtype}:${choice.device}`, generator, module };
+  return generator;
+}
+
+/** Free the loaded model. Useful on a phone when memory is tight. */
+async function unloadVision() {
+  try {
+    await cached.generator?.dispose?.();
+  } catch {
+    /* disposal is best-effort */
+  }
+  cached = { key: null, generator: null, module: null };
+}
+
+/**
+ * Run a single question. Isolated so that the one piece of unverified library
+ * surface lives in one small function.
+ */
+async function runPass(generator, imageDataUrl, question, maxTokens) {
+  const messages = [
+    {
+      role: 'user',
+      content: [
+        { type: 'image', image: imageDataUrl },
+        { type: 'text', text: question },
+      ],
+    },
+  ];
+
+  const output = await generator(messages, {
+    max_new_tokens: maxTokens,
+    do_sample: false,
+  });
+
+  return extractText(output);
+}
+
+/**
+ * Pull the assistant's text out of whatever shape the library returns.
+ * Written permissively on purpose: the wrapper shape has changed across
+ * versions, and a caption is not worth crashing over.
+ */
+function extractText(output) {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    if (!output.length) return '';
+    return extractText(output[0]);
+  }
+  if (output && typeof output === 'object') {
+    if (typeof output.generated_text === 'string') return output.generated_text;
+    if (Array.isArray(output.generated_text)) {
+      const last = output.generated_text[output.generated_text.length - 1];
+      return extractText(last);
+    }
+    if (typeof output.content === 'string') return output.content;
+    if (Array.isArray(output.content)) {
+      return output.content.map((c) => (typeof c === 'string' ? c : c?.text || '')).join(' ');
+    }
+    if (typeof output.text === 'string') return output.text;
+  }
+  return '';
+}
+
+/**
+ * Run every pass over one image and return a raw observation object keyed by
+ * `OBSERVATION_FIELDS`. Cleanup happens in the compiler, not here.
+ *
+ * A failed individual pass is left empty rather than aborting the run — seven
+ * good fields still make a usable prompt.
+ */
+async function observe(generator, imageDataUrl, { onProgress = () => {}, signal } = {}) {
+  const observation = {};
+  const failures = [];
+
+  for (let i = 0; i < PASSES.length; i++) {
+    if (signal?.aborted) throw new DOMException('Observation cancelled', 'AbortError');
+    const pass = PASSES[i];
+    onProgress({ index: i, total: PASSES.length, field: pass.field });
+    try {
+      observation[pass.field] = await runPass(
+        generator,
+        imageDataUrl,
+        pass.question,
+        pass.tokens,
+      );
+    } catch (err) {
+      observation[pass.field] = '';
+      failures.push(`${pass.field}: ${err.message}`);
+    }
+  }
+
+  for (const field of OBSERVATION_FIELDS) {
+    if (!(field in observation)) observation[field] = '';
+  }
+
+  return { observation, failures };
+}
+
+/** Turn a thrown error into something worth showing a user. */
+function describeError(err) {
+  // Include the error *name*: AbortError carries its meaning there, not in the
+  // message, so matching on message alone reports a cancel as a crash.
+  const message = `${err?.name || ''} ${err?.message || err}`.trim();
+  if (/abort|cancel/i.test(message)) return 'Cancelled.';
+  if (/out of memory|allocation|OOM/i.test(message)) {
+    return 'The device ran out of memory loading the model. Pick a smaller model in Settings.';
+  }
+  if (/network|fetch|Failed to load|CORS|ERR_/i.test(message)) {
+    return 'Could not download the model. Check your connection and try again — the first load needs internet, after that it works offline.';
+  }
+  if (/webgpu|adapter|device lost/i.test(message)) {
+    return 'The GPU backend failed. Switch to the CPU model in Settings.';
+  }
+  return `Model error: ${message}`;
+}
+
+/* ===== src/app.js ===== */
+/**
+ * UI wiring and orchestration.
+ *
+ * Deliberate design point: the compiler is the valuable half of this app and it
+ * has no dependency on the model. Every observed field is an editable input, so
+ * if the model fails to load — old phone, no WebGPU, no connection — the user
+ * can still type what is in the photo and get a fully compiled era prompt. The
+ * model is an accelerator, not a hard requirement.
+ */
+
+
+
+
+
+const HISTORY_KEY = 'promptforge.history.v1';
+const PREFS_KEY = 'promptforge.prefs.v1';
+const HISTORY_LIMIT = 12;
+
+const FIELD_LABELS = {
+  subject: 'Subject',
+  appearance: 'Appearance',
+  clothing: 'Clothing',
+  action: 'Action',
+  setting: 'Setting',
+  colors: 'Colors',
+  lighting: 'Lighting',
+  shotType: 'Shot type',
+};
+
+const state = {
+  era: DEFAULT_ERA,
+  format: null,
+  intensity: DEFAULT_INTENSITY,
+  style: 'tags',
+  periodSubject: false,
+  emphasis: true,
+  variant: 0,
+  observation: {},
+  source: null,
+  imageDataUrl: null,
+  modelOverride: null,
+  caps: null,
+  running: false,
+  abort: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+const el = {
+  drop: $('drop'),
+  dropLabel: $('drop-label'),
+  preview: $('preview'),
+  cameraBtn: $('camera-btn'),
+  galleryBtn: $('gallery-btn'),
+  cameraInput: $('camera-input'),
+  galleryInput: $('gallery-input'),
+  readBtn: $('read-btn'),
+  status: $('status'),
+  eraSeg: $('era-seg'),
+  eraBlurb: $('era-blurb'),
+  formatSeg: $('format-seg'),
+  intensitySeg: $('intensity-seg'),
+  styleSeg: $('style-seg'),
+  periodSubject: $('period-subject'),
+  emphasis: $('emphasis'),
+  fields: $('fields'),
+  clearFields: $('clear-fields'),
+  variantBtn: $('variant-btn'),
+  prompt: $('prompt'),
+  negative: $('negative'),
+  promptCount: $('prompt-count'),
+  negativeCount: $('negative-count'),
+  statCfg: $('stat-cfg'),
+  statSteps: $('stat-steps'),
+  statAspect: $('stat-aspect'),
+  cfgHint: $('cfg-hint'),
+  copyPrompt: $('copy-prompt'),
+  copyNegative: $('copy-negative'),
+  copyAll: $('copy-all'),
+  history: $('history'),
+  clearHistory: $('clear-history'),
+  settingsBtn: $('settings-btn'),
+  settingsPanel: $('settings-panel'),
+  modelSelect: $('model-select'),
+  modelWhy: $('model-why'),
+  unloadBtn: $('unload-btn'),
+  offlineState: $('offline-state'),
+};
+
+/* ------------------------------------------------------------------ *
+ * Status helpers
+ * ------------------------------------------------------------------ */
+
+function setStatus(message, kind = '', progress = null) {
+  if (!message) {
+    el.status.className = '';
+    el.status.textContent = '';
+    return;
+  }
+  el.status.className = `show ${kind}`.trim();
+  el.status.textContent = message;
+  if (progress !== null) {
+    const bar = document.createElement('progress');
+    if (progress >= 0) {
+      bar.max = 100;
+      bar.value = progress;
+    }
+    el.status.appendChild(bar);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Segmented controls
+ * ------------------------------------------------------------------ */
+
+function buildSegment(container, options, current, onPick) {
+  container.textContent = '';
+  for (const option of options) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = option.label;
+    button.setAttribute('aria-pressed', String(option.value === current));
+    button.addEventListener('click', () => onPick(option.value));
+    container.appendChild(button);
+  }
+}
+
+function renderEraControls() {
+  buildSegment(
+    el.eraSeg,
+    ERA_IDS.map((id) => ({ value: id, label: ERAS[id].label })),
+    state.era,
+    (value) => {
+      state.era = value;
+      state.format = null; // fall back to the new era's default
+      renderEraControls();
+      recompile();
+      savePrefs();
+    },
+  );
+
+  const era = ERAS[state.era];
+  el.eraBlurb.textContent = era.blurb;
+
+  const formats = Object.keys(era.formats);
+  const activeFormat = state.format && era.formats[state.format] ? state.format : era.defaultFormat;
+  buildSegment(
+    el.formatSeg,
+    formats.map((key) => ({ value: key, label: era.formats[key].label || key })),
+    activeFormat,
+    (value) => {
+      state.format = value;
+      renderEraControls();
+      recompile();
+      savePrefs();
+    },
+  );
+}
+
+function renderIntensity() {
+  buildSegment(
+    el.intensitySeg,
+    Object.entries(INTENSITY_LEVELS).map(([key, level]) => ({ value: key, label: level.label })),
+    state.intensity,
+    (value) => {
+      state.intensity = value;
+      renderIntensity();
+      recompile();
+      savePrefs();
+    },
+  );
+}
+
+function renderStyle() {
+  buildSegment(
+    el.styleSeg,
+    [
+      { value: 'tags', label: 'Tag style' },
+      { value: 'natural', label: 'Natural language' },
+    ],
+    state.style,
+    (value) => {
+      state.style = value;
+      renderStyle();
+      recompile();
+      savePrefs();
+    },
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Observation fields
+ * ------------------------------------------------------------------ */
+
+function renderFields() {
+  el.fields.textContent = '';
+  for (const field of OBSERVATION_FIELDS) {
+    const row = document.createElement('div');
+    row.className = 'field';
+
+    const label = document.createElement('label');
+    label.textContent = FIELD_LABELS[field] || field;
+    label.htmlFor = `field-${field}`;
+
+    const input = document.createElement('input');
+    input.id = `field-${field}`;
+    input.type = 'text';
+    input.value = state.observation[field] || '';
+    input.placeholder = '—';
+    input.autocomplete = 'off';
+    input.addEventListener('input', () => {
+      state.observation[field] = input.value;
+      recompile();
+    });
+
+    row.append(label, input);
+    el.fields.appendChild(row);
+  }
+}
+
+function fillFields() {
+  for (const field of OBSERVATION_FIELDS) {
+    const input = document.getElementById(`field-${field}`);
+    if (input) input.value = state.observation[field] || '';
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Compile + render output
+ * ------------------------------------------------------------------ */
+
+let lastResult = null;
+
+function recompile() {
+  const result = compile(state.observation, {
+    era: state.era,
+    format: state.format,
+    intensity: state.intensity,
+    style: state.style,
+    periodSubject: state.periodSubject,
+    emphasis: state.emphasis,
+    variant: state.variant,
+    source: state.source,
+  });
+  lastResult = result;
+
+  el.prompt.value = result.prompt;
+  el.negative.value = result.negative;
+  el.promptCount.textContent = `${result.prompt.length} chars`;
+  el.negativeCount.textContent = `${result.negativeList.length} terms`;
+  el.statCfg.textContent = result.cfg.value;
+  el.statSteps.textContent = result.steps;
+  el.statAspect.textContent = result.aspect;
+
+  const [lo, hi] = result.cfg.range;
+  el.cfgHint.textContent = `Usable CFG range ${lo}–${hi}. Lower reads more like a real photo; higher starts to look AI-generated.${
+    result.suppressedQualityTags ? ' Quality boilerplate is suppressed for this era.' : ''
+  }`;
+
+  return result;
+}
+
+/* ------------------------------------------------------------------ *
+ * Image selection
+ * ------------------------------------------------------------------ */
+
+async function handleFile(file) {
+  if (!file) return;
+  try {
+    setStatus('Preparing image…');
+    const prepared = await prepareImage(file);
+    state.imageDataUrl = prepared.dataUrl;
+    state.source = prepared.original;
+
+    el.preview.src = prepared.dataUrl;
+    el.preview.classList.add('show');
+    el.drop.classList.add('has-image');
+    el.dropLabel.textContent = `${prepared.original.width}×${prepared.original.height}`;
+    el.readBtn.disabled = false;
+    setStatus('Ready. Tap "Read image".', 'ok');
+    recompile();
+  } catch (err) {
+    setStatus(`Could not read that image: ${err.message}`, 'err');
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Vision run
+ * ------------------------------------------------------------------ */
+
+async function ensureCaps() {
+  if (!state.caps) {
+    state.caps = await detectCapabilities();
+    updateModelWhy();
+  }
+  return state.caps;
+}
+
+function updateModelWhy() {
+  if (!state.caps) return;
+  const choice = chooseModel(state.caps, state.modelOverride);
+  const bits = [choice.label, choice.device === 'webgpu' ? 'GPU' : 'CPU', choice.approxDownload];
+  el.modelWhy.textContent = `${bits.join(' · ')} — ${choice.why}`;
+}
+
+async function runVision() {
+  if (state.running) {
+    state.abort?.abort();
+    return;
+  }
+  if (!state.imageDataUrl) return;
+
+  state.running = true;
+  state.abort = new AbortController();
+  el.readBtn.textContent = 'Cancel';
+
+  try {
+    const caps = await ensureCaps();
+    const choice = chooseModel(caps, state.modelOverride);
+
+    setStatus(`Loading ${choice.label} (${choice.approxDownload} first time)…`, '', -1);
+    const generator = await loadVision(choice, {
+      onProgress: (p) => {
+        if (p.phase === 'download' && p.total) {
+          const pct = Math.round((p.loaded / p.total) * 100);
+          setStatus(`Downloading ${p.file || 'model'} — ${pct}%`, '', pct);
+        } else if (p.phase === 'library') {
+          setStatus('Loading runtime…', '', -1);
+        } else if (p.phase === 'model') {
+          setStatus('Initialising model…', '', -1);
+        }
+      },
+    });
+
+    const { observation, failures } = await observe(generator, state.imageDataUrl, {
+      signal: state.abort.signal,
+      onProgress: ({ index, total, field }) => {
+        setStatus(
+          `Reading image — ${FIELD_LABELS[field] || field} (${index + 1}/${total})`,
+          '',
+          Math.round((index / total) * 100),
+        );
+      },
+    });
+
+    state.observation = { ...state.observation, ...observation };
+    fillFields();
+    const result = recompile();
+    saveHistory(result);
+
+    if (failures.length) {
+      setStatus(
+        `Done, but ${failures.length} of ${PASSES.length} questions failed. Edit any blank field by hand.`,
+        'err',
+      );
+    } else {
+      setStatus('Done. Check the fields, then copy the prompt.', 'ok');
+    }
+  } catch (err) {
+    setStatus(describeError(err), 'err');
+  } finally {
+    state.running = false;
+    state.abort = null;
+    el.readBtn.textContent = 'Read image';
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Clipboard
+ * ------------------------------------------------------------------ */
+
+async function copyText(text, button) {
+  const original = button.textContent;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      // Fallback for browsers that gate the async clipboard API.
+      const scratch = document.createElement('textarea');
+      scratch.value = text;
+      scratch.setAttribute('readonly', '');
+      scratch.style.position = 'fixed';
+      scratch.style.opacity = '0';
+      document.body.appendChild(scratch);
+      scratch.select();
+      document.execCommand('copy');
+      scratch.remove();
+    }
+    button.textContent = '✓ Copied';
+  } catch {
+    button.textContent = 'Copy failed — select manually';
+  }
+  setTimeout(() => {
+    button.textContent = original;
+  }, 1600);
+}
+
+/* ------------------------------------------------------------------ *
+ * Persistence
+ * ------------------------------------------------------------------ */
+
+function savePrefs() {
+  try {
+    localStorage.setItem(
+      PREFS_KEY,
+      JSON.stringify({
+        era: state.era,
+        format: state.format,
+        intensity: state.intensity,
+        style: state.style,
+        periodSubject: state.periodSubject,
+        emphasis: state.emphasis,
+        modelOverride: state.modelOverride,
+      }),
+    );
+  } catch {
+    /* storage may be unavailable in private mode */
+  }
+}
+
+function loadPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+    if (saved.era && ERAS[saved.era]) state.era = saved.era;
+    if (saved.format) state.format = saved.format;
+    if (saved.intensity && INTENSITY_LEVELS[saved.intensity]) state.intensity = saved.intensity;
+    if (saved.style === 'tags' || saved.style === 'natural') state.style = saved.style;
+    state.periodSubject = Boolean(saved.periodSubject);
+    state.emphasis = saved.emphasis !== false;
+    if (saved.modelOverride && MODELS[saved.modelOverride]) {
+      state.modelOverride = saved.modelOverride;
+    }
+  } catch {
+    /* ignore malformed prefs */
+  }
+}
+
+function readHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(result) {
+  try {
+    const entries = readHistory();
+    entries.unshift({
+      at: Date.now(),
+      era: result.eraLabel,
+      format: result.formatLabel,
+      prompt: result.prompt,
+      negative: result.negative,
+      observation: state.observation,
+    });
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
+    renderHistory();
+  } catch {
+    /* non-fatal */
+  }
+}
+
+function renderHistory() {
+  const entries = readHistory();
+  el.history.textContent = '';
+  if (!entries.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'Nothing yet.';
+    el.history.appendChild(empty);
+    return;
+  }
+  entries.forEach((entry, index) => {
+    const row = document.createElement('div');
+    row.className = 'history-item';
+
+    const text = document.createElement('p');
+    text.textContent = `${entry.era} · ${entry.prompt.slice(0, 70)}`;
+
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.textContent = 'Load';
+    restore.addEventListener('click', () => {
+      state.observation = { ...(entry.observation || {}) };
+      fillFields();
+      recompile();
+      setStatus(`Loaded forge ${index + 1} from history.`, 'ok');
+    });
+
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'Copy';
+    copy.addEventListener('click', () => copyText(entry.prompt, copy));
+
+    row.append(text, restore, copy);
+    el.history.appendChild(row);
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Settings
+ * ------------------------------------------------------------------ */
+
+function renderModelOptions() {
+  for (const [key, model] of Object.entries(MODELS)) {
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = `${model.label} — ${model.approxDownload} · ${model.note}`;
+    el.modelSelect.appendChild(option);
+  }
+  el.modelSelect.value = state.modelOverride || '';
+}
+
+/* ------------------------------------------------------------------ *
+ * Wiring
+ * ------------------------------------------------------------------ */
+
+function wire() {
+  el.cameraBtn.addEventListener('click', () => el.cameraInput.click());
+  el.galleryBtn.addEventListener('click', () => el.galleryInput.click());
+  el.cameraInput.addEventListener('change', (e) => handleFile(e.target.files?.[0]));
+  el.galleryInput.addEventListener('change', (e) => handleFile(e.target.files?.[0]));
+  el.readBtn.addEventListener('click', runVision);
+
+  el.periodSubject.addEventListener('change', () => {
+    state.periodSubject = el.periodSubject.checked;
+    recompile();
+    savePrefs();
+  });
+  el.emphasis.addEventListener('change', () => {
+    state.emphasis = el.emphasis.checked;
+    recompile();
+    savePrefs();
+  });
+
+  el.clearFields.addEventListener('click', () => {
+    state.observation = {};
+    fillFields();
+    recompile();
+  });
+  el.variantBtn.addEventListener('click', () => {
+    state.variant += 1;
+    recompile();
+  });
+
+  el.copyPrompt.addEventListener('click', () => copyText(el.prompt.value, el.copyPrompt));
+  el.copyNegative.addEventListener('click', () => copyText(el.negative.value, el.copyNegative));
+  el.copyAll.addEventListener('click', () => {
+    // Respect any manual edits made in the textareas.
+    const edited = {
+      ...lastResult,
+      prompt: el.prompt.value,
+      negative: el.negative.value,
+    };
+    copyText(settingsBlock(edited), el.copyAll);
+    // Also record it: someone who types the fields by hand never runs the model,
+    // and would otherwise never build up any history.
+    saveHistory(edited);
+  });
+
+  el.clearHistory.addEventListener('click', () => {
+    try {
+      localStorage.removeItem(HISTORY_KEY);
+    } catch {
+      /* ignore */
+    }
+    renderHistory();
+  });
+
+  el.settingsBtn.addEventListener('click', () => {
+    el.settingsPanel.open = !el.settingsPanel.open;
+    if (el.settingsPanel.open) el.settingsPanel.scrollIntoView({ behavior: 'smooth' });
+  });
+
+  el.modelSelect.addEventListener('change', async () => {
+    state.modelOverride = el.modelSelect.value || null;
+    await unloadVision();
+    updateModelWhy();
+    savePrefs();
+    setStatus('Model changed. It will load on the next read.', 'ok');
+  });
+
+  el.unloadBtn.addEventListener('click', async () => {
+    await unloadVision();
+    setStatus('Model unloaded from memory.', 'ok');
+  });
+
+  const updateOnline = () => {
+    el.offlineState.textContent = navigator.onLine ? 'online' : 'offline (cached)';
+  };
+  window.addEventListener('online', updateOnline);
+  window.addEventListener('offline', updateOnline);
+  updateOnline();
+}
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+
+function boot() {
+  loadPrefs();
+  el.periodSubject.checked = state.periodSubject;
+  el.emphasis.checked = state.emphasis;
+
+  renderEraControls();
+  renderIntensity();
+  renderStyle();
+  renderFields();
+  renderModelOptions();
+  renderHistory();
+  wire();
+  recompile();
+
+  // Capability detection is cheap and makes the settings panel honest up front.
+  ensureCaps().catch(() => {
+    el.modelWhy.textContent = 'Could not probe device capability; auto-detect will retry.';
+  });
+
+  if (false /* standalone build: no sibling sw.js */) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {
+        /* offline install is a bonus, not a requirement */
+      });
+    });
+  }
+}
+
+boot();
+    </script>
+  </body>
+</html>
