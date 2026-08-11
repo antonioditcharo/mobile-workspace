@@ -7,7 +7,12 @@
  * a second cache would waste a serious amount of a phone's storage.
  */
 
-const CACHE = 'promptforge-shell-v1';
+/**
+ * Bump this on every shipped change. The browser only looks for a new service
+ * worker when sw.js itself differs, so an unchanged version string means a fix
+ * can sit on the server while devices keep running the old cached shell.
+ */
+const CACHE = 'promptforge-shell-v2';
 
 const SHELL = [
   './',
@@ -56,30 +61,33 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
-      const cached = await cache.match(request, { ignoreSearch: true });
 
-      // Stale-while-revalidate: instant load, quiet background refresh.
-      const network = fetch(request)
-        .then((response) => {
-          if (response.ok) cache.put(request, response.clone());
-          return response;
-        })
-        .catch(() => null);
+      // Network-first, falling back to cache.
+      //
+      // The obvious choice here is stale-while-revalidate, and it was the
+      // original one — but it serves the cached copy first and only refreshes
+      // afterwards, so a device stays exactly one load behind the server. That
+      // turned a shipped bug fix into "still broken" on first reload. The shell
+      // is tiny, so paying a network round trip when online is well worth
+      // always running current code; offline still works from the cache.
+      try {
+        const response = await fetch(request);
+        if (response.ok) await cache.put(request, response.clone());
+        return response;
+      } catch {
+        const cached = await cache.match(request, { ignoreSearch: true });
+        if (cached) return cached;
 
-      if (cached) return cached;
-
-      const fresh = await network;
-      if (fresh) return fresh;
-
-      // Offline navigation with a cold cache: fall back to the shell.
-      if (request.mode === 'navigate') {
-        const shell = await cache.match('./index.html');
-        if (shell) return shell;
+        // Offline navigation with a cold cache: fall back to the shell.
+        if (request.mode === 'navigate') {
+          const shell = await cache.match('./index.html');
+          if (shell) return shell;
+        }
+        return new Response('Offline and not cached.', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain' },
+        });
       }
-      return new Response('Offline and not cached.', {
-        status: 503,
-        headers: { 'Content-Type': 'text/plain' },
-      });
     })(),
   );
 });
