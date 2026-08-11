@@ -1701,8 +1701,8 @@ class DoctorTests(TempDbCase):
         self.config.provider.max_retries = 1
         self.config.provider.timeout_seconds = 0.5
         checks = {c.name: c for c in pfsetup.diagnose(self.db, self.config)}
-        self.assertEqual(checks["price source"].status, pfsetup.FAIL)
-        self.assertIn("unreachable", checks["price source"].detail)
+        self.assertEqual(checks["catalog source"].status, pfsetup.FAIL)
+        self.assertIn("unreachable", checks["catalog source"].detail)
 
 
 class SetupWizardTests(unittest.TestCase):
@@ -1764,6 +1764,162 @@ class SetupWizardTests(unittest.TestCase):
             reloaded = Config.load(path)
         self.assertAlmostEqual(reloaded.capital.bankroll, 1500.0)
         self.assertAlmostEqual(reloaded.fees.commission_pct, 0.1325)
+
+
+# --- ebay diagnostics ---------------------------------------------------
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise ebay.httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=None, response=None)
+
+
+class EbayCredentialTests(unittest.TestCase):
+    def setUp(self):
+        self.config = Config()
+        self.config.provider.name = "ebay"
+        self.config.provider.ebay_client_id = "id"
+        self.config.provider.ebay_client_secret = "secret"
+        self.config.provider.max_retries = 1
+        self.provider = ebay.EbayProvider(self.config)
+
+    def patch_post(self, response):
+        self.provider._client.post = lambda *a, **k: response
+
+    def test_missing_credentials_are_named_precisely(self):
+        self.config.provider.ebay_client_id = ""
+        report = ebay.EbayProvider(self.config).check_credentials()
+        self.assertFalse(report["credentials"])
+        self.assertIn("ebay_client_id", report["problems"][0])
+
+    def test_a_rejected_keyset_points_at_the_keyset(self):
+        self.patch_post(FakeResponse(400, {"error_description": "invalid_client"}))
+        report = self.provider.check_credentials()
+        self.assertFalse(report["credentials"])
+        problem = report["problems"][0]
+        self.assertIn("invalid_client", problem)
+        self.assertIn("Production keyset", problem)
+
+    def test_a_network_failure_is_not_blamed_on_the_keyset(self):
+        # A proxy 403 must not send you hunting for a bad secret.
+        def boom(*args, **kwargs):
+            raise ebay.httpx.ConnectError("403 Forbidden")
+
+        self.provider._client.post = boom
+        report = self.provider.check_credentials()
+        problem = report["problems"][0]
+        self.assertIn("network problem", problem)
+        self.assertNotIn("Production keyset", problem)
+
+    def test_a_403_on_the_token_endpoint_is_called_out_as_unusual(self):
+        self.patch_post(FakeResponse(403, {}))
+        report = self.provider.check_credentials()
+        self.assertIn("proxy or firewall", report["problems"][0])
+
+    def test_working_browse_without_sold_access_is_a_partial_pass(self):
+        self.patch_post(FakeResponse(200, {"access_token": "t", "expires_in": 7200}))
+        calls = {"n": 0}
+
+        def fake_get(path, params):
+            calls["n"] += 1
+            if "marketplace_insights" in path:
+                raise ebay.ProviderError("eBay refused /item_sales/search (403)")
+            return {"itemSummaries": [{"title": "Charizard holo",
+                                       "price": {"value": "10"}}]}
+
+        self.provider._get = fake_get
+        with quiet("pokeflip.ebay"):
+            report = self.provider.check_credentials()
+        self.assertTrue(report["credentials"])
+        self.assertTrue(report["browse"])
+        self.assertFalse(report["sold_data"])
+        self.assertIn("Marketplace Insights", report["problems"][0])
+
+    def test_full_access_reports_clean(self):
+        self.patch_post(FakeResponse(200, {"access_token": "t", "expires_in": 7200}))
+        self.provider._get = lambda path, params: (
+            {"itemSales": [{"title": "Charizard holo",
+                            "lastSoldPrice": {"value": "10"},
+                            "lastSoldDate": datetime.now(timezone.utc).isoformat()}]}
+            if "marketplace_insights" in path
+            else {"itemSummaries": [{"title": "Charizard holo",
+                                     "price": {"value": "12"}}]}
+        )
+        report = self.provider.check_credentials()
+        self.assertTrue(report["sold_data"])
+        self.assertEqual(report["problems"], [])
+
+    def test_probe_shows_what_was_kept_and_what_was_filtered(self):
+        self.patch_post(FakeResponse(200, {"access_token": "t", "expires_in": 7200}))
+        self.provider._get = lambda path, params: (
+            {} if "marketplace_insights" in path else
+            {"itemSummaries": [
+                {"title": "Charizard ex 199 holo", "price": {"value": "400"}},
+                {"title": "Pokemon LOT OF 50 cards", "price": {"value": "20"}},
+                {"title": "Charizard ex PSA 10", "price": {"value": "1200"}},
+            ]}
+        )
+        card = CardRecord(id="sv3pt5-199", name="Charizard ex", number="199",
+                          set_name="151")
+        result = self.provider.probe(card)
+        self.assertIn("Charizard ex", result["query"])
+        self.assertEqual(result["listings_found"], 3)
+        self.assertEqual(len(result["listings"]["rejected"]), 2)  # lot + slab
+        self.assertIn("holofoil", result["listings"]["kept"])
+
+    def test_error_detail_prefers_the_body_over_the_status_line(self):
+        self.assertIn("invalid_client",
+                      ebay._error_detail(FakeResponse(400,
+                                                      {"error": "invalid_client"})))
+        self.assertIn("bad scope", ebay._error_detail(
+            FakeResponse(401, {"errors": [{"message": "bad scope"}]})))
+        self.assertEqual(ebay._error_detail(FakeResponse(500)), "HTTP 500")
+
+
+class DoctorProviderTests(TempDbCase):
+    """The doctor must check the source it actually prices from."""
+
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=30, include_portfolio=False)
+
+    def test_a_catalog_only_setup_checks_one_source(self):
+        self.config.provider.name = "fixture"
+        names = [c.name for c in pfsetup.diagnose(self.db, self.config)]
+        self.assertIn("catalog source", names)
+        self.assertNotIn("price source", names)
+
+    def test_ebay_is_checked_separately_from_its_catalog(self):
+        # The bug this covers: build_catalog_provider returns pokemontcg for an
+        # eBay setup, so checking only that would pass a broken price source.
+        self.config.provider.name = "ebay"
+        self.config.provider.catalog_name = "fixture"
+        self.config.provider.ebay_client_id = ""
+        checks = {c.name: c for c in pfsetup.diagnose(self.db, self.config)}
+        self.assertIn("price source", checks)
+        self.assertEqual(checks["price source"].status, pfsetup.FAIL)
+        self.assertIn("ebay_client_id", checks["price source"].detail)
+
+    def test_an_empty_catalog_is_fatal_for_a_name_searching_source(self):
+        empty = Database(str(Path(self._tmp.name) / "bare.db"))
+        self.config.provider.name = "ebay"
+        self.config.provider.catalog_name = "fixture"
+        checks = {c.name: c for c in pfsetup.diagnose(empty, self.config)}
+        self.assertEqual(checks["catalog contents"].status, pfsetup.FAIL)
+
+    def test_a_populated_catalog_passes(self):
+        self.config.provider.name = "ebay"
+        self.config.provider.catalog_name = "fixture"
+        checks = {c.name: c for c in pfsetup.diagnose(self.db, self.config)}
+        self.assertEqual(checks["catalog contents"].status, pfsetup.PASS)
 
 
 if __name__ == "__main__":

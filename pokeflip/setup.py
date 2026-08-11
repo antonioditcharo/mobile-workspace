@@ -47,7 +47,7 @@ def diagnose(db: Database, config: Config, check_network: bool = True
     checks.append(_check_database(db))
     checks.extend(_check_tracking(db, config))
     if check_network:
-        checks.append(_check_provider(config))
+        checks.extend(_check_providers(db, config))
     checks.extend(_check_economics(config))
     checks.extend(_check_delivery(config))
     checks.extend(_check_exposure(config))
@@ -116,40 +116,116 @@ def _check_tracking(db: Database, config: Config) -> list[Check]:
     return out
 
 
-def _check_provider(config: Config) -> Check:
-    """Actually call the price source. This is the check that matters most."""
+def _check_providers(db: Database, config: Config) -> list[Check]:
+    """Call the sources for real.
+
+    The catalog source and the price source are not always the same object -
+    eBay has no card database - so checking one and reporting on the other
+    would happily pass a broken setup.
+    """
+    from .providers import provides_catalog
+
+    out = [_check_catalog_source(config)]
+    if not provides_catalog(config):
+        out.extend(_check_price_source(db, config))
+    return out
+
+
+def _check_catalog_source(config: Config) -> Check:
     from .providers import ProviderError, build_catalog_provider
 
-    name = config.provider.name
-    if name == "fixture":
+    if config.provider.name == "fixture":
         return Check(
-            "price source", WARN, "using the offline fixture provider",
+            "catalog source", WARN, "using the offline fixture provider",
             "Set provider.name to 'pokemontcg' (or 'ebay') for real prices.",
         )
 
     provider = None
     try:
         provider = build_catalog_provider(config)
+        name = getattr(provider, "name", "catalog")
         sets = provider.list_sets()
         if not sets:
-            return Check("price source", WARN, f"{name} answered but returned no sets",
+            return Check("catalog source", WARN,
+                         f"{name} answered but returned no sets",
                          "The source may be having a bad day; retry later.")
-        return Check("price source", PASS,
+        return Check("catalog source", PASS,
                      f"{name} reachable - {len(sets)} sets visible")
     except ProviderError as exc:
         return Check(
-            "price source", FAIL, f"{name} unreachable: {exc}",
-            "Check network access to the provider. If it is blocked where this "
-            "runs, set provider.name to 'fixture' to work offline.",
+            "catalog source", FAIL, f"unreachable: {exc}",
+            "Check network access. If the provider is blocked where this runs, "
+            "set provider.name to 'fixture' to work offline.",
         )
     except Exception as exc:
-        return Check("price source", FAIL, f"{name} failed: {exc}", "")
+        return Check("catalog source", FAIL, f"failed: {exc}", "")
     finally:
         if provider is not None:
             try:
                 provider.close()
             except Exception:
                 pass
+
+
+def _check_price_source(db: Database, config: Config) -> list[Check]:
+    """A price source with no catalog of its own - currently only eBay."""
+    from .providers import build_provider
+
+    out: list[Check] = []
+    provider = None
+    try:
+        provider = build_provider(config)
+        checker = getattr(provider, "check_credentials", None)
+        if checker is None:
+            return [Check("price source", WARN,
+                          f"{config.provider.name} has no self-check", "")]
+
+        report = checker()
+        if report["problems"]:
+            out.append(Check(
+                "price source", FAIL,
+                f"{config.provider.name} ({report['environment']}, "
+                f"{report['marketplace']}): {report['problems'][0]}",
+                "; ".join(report["problems"][1:]) or "",
+            ))
+        elif report["sold_data"]:
+            out.append(Check(
+                "price source", PASS,
+                f"eBay authenticated with sold data - real sale prices and "
+                f"velocity ({report.get('sold_seen', 0)} sales on a test query)",
+            ))
+        else:
+            out.append(Check(
+                "price source", WARN,
+                "eBay authenticated, but without sold data",
+                "Prices come from the lower quartile of asking prices and "
+                "velocity is unknown. Apply for Marketplace Insights access to "
+                "get real sale prices.",
+            ))
+        for note in report.get("notes", []):
+            out.append(Check("price source note", WARN, note, ""))
+    except Exception as exc:
+        out.append(Check("price source", FAIL,
+                         f"{config.provider.name} check failed: {exc}", ""))
+    finally:
+        if provider is not None:
+            try:
+                provider.close()
+            except Exception:
+                pass
+
+    # eBay searches by card name, so an empty catalog means it has nothing to
+    # look up no matter how good the credentials are.
+    cards = db.one("SELECT COUNT(*) AS n FROM cards")["n"]
+    if not cards:
+        out.append(Check(
+            "catalog contents", FAIL,
+            "no cards known, so eBay has nothing to search for",
+            "Populate the catalog first: `pokeflip sync --set sv3pt5`.",
+        ))
+    else:
+        out.append(Check("catalog contents", PASS, f"{cards} cards known"))
+    return out
 
 
 def _check_economics(config: Config) -> list[Check]:

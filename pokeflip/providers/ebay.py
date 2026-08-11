@@ -96,6 +96,22 @@ class EbayProvider:
                 },
                 data={"grant_type": "client_credentials", "scope": SCOPE},
             )
+        except httpx.HTTPError as exc:
+            # Never reached eBay at all - a proxy, DNS or offline problem.
+            raise ProviderError(f"could not reach {self._client.base_url}: {exc}"
+                                ) from exc
+
+        if response.status_code in (400, 401):
+            # eBay's own rejection: the keyset is wrong for this environment.
+            detail = _error_detail(response)
+            raise ProviderError(f"eBay rejected the credentials ({detail})")
+        if response.status_code == 403:
+            raise ProviderError(
+                "403 from the token endpoint. eBay normally answers 400 or 401 "
+                "for a bad keyset, so this is more likely a proxy or firewall "
+                "between you and api.ebay.com"
+            )
+        try:
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
@@ -286,6 +302,145 @@ class EbayProvider:
             return []
         return payload.get("itemSales") or []
 
+    # --- diagnostics ----------------------------------------------------
+
+    def check_credentials(self) -> dict[str, Any]:
+        """Prove the credentials work, and say precisely what does not.
+
+        eBay's failures look alike from the outside - a bad secret, an app
+        without the right scope, and a missing Marketplace Insights grant all
+        surface as a 4xx. This separates them so the fix is obvious.
+        """
+        report: dict[str, Any] = {
+            "marketplace": self.settings.ebay_marketplace,
+            "environment": "sandbox" if self.settings.ebay_sandbox else "production",
+            "credentials": False,
+            "browse": False,
+            "sold_data": False,
+            "problems": [],
+            "notes": [],
+        }
+
+        if not (self.settings.ebay_client_id and self.settings.ebay_client_secret):
+            report["problems"].append(
+                "No credentials. Set provider.ebay_client_id and "
+                "provider.ebay_client_secret from https://developer.ebay.com "
+                "(Application Keys -> the Production keyset)."
+            )
+            return report
+
+        try:
+            self._access_token()
+            report["credentials"] = True
+        except ProviderError as exc:
+            message = str(exc)
+            if "rejected the credentials" in message:
+                fix = ("Check the client id and secret, and that you copied the "
+                       "Production keyset rather than the Sandbox one "
+                       "(or set provider.ebay_sandbox).")
+            elif "could not reach" in message or "proxy or firewall" in message:
+                fix = ("This looks like a network problem rather than a bad key. "
+                       "Confirm this machine can reach api.ebay.com.")
+            else:
+                fix = "Retry; if it persists, check developer.ebay.com for outages."
+            report["problems"].append(f"{message}. {fix}")
+            return report
+
+        probe = "charizard pokemon card"
+        try:
+            listings = self._active_listings(probe)
+            report["browse"] = True
+            report["listings_seen"] = len(listings)
+            if not listings:
+                report["notes"].append(
+                    "Browse works but returned nothing for a broad query, which "
+                    "usually means the category filter is wrong for this "
+                    "marketplace. Try clearing provider.ebay_category_id."
+                )
+        except ProviderError as exc:
+            report["problems"].append(
+                f"Browse API refused: {exc}. The keyset is valid but the app may "
+                "not be subscribed to the Browse API."
+            )
+            return report
+
+        if not self.settings.ebay_use_sold_data:
+            report["notes"].append(
+                "Sold data is switched off (provider.ebay_use_sold_data), so "
+                "prices come from asking prices and velocity is unavailable."
+            )
+            return report
+
+        try:
+            sold = self._sold_items(probe)
+            # _sold_items swallows the refusal and flips the flag, so read that
+            # rather than trusting an empty list.
+            if self._sold_available:
+                report["sold_data"] = True
+                report["sold_seen"] = len(sold)
+            else:
+                report["problems"].append(
+                    "Marketplace Insights refused. That API needs a separate "
+                    "grant from eBay - apply at developer.ebay.com. Until then "
+                    "prices come from the lower quartile of asking prices and "
+                    "velocity is reported as unknown."
+                )
+        except ProviderError as exc:
+            report["problems"].append(f"Marketplace Insights failed: {exc}")
+
+        return report
+
+    def probe(self, card: CardRecord) -> dict[str, Any]:
+        """Show what eBay returns for one card, and how it was classified.
+
+        The search query and the lot/grade filters are heuristics that will need
+        tuning against real listings. This makes that tuning possible instead of
+        guesswork.
+        """
+        query = build_query(card)
+        listings = self._active_listings(query)
+        sold = self._sold_items(query) if self._sold_available else []
+
+        def classify(items: Sequence[dict[str, Any]]) -> dict[str, Any]:
+            buckets: dict[str, list[dict[str, Any]]] = {}
+            rejected: list[str] = []
+            for item in items:
+                title = item.get("title", "")
+                variant = classify_variant(title, self.settings.ebay_track_graded)
+                if variant is None:
+                    rejected.append(title)
+                    continue
+                buckets.setdefault(variant, []).append(
+                    {"title": title, "price": _price_of(item)})
+            return {"kept": buckets, "rejected": rejected}
+
+        classified_listings = classify(listings)
+        classified_sold = classify(sold)
+        quotes = self._quotes_for(card)
+
+        return {
+            "card_id": card.id,
+            "card_name": card.name,
+            "query": query,
+            "listings_found": len(listings),
+            "sold_found": len(sold),
+            "sold_available": self._sold_available,
+            "listings": classified_listings,
+            "sold": classified_sold,
+            "quotes": [
+                {
+                    "variant": q.variant,
+                    "market": q.market,
+                    "low": q.low,
+                    "high": q.high,
+                    "sales_count": q.sales_count,
+                    "listing_count": q.listing_count,
+                    "basis": q.extra.get("price_basis"),
+                }
+                for q in quotes
+            ],
+        }
+
     def close(self) -> None:
         self._client.close()
 
@@ -329,6 +484,23 @@ def classify_variant(title: str, track_graded: bool) -> str | None:
     if "holo" in lowered or "foil" in lowered:
         return "holofoil"
     return "normal"
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """eBay puts the useful part in the body, not the status line."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return f"HTTP {response.status_code}"
+    for key in ("error_description", "error", "message"):
+        if payload.get(key):
+            return f"HTTP {response.status_code}: {payload[key]}"
+    errors = payload.get("errors")
+    if isinstance(errors, list) and errors:
+        first = errors[0]
+        return (f"HTTP {response.status_code}: "
+                f"{first.get('message') or first.get('longMessage') or first}")
+    return f"HTTP {response.status_code}"
 
 
 def _price_of(item: dict[str, Any]) -> float | None:

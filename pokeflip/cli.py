@@ -1185,6 +1185,110 @@ def _opt_float(value: Any) -> float | None:
     return float(value)
 
 
+def cmd_provider(args: argparse.Namespace, db: Database, config: Config) -> int:
+    from .providers import build_provider
+
+    if args.provider_action == "check":
+        provider = build_provider(config, ingest.catalog_lookup(db))
+        try:
+            checker = getattr(provider, "check_credentials", None)
+            if checker is None:
+                print(f"{config.provider.name} has no credential check; "
+                      f"use `pokeflip doctor`.")
+                return 0
+            report = checker()
+        finally:
+            provider.close()
+
+        def render() -> None:
+            heading(f"{config.provider.name} credentials")
+            marks = {True: _c("ok", GREEN), False: _c("no", RED)}
+            print(f"  Environment      {report['environment']} / "
+                  f"{report['marketplace']}")
+            print(f"  Credentials      {marks[report['credentials']]}")
+            print(f"  Live listings    {marks[report['browse']]}"
+                  + (f"  ({report['listings_seen']} on a test query)"
+                     if "listings_seen" in report else ""))
+            print(f"  Sold data        {marks[report['sold_data']]}"
+                  + (f"  ({report['sold_seen']} on a test query)"
+                     if "sold_seen" in report else ""))
+            if report["problems"]:
+                print()
+                for problem in report["problems"]:
+                    print(_c(f"  ! {problem}", RED))
+            for note in report["notes"]:
+                print(_c(f"  - {note}", DIM))
+            if report["credentials"] and not report["problems"]:
+                print()
+                print(_c("  Ready. Try: pokeflip provider probe <card_id>", DIM))
+        emit(args, report, render)
+        return 1 if report["problems"] else 0
+
+    card = db.get_card(args.card_id)
+    if card is None:
+        print(_c(f"Unknown card {args.card_id}. Sync it first: "
+                 f"pokeflip search {args.card_id} --remote", RED))
+        return 1
+
+    provider = build_provider(config, ingest.catalog_lookup(db))
+    try:
+        prober = getattr(provider, "probe", None)
+        if prober is None:
+            print(f"{config.provider.name} has no probe command.")
+            return 1
+        from .providers.base import CardRecord
+
+        record = CardRecord(
+            id=card["id"], name=card["name"] or "", set_id=card["set_id"] or "",
+            set_name=card["set_name"] or "", number=card["number"] or "",
+        )
+        result = prober(record)
+    except ProviderError as exc:
+        print(_c(f"Provider error: {exc}", RED))
+        return 2
+    finally:
+        provider.close()
+
+    def render() -> None:
+        heading(f"{result['card_name']} on {config.provider.name}")
+        print(f"  Search query     {result['query']}")
+        print(f"  Live listings    {result['listings_found']}")
+        print(f"  Sold items       {result['sold_found']}"
+              + ("" if result["sold_available"] else _c("  (no sold access)", DIM)))
+
+        for label, key in (("Live listings", "listings"), ("Sold", "sold")):
+            block = result[key]
+            if not block["kept"] and not block["rejected"]:
+                continue
+            heading(f"{label} - kept")
+            rows = []
+            for variant, items in block["kept"].items():
+                for item in items[:6]:
+                    rows.append([variant, money(item["price"]),
+                                 item["title"][:58]])
+            table(rows, ["VARIANT", "PRICE", "TITLE"], ["l", "r", "l"])
+            if block["rejected"]:
+                print()
+                print(_c(f"  Filtered out {len(block['rejected'])} "
+                         f"(lots, bundles, graded):", DIM))
+                for title in block["rejected"][:5]:
+                    print(_c(f"    {title[:70]}", DIM))
+
+        heading("Resulting quotes")
+        table(
+            [[q["variant"], money(q["market"]), money(q["low"]), money(q["high"]),
+              q["sales_count"] if q["sales_count"] is not None else "-",
+              q["listing_count"] or "-", q["basis"]] for q in result["quotes"]],
+            ["VARIANT", "MARKET", "LOW", "HIGH", "SALES/30D", "LISTED", "BASIS"],
+            ["l", "r", "r", "r", "r", "r", "l"],
+        )
+        print()
+        print(_c("  Check the kept titles are really this card. If lots or the "
+                 "wrong printing slipped through, that is a filter to tune.", DIM))
+    emit(args, result, render)
+    return 0
+
+
 def cmd_runs(args: argparse.Namespace, db: Database, config: Config) -> int:
     rows = [dict(r) for r in db.recent_runs(args.limit)]
 
@@ -1479,6 +1583,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-sync", action="store_true",
                    help="do not fetch cards the catalog does not know yet")
     p.set_defaults(func=cmd_import)
+
+    p = cmd(sub, "provider", help="verify price-source credentials and output")
+    prov = p.add_subparsers(dest="provider_action", required=True)
+    cmd(prov, "check", help="prove the credentials work and say what does not")
+    a = cmd(prov, "probe", help="show what the source returns for one card")
+    a.add_argument("card_id")
+    p.set_defaults(func=cmd_provider)
 
     p = cmd(sub, "notify", help="test delivery and manage snoozed alerts")
     nfy = p.add_subparsers(dest="notify_action", required=True)

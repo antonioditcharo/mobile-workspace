@@ -74,9 +74,9 @@ silently break an unattended install:
 ```
   ok    database         data/pokeflip.db - 25 cards, 4525 price points, 8 open lots
   ok    tracking         8 holdings, 6 watchlist entries, 0 tracked sets
-  FAIL  price source     pokemontcg unreachable: GET /sets failed: 403 Forbidden
-        -> Check network access to the provider. If it is blocked where this
-           runs, set provider.name to 'fixture' to work offline.
+  FAIL  catalog source   unreachable: GET /sets failed: 403 Forbidden
+        -> Check network access. If the provider is blocked where this runs,
+           set provider.name to 'fixture' to work offline.
   ok    fees             12.75% + $0.30 per order, $1.10 shipping
   warn  phone push       no channel that reaches a phone
         -> Add 'ntfy' (no account needed), 'pushover' or 'telegram'.
@@ -127,6 +127,69 @@ reports velocity as unknown rather than passing asks off as sales. Lots,
 bundles, proxies and graded slabs are filtered out so a 100-card lot never sets
 the price of one card; set `ebay_track_graded` to price PSA/BGS copies as their
 own variants.
+
+#### Setting eBay up
+
+```bash
+# 1. Catalog first - eBay searches by card name, so it needs to know the names.
+pokeflip sync --set sv3pt5
+
+# 2. Prove the credentials work before trusting any number.
+pokeflip provider check
+```
+
+Example output (illustrative — see the caveat at the end of this file):
+
+```
+ebay credentials
+
+  Environment      production / EBAY_US
+  Credentials      ok
+  Live listings    ok  (42 on a test query)
+  Sold data        no
+
+  ! Marketplace Insights refused. That API needs a separate grant from eBay -
+    apply at developer.ebay.com. Until then prices come from the lower quartile
+    of asking prices and velocity is reported as unknown.
+```
+
+`provider check` separates the failures that look identical from the outside: a
+rejected keyset (eBay answers 400/401), a missing Marketplace Insights grant
+(403 on that endpoint only), and a network problem between you and
+`api.ebay.com` — which is *not* a bad key, and is called out as such.
+
+```bash
+# 3. See what it actually found, and how it classified each listing.
+pokeflip provider probe sv3pt5-199
+```
+
+Example output (illustrative):
+
+```
+Search query     Charizard ex 199 151 pokemon
+Live listings    38
+Sold items       12
+
+Live listings - kept
+VARIANT     PRICE  TITLE
+holofoil  $448.00  Charizard ex 199/165 SIR 151 Near Mint
+holofoil  $465.99  Pokemon 151 Charizard ex 199/165 Special Illustration
+
+  Filtered out 6 (lots, bundles, graded):
+    Pokemon 151 Charizard ex PSA 10 GEM MINT
+    Charizard ex 199/165 + 3 card lot
+
+Resulting quotes
+VARIANT    MARKET      LOW     HIGH  SALES/30D  LISTED  BASIS
+holofoil  $452.00  $448.00  $612.00         12      38  sold_median
+```
+
+**Look at the kept titles.** The search query and the lot/grade filters are
+heuristics; they will need tuning against real listings. If the wrong printing
+or a lot slipped through, that is a filter to fix, and `probe` is how you see
+it. Everything the app reports downstream is built on these numbers.
+
+Both commands exit non-zero on failure, so they work in a script.
 
 > **Network note.** If your environment blocks `api.pokemontcg.io`, set
 > `provider.name` to `fixture` and the app runs entirely offline on generated
@@ -557,6 +620,8 @@ API is authenticated. Worth checking once after deploying.
 pokeflip setup                    answer a few questions, write config.json
 pokeflip doctor [--offline]       check whether this is set up to actually run
 pokeflip import holdings|watchlist --file F   bulk load from CSV
+pokeflip provider check           prove your price-source credentials work
+pokeflip provider probe CARD_ID   see what the source returns for one card
 pokeflip init                     write a starter config.json from defaults
 pokeflip demo [--days N]          seed offline data with real-looking history
 pokeflip search QUERY [--remote]  find cards
@@ -728,7 +793,7 @@ Secrets (`api_key`, SMTP password, webhook URLs) are redacted from
 python -m unittest discover -s tests -v
 ```
 
-202 tests, standard library only, no network. The offline provider is
+214 tests, standard library only, no network. The offline provider is
 deterministic, so results are stable run to run.
 
 ---
@@ -784,6 +849,11 @@ somewhere.
   move; it cannot tell you why.
 - **Bulk estimates by card count assume a rarity mix.** They are for screening
   a listing, not for placing a bid.
+- **The eBay provider has never made a live call.** It was written against
+  eBay's documented API and is unit-tested on captured response shapes, but no
+  real request has been made from here — credentials and egress were both
+  unavailable. `pokeflip provider check` is the first thing to run; it will
+  tell you within seconds. The eBay examples in this file are illustrative.
 - **Tap-to-act means exposing the server.** Set `server.api_token`, terminate
   TLS in front of it, and treat your ntfy topic as a secret. The action links
   themselves are single-use and expiring, but the server behind them holds your
