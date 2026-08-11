@@ -29,6 +29,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MODULE_ORDER = [
   'src/vocab.js',
   'src/eras.js',
+  'src/perchance.js',
   'src/compiler.js',
   'src/vision.js',
   'src/app.js',

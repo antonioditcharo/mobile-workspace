@@ -67,6 +67,11 @@ export const REALISM_NEGATIVE = [
   'trending on artstation',
   'award winning',
   'professional photography',
+  // Borrowed from Perchance's own "casual-photo" style negative list, which is
+  // well aimed at the same target as these presets.
+  'high production value',
+  'commercial photoshoot',
+  'photoshopped',
   'modern smartphone photo',
   'iphone photo',
   'shallow depth of field',

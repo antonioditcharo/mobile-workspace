@@ -103,8 +103,10 @@ async function readState(page) {
     prompt: document.getElementById('prompt').value,
     negative: document.getElementById('negative').value,
     cfg: document.getElementById('stat-cfg').textContent,
-    steps: document.getElementById('stat-steps').textContent,
-    aspect: document.getElementById('stat-aspect').textContent,
+    style: document.getElementById('stat-style').textContent,
+    resolution: document.getElementById('stat-resolution').textContent,
+    styleHint: document.getElementById('style-hint').textContent,
+    cfgHint: document.getElementById('cfg-hint').textContent,
     eras: [...document.querySelectorAll('#era-seg button')].map((b) => b.textContent),
     formats: [...document.querySelectorAll('#format-seg button')].map((b) => b.textContent),
     pressedEra: document
@@ -161,8 +163,12 @@ async function main() {
     check('one input per observation field', s.fieldCount === 9, String(s.fieldCount));
     check('an era-only prompt compiles with no image', s.prompt.length > 40, s.prompt);
     check('negative prompt is populated', s.negative.length > 60);
-    check('1990s CFG/steps/aspect shown', s.cfg === '5.5' && s.steps === '28' && s.aspect === '3:2',
-      `${s.cfg}/${s.steps}/${s.aspect}`);
+    check('1990s Perchance settings shown', s.cfg === '5.5' && s.resolution === '768x512',
+      `${s.cfg}/${s.resolution}`);
+    check('art style is the neutral one', s.style === 'none', s.style);
+    check('the style trap is warned about', /8k|HDR|masterpiece/i.test(s.styleHint), s.styleHint);
+    check('steps are marked as not a Perchance control', /Steps aren't a Perchance control/i.test(s.cfgHint),
+      s.cfgHint);
     check('film stock appears in the prompt', s.prompt.includes('Kodak Gold 200'), s.prompt);
     check(
       'quality boilerplate is suppressed',
@@ -184,8 +190,8 @@ async function main() {
     console.log('\nEra switching');
     await segButton(page, 'era-seg', 'Early 2000s').click();
     s = await readState(page);
-    check('era settings update', s.cfg === '6' && s.steps === '26' && s.aspect === '4:3',
-      `${s.cfg}/${s.steps}/${s.aspect}`);
+    check('era settings update', s.cfg === '6' && s.resolution === '768x512',
+      `${s.cfg}/${s.resolution}`);
     check('formats swap to the new era', s.formats.some((f) => /Digital compact/i.test(f)),
       s.formats.join('|'));
     check('early-2000s artifacts appear', /JPEG compression/i.test(s.prompt), s.prompt);
@@ -194,11 +200,11 @@ async function main() {
 
     await segButton(page, 'era-seg', '1980s').click();
     s = await readState(page);
-    check('1980s selected', s.cfg === '5' && s.steps === '30', `${s.cfg}/${s.steps}`);
+    check('1980s selected', s.cfg === '5', s.cfg);
 
     await segButton(page, 'format-seg', 'Instant').click();
     s = await readState(page);
-    check('instant format forces a square aspect', s.aspect === '1:1', s.aspect);
+    check('instant format maps to the square resolution', s.resolution === '768x768', s.resolution);
     check('polaroid appears in the prompt', /Polaroid/i.test(s.prompt), s.prompt);
 
     /* -------------------------------------------------- intensity */
@@ -274,7 +280,9 @@ async function main() {
     await page.click('#copy-all');
     await page.waitForTimeout(150);
     const clipAll = await page.evaluate(() => navigator.clipboard.readText());
-    check('copy-everything includes settings', /Guidance \/ CFG:/.test(clipAll), clipAll.slice(0, 80));
+    check('copy-everything includes the Perchance checklist', /Guidance scale:/.test(clipAll), clipAll.slice(0, 80));
+    check('copy-everything names the resolution', /Resolution: \d{3,4}x\d{3,4}/.test(clipAll), clipAll);
+    check('copy-everything warns about the art style', /Art style: none/.test(clipAll), clipAll);
     check('copy-everything includes the negative prompt', /Negative prompt:/.test(clipAll));
 
     await page.click('details >> nth=0'); // open "Recent forges"

@@ -521,7 +521,8 @@ test('compile reports recommended generation settings', () => {
 
 test('settingsBlock renders a pasteable summary', () => {
   const block = settingsBlock(compile(OBSERVATION, { era: '1990s' }));
-  for (const label of ['Prompt:', 'Negative prompt:', 'Guidance / CFG:', 'Steps:', 'Aspect ratio:']) {
+  // Field names match Perchance's actual controls — see test/perchance.test.mjs.
+  for (const label of ['Prompt:', 'Negative prompt:', 'Guidance scale:', 'Resolution:', 'Seed:']) {
     assert.ok(block.includes(label), `missing ${label}`);
   }
 });

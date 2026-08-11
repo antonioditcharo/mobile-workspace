@@ -151,6 +151,17 @@
         color: var(--ink-dim);
         margin: 8px 0 0;
       }
+      /* The art-style warning is the one instruction that silently ruins output
+         if missed, so it is given real emphasis rather than muted hint styling. */
+      .hint.warn {
+        color: var(--ink);
+        border-left: 3px solid var(--accent);
+        padding: 6px 0 6px 9px;
+      }
+      .stat b.small {
+        font-size: 13px;
+        line-height: 1.5;
+      }
       /* Image picker */
       #drop {
         border: 1.5px dashed var(--line);
@@ -424,12 +435,14 @@
       <h2>4 · Prompt</h2>
       <div class="seg" id="style-seg" style="margin-bottom: 10px"></div>
 
+      <h2 style="margin-top: 4px">Set these in Perchance</h2>
       <div class="settings-grid">
-        <div class="stat"><b id="stat-cfg">–</b><span>CFG</span></div>
-        <div class="stat"><b id="stat-steps">–</b><span>Steps</span></div>
-        <div class="stat"><b id="stat-aspect">–</b><span>Aspect</span></div>
+        <div class="stat"><b id="stat-style">none</b><span>Art style</span></div>
+        <div class="stat"><b id="stat-cfg">–</b><span>Guidance</span></div>
+        <div class="stat"><b id="stat-resolution">–</b><span>Resolution</span></div>
       </div>
-      <p class="hint" id="cfg-hint" style="margin-top: 0"></p>
+      <p class="hint warn" id="style-hint" style="margin-top: 0"></p>
+      <p class="hint" id="cfg-hint"></p>
 
       <div class="out">
         <h3>Prompt <span class="count" id="prompt-count"></span></h3>

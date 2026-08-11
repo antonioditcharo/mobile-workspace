@@ -9,6 +9,7 @@
  */
 
 import { compile, settingsBlock, OBSERVATION_FIELDS } from './compiler.js';
+import { perchanceSettings, STYLE_NOTES } from './perchance.js';
 import { ERAS, ERA_IDS, DEFAULT_ERA, INTENSITY_LEVELS, DEFAULT_INTENSITY } from './eras.js';
 import {
   MODELS,
@@ -83,8 +84,9 @@ const el = {
   promptCount: $('prompt-count'),
   negativeCount: $('negative-count'),
   statCfg: $('stat-cfg'),
-  statSteps: $('stat-steps'),
-  statAspect: $('stat-aspect'),
+  statStyle: $('stat-style'),
+  statResolution: $('stat-resolution'),
+  styleHint: $('style-hint'),
   cfgHint: $('cfg-hint'),
   copyPrompt: $('copy-prompt'),
   copyNegative: $('copy-negative'),
@@ -260,14 +262,21 @@ function recompile() {
   el.negative.value = result.negative;
   el.promptCount.textContent = `${result.prompt.length} chars`;
   el.negativeCount.textContent = `${result.negativeList.length} terms`;
-  el.statCfg.textContent = result.cfg.value;
-  el.statSteps.textContent = result.steps;
-  el.statAspect.textContent = result.aspect;
+  const perchance = perchanceSettings(result);
+  el.statCfg.textContent = perchance.guidanceScale;
+  el.statStyle.textContent = perchance.style;
+  el.statResolution.classList.add('small');
+  el.statResolution.textContent = perchance.resolution.value;
+
+  el.styleHint.textContent = result.suppressedQualityTags ? STYLE_NOTES : '';
+  el.styleHint.style.display = result.suppressedQualityTags ? '' : 'none';
 
   const [lo, hi] = result.cfg.range;
-  el.cfgHint.textContent = `Usable CFG range ${lo}–${hi}. Lower reads more like a real photo; higher starts to look AI-generated.${
-    result.suppressedQualityTags ? ' Quality boilerplate is suppressed for this era.' : ''
-  }`;
+  el.cfgHint.textContent =
+    `This era works best at guidance ${lo}–${hi} (Perchance accepts ${perchance.guidanceRange[0]}–${perchance.guidanceRange[1]}). ` +
+    `Lower reads more like a real photo; higher starts to look AI-generated. ` +
+    `Ideal framing is ${result.aspect}, so pick ${perchance.resolution.label}. ` +
+    `Steps aren't a Perchance control — ${perchance.advisorySteps} is only a hint for other tools.`;
 
   return result;
 }

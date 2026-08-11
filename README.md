@@ -56,6 +56,26 @@ doesn't need the model.
 
 ---
 
+## Perchance specifics
+
+⚠️ **Set Perchance's art style to `none`.** Its style dropdown is not an API parameter — it
+appends text to your prompt *and* negative prompt. Every style except `none` and
+`casual-photo` appends `8k, HDR, masterpiece, sharp focus, trending on artstation`, which is
+exactly the boilerplate the era presets exist to suppress. Leaving it on `cinematic` undoes
+the period realism no matter how good the prompt is.
+
+The generator's real controls are `prompt`, `negativePrompt`, `guidanceScale` (1–30,
+default 7), `resolution`, and `seed`. Notably it has **no steps control**, so the step count
+this app reports is advisory only, for other tools. Resolution is a discrete string, not a
+free ratio — one of `512x768`, `768x768`, `768x512` — so the app maps its ideal framing onto
+the nearest of those rather than telling you to set something Perchance doesn't offer.
+
+Provenance for the above, since perchance.org isn't reachable from the build sandbox: two
+independently written reverse-engineered clients that agree with each other — PyPI
+`perchance` 0.1.0 and npm `perchance-image-generator` 1.0.2. See `src/perchance.js`. It's
+advisory text shown to you, never a hard dependency, so if Perchance changes the advice
+degrades rather than the app breaking.
+
 ## Why it's built this way
 
 **The quality tags are the enemy.** `masterpiece, 8k, ultra detailed, cinematic lighting`

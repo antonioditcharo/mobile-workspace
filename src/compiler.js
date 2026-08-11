@@ -39,6 +39,8 @@ import {
   ASPECT_RATIOS,
 } from './eras.js';
 
+import { perchanceSettings } from './perchance.js';
+
 /**
  * Categories the vision stage fills in, in the order it asks about them.
  *
@@ -585,18 +587,29 @@ export function compile(observation = {}, options = {}) {
   };
 }
 
-/** Human-readable settings block for pasting alongside the prompt. */
+/**
+ * Copy-out block, written as a field-by-field checklist for the Perchance page.
+ *
+ * The field names and values match what the generator actually accepts (see
+ * src/perchance.js for provenance), including the art-style warning, which is
+ * the difference between a period prompt working and being silently overridden.
+ */
 export function settingsBlock(result) {
   const [lo, hi] = result.cfg.range;
+  const p = perchanceSettings(result);
   return [
     `Prompt: ${result.prompt}`,
     '',
     `Negative prompt: ${result.negative}`,
     '',
-    `Guidance / CFG: ${result.cfg.value}  (usable range ${lo}-${hi})`,
-    `Steps: ${result.steps}`,
-    `Aspect ratio: ${result.aspect}`,
+    '--- Perchance settings ---',
+    `Art style: ${p.style}   <- important: any other style adds 8k/HDR/masterpiece and breaks the era look`,
+    `Guidance scale: ${p.guidanceScale}   (this era works in ${lo}-${hi}; Perchance accepts ${p.guidanceRange[0]}-${p.guidanceRange[1]})`,
+    `Resolution: ${p.resolution.value}   (${p.resolution.label})`,
+    `Seed: ${p.seed} for random, or reuse a number to repeat an image`,
+    '',
     `Era: ${result.eraLabel} — ${result.formatLabel}`,
     `Artifact intensity: ${result.intensity}`,
+    `Steps: ${p.advisorySteps} (advisory — Perchance does not expose a step count)`,
   ].join('\n');
 }

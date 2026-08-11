@@ -150,6 +150,17 @@
         color: var(--ink-dim);
         margin: 8px 0 0;
       }
+      /* The art-style warning is the one instruction that silently ruins output
+         if missed, so it is given real emphasis rather than muted hint styling. */
+      .hint.warn {
+        color: var(--ink);
+        border-left: 3px solid var(--accent);
+        padding: 6px 0 6px 9px;
+      }
+      .stat b.small {
+        font-size: 13px;
+        line-height: 1.5;
+      }
       /* Image picker */
       #drop {
         border: 1.5px dashed var(--line);
@@ -423,12 +434,14 @@
       <h2>4 · Prompt</h2>
       <div class="seg" id="style-seg" style="margin-bottom: 10px"></div>
 
+      <h2 style="margin-top: 4px">Set these in Perchance</h2>
       <div class="settings-grid">
-        <div class="stat"><b id="stat-cfg">–</b><span>CFG</span></div>
-        <div class="stat"><b id="stat-steps">–</b><span>Steps</span></div>
-        <div class="stat"><b id="stat-aspect">–</b><span>Aspect</span></div>
+        <div class="stat"><b id="stat-style">none</b><span>Art style</span></div>
+        <div class="stat"><b id="stat-cfg">–</b><span>Guidance</span></div>
+        <div class="stat"><b id="stat-resolution">–</b><span>Resolution</span></div>
       </div>
-      <p class="hint" id="cfg-hint" style="margin-top: 0"></p>
+      <p class="hint warn" id="style-hint" style="margin-top: 0"></p>
+      <p class="hint" id="cfg-hint"></p>
 
       <div class="out">
         <h3>Prompt <span class="count" id="prompt-count"></span></h3>
@@ -931,6 +944,11 @@ const REALISM_NEGATIVE = [
   'trending on artstation',
   'award winning',
   'professional photography',
+  // Borrowed from Perchance's own "casual-photo" style negative list, which is
+  // well aimed at the same target as these presets.
+  'high production value',
+  'commercial photoshoot',
+  'photoshopped',
   'modern smartphone photo',
   'iphone photo',
   'shallow depth of field',
@@ -1235,6 +1253,155 @@ const ASPECT_RATIOS = [
   { label: '9:16', value: 9 / 16 },
 ];
 
+/* ===== src/perchance.js ===== */
+/**
+ * Verified facts about Perchance's ai-text-to-image-generator.
+ *
+ * PROVENANCE — this matters, so it is written down rather than assumed.
+ * perchance.org is not reachable from the build sandbox, so these values come
+ * from two independently written, reverse-engineered client libraries that
+ * agree with each other:
+ *
+ *   - PyPI `perchance` 0.1.0        (perchance/imagegenerator.py)
+ *   - npm  `perchance-image-generator` 1.0.2 (lib/imageGenerator.js, src/styles.js)
+ *
+ * Both post to https://image-generation.perchance.org/api/generate with
+ * channel `ai-text-to-image-generator`, and both send exactly these fields:
+ *
+ *   prompt, negativePrompt, guidanceScale, resolution, seed,
+ *   channel, subChannel, userKey, requestId
+ *
+ * Two consequences drive real decisions in this app:
+ *
+ * 1. THERE IS NO STYLE PARAMETER. Perchance's art-style dropdown is a text
+ *    macro: the npm client builds `${prompt}, ${styleText}` and
+ *    `${negativePrompt}, ${styleNegativeText}`. This confirms that emitting era
+ *    styling as prompt text — rather than depending on a dropdown — is correct.
+ *    It also means the dropdown actively fights this app (see STYLE_NOTES).
+ *
+ * 2. THERE IS NO STEPS PARAMETER. Neither client sends one, so a step count is
+ *    not something the user can set in Perchance. It is reported as advisory
+ *    only, for other tools.
+ *
+ * Being reverse-engineered, this could drift if Perchance changes. Everything
+ * here is advisory text shown to the user, never a hard dependency, so drift
+ * degrades the advice rather than breaking the app.
+ */
+
+/** Guidance scale accepted by the generator; default is 7. */
+const GUIDANCE_RANGE = [1, 30];
+const GUIDANCE_DEFAULT = 7;
+
+/**
+ * The resolutions the generator is known to accept, as literal strings.
+ *
+ * Note this is a short list of discrete shapes, not a free aspect ratio — which
+ * is why the app maps its ideal ratio onto the nearest available shape instead
+ * of telling the user to set something like "16:9".
+ */
+const RESOLUTIONS = [
+  { id: 'portrait', value: '512x768', ratio: 512 / 768, label: 'Portrait 512×768' },
+  { id: 'square', value: '768x768', ratio: 1, label: 'Square 768×768' },
+  { id: 'landscape', value: '768x512', ratio: 768 / 512, label: 'Landscape 768×512' },
+];
+
+/**
+ * Perchance's built-in art styles, with what each one appends.
+ *
+ * `safe` marks styles that do not inject quality boilerplate. This is the single
+ * most important thing learned from the client libraries: every style except
+ * `none` and `casual-photo` appends terms like "8k", "HDR", "masterpiece",
+ * "sharp focus" and "trending on artstation" — precisely the boilerplate the era
+ * presets exist to suppress. Leaving the dropdown on `cinematic` would undo the
+ * period realism no matter how good the prompt is.
+ */
+const STYLES = {
+  none: { safe: true, appends: '' },
+  'casual-photo': {
+    safe: true,
+    appends: 'casual photo',
+    // This style's own negative list is well aligned with period realism.
+    appendsNegative:
+      'bad photo, bad lighting, high production value, unnatural studio lighting, commercial photoshoot, photoshopped, terrible photo, disfigured',
+  },
+  cinematic: {
+    safe: false,
+    appends:
+      'cinematic shot, dynamic lighting, 75mm, Technicolor, sharp focus, fine details, 8k, HDR, realism, superb cinematic color grading, depth of field',
+  },
+  'digital-painting': {
+    safe: false,
+    appends: 'breathtaking digital art, trending on artstation, 8k, high resolution, best quality',
+  },
+  'concept-art': {
+    safe: false,
+    appends: 'concept art, digital art, illustration, 8k, fine details, sharp, masterpiece',
+  },
+  'painted-anime': {
+    safe: false,
+    appends: 'painterly anime artwork, masterpiece, fine details, 8k, very detailed, high resolution',
+  },
+  'traditional-japanese': {
+    safe: false,
+    appends: 'in ukiyo-e art style, traditional japanese masterpiece',
+  },
+};
+
+/** Styles that will not sabotage an era preset. */
+const SAFE_STYLES = Object.keys(STYLES).filter((k) => STYLES[k].safe);
+
+const STYLE_NOTES =
+  'Set Perchance\'s art style to "none". Every other style except "casual-photo" ' +
+  'appends 8k / HDR / masterpiece / sharp-focus boilerplate to your prompt, which ' +
+  'is exactly what stops an image looking like a real period photograph.';
+
+/**
+ * Map an aspect-ratio label onto the nearest resolution Perchance offers.
+ * Falls back to square when the label is unrecognised.
+ */
+function resolutionForAspect(aspectLabel) {
+  const parsed = /^(\d+):(\d+)$/.exec(String(aspectLabel || '').trim());
+  if (!parsed) return RESOLUTIONS.find((r) => r.id === 'square');
+
+  const ratio = Number(parsed[1]) / Number(parsed[2]);
+  let best = RESOLUTIONS[0];
+  let bestDelta = Infinity;
+  for (const candidate of RESOLUTIONS) {
+    const delta = Math.abs(candidate.ratio - ratio);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+/** Keep a recommended guidance value inside what the generator accepts. */
+function clampGuidance(value) {
+  const [lo, hi] = GUIDANCE_RANGE;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return GUIDANCE_DEFAULT;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+/**
+ * The field-by-field checklist for the Perchance page, built from a compiled
+ * result. This is what makes the output "Perchance-ready" rather than just a
+ * prompt the user has to interpret.
+ */
+function perchanceSettings(result) {
+  const resolution = resolutionForAspect(result.aspect);
+  return {
+    style: 'none',
+    guidanceScale: clampGuidance(result.cfg.value),
+    guidanceRange: GUIDANCE_RANGE,
+    resolution,
+    seed: -1,
+    // Reported for other tools; Perchance does not expose it.
+    advisorySteps: result.steps,
+  };
+}
+
 /* ===== src/compiler.js ===== */
 /**
  * The prompt compiler.
@@ -1245,6 +1412,8 @@ const ASPECT_RATIOS = [
  * happens deterministically in this file, which is why it can be unit tested
  * without a model or a browser.
  */
+
+
 
 
 
@@ -1796,19 +1965,30 @@ function compile(observation = {}, options = {}) {
   };
 }
 
-/** Human-readable settings block for pasting alongside the prompt. */
+/**
+ * Copy-out block, written as a field-by-field checklist for the Perchance page.
+ *
+ * The field names and values match what the generator actually accepts (see
+ * src/perchance.js for provenance), including the art-style warning, which is
+ * the difference between a period prompt working and being silently overridden.
+ */
 function settingsBlock(result) {
   const [lo, hi] = result.cfg.range;
+  const p = perchanceSettings(result);
   return [
     `Prompt: ${result.prompt}`,
     '',
     `Negative prompt: ${result.negative}`,
     '',
-    `Guidance / CFG: ${result.cfg.value}  (usable range ${lo}-${hi})`,
-    `Steps: ${result.steps}`,
-    `Aspect ratio: ${result.aspect}`,
+    '--- Perchance settings ---',
+    `Art style: ${p.style}   <- important: any other style adds 8k/HDR/masterpiece and breaks the era look`,
+    `Guidance scale: ${p.guidanceScale}   (this era works in ${lo}-${hi}; Perchance accepts ${p.guidanceRange[0]}-${p.guidanceRange[1]})`,
+    `Resolution: ${p.resolution.value}   (${p.resolution.label})`,
+    `Seed: ${p.seed} for random, or reuse a number to repeat an image`,
+    '',
     `Era: ${result.eraLabel} — ${result.formatLabel}`,
     `Artifact intensity: ${result.intensity}`,
+    `Steps: ${p.advisorySteps} (advisory — Perchance does not expose a step count)`,
   ].join('\n');
 }
 
@@ -2229,6 +2409,7 @@ function describeError(err) {
 
 
 
+
 const HISTORY_KEY = 'promptforge.history.v1';
 const PREFS_KEY = 'promptforge.prefs.v1';
 const HISTORY_LIMIT = 12;
@@ -2290,8 +2471,9 @@ const el = {
   promptCount: $('prompt-count'),
   negativeCount: $('negative-count'),
   statCfg: $('stat-cfg'),
-  statSteps: $('stat-steps'),
-  statAspect: $('stat-aspect'),
+  statStyle: $('stat-style'),
+  statResolution: $('stat-resolution'),
+  styleHint: $('style-hint'),
   cfgHint: $('cfg-hint'),
   copyPrompt: $('copy-prompt'),
   copyNegative: $('copy-negative'),
@@ -2467,14 +2649,21 @@ function recompile() {
   el.negative.value = result.negative;
   el.promptCount.textContent = `${result.prompt.length} chars`;
   el.negativeCount.textContent = `${result.negativeList.length} terms`;
-  el.statCfg.textContent = result.cfg.value;
-  el.statSteps.textContent = result.steps;
-  el.statAspect.textContent = result.aspect;
+  const perchance = perchanceSettings(result);
+  el.statCfg.textContent = perchance.guidanceScale;
+  el.statStyle.textContent = perchance.style;
+  el.statResolution.classList.add('small');
+  el.statResolution.textContent = perchance.resolution.value;
+
+  el.styleHint.textContent = result.suppressedQualityTags ? STYLE_NOTES : '';
+  el.styleHint.style.display = result.suppressedQualityTags ? '' : 'none';
 
   const [lo, hi] = result.cfg.range;
-  el.cfgHint.textContent = `Usable CFG range ${lo}–${hi}. Lower reads more like a real photo; higher starts to look AI-generated.${
-    result.suppressedQualityTags ? ' Quality boilerplate is suppressed for this era.' : ''
-  }`;
+  el.cfgHint.textContent =
+    `This era works best at guidance ${lo}–${hi} (Perchance accepts ${perchance.guidanceRange[0]}–${perchance.guidanceRange[1]}). ` +
+    `Lower reads more like a real photo; higher starts to look AI-generated. ` +
+    `Ideal framing is ${result.aspect}, so pick ${perchance.resolution.label}. ` +
+    `Steps aren't a Perchance control — ${perchance.advisorySteps} is only a hint for other tools.`;
 
   return result;
 }
