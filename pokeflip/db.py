@@ -10,11 +10,20 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date as date_, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+# Columns added after the first release. ``CREATE TABLE IF NOT EXISTS`` cannot
+# widen an existing table, so these are applied by hand on every connect.
+# Append only - never reorder or remove an entry.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("price_history", "sales_count", "INTEGER"),
+    ("price_history", "listing_count", "INTEGER"),
+    ("holdings", "sale_order_id", "INTEGER"),
+]
 
 
 def utcnow() -> datetime:
@@ -62,8 +71,18 @@ class Database:
         try:
             with conn:
                 conn.executescript(SCHEMA_PATH.read_text())
+                self._migrate(conn)
         finally:
             conn.close()
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        for table, column, decl in MIGRATIONS:
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if not existing:
+                continue  # table not created yet on this schema version
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     # --- generic helpers ------------------------------------------------
 
@@ -153,7 +172,8 @@ class Database:
         """Insert price snapshots. One row per card/source/variant/day wins;
         a re-run on the same day refreshes that day's row rather than
         double-counting it in the trend math."""
-        rows = list(quotes)
+        # Sources that report no volume data simply omit these keys.
+        rows = [{"sales_count": None, "listing_count": None, **row} for row in quotes]
         if not rows:
             return 0
         with self.tx() as conn:
@@ -161,13 +181,16 @@ class Database:
                 """
                 INSERT INTO price_history
                     (card_id, source, variant, captured_at, captured_on, currency,
-                     market, low, mid, high, direct_low)
+                     market, low, mid, high, direct_low, sales_count, listing_count)
                 VALUES (:card_id, :source, :variant, :captured_at, :captured_on, :currency,
-                        :market, :low, :mid, :high, :direct_low)
+                        :market, :low, :mid, :high, :direct_low,
+                        :sales_count, :listing_count)
                 ON CONFLICT(card_id, source, variant, captured_on) DO UPDATE SET
                     captured_at=excluded.captured_at, market=excluded.market,
                     low=excluded.low, mid=excluded.mid, high=excluded.high,
-                    direct_low=excluded.direct_low, currency=excluded.currency
+                    direct_low=excluded.direct_low, currency=excluded.currency,
+                    sales_count=excluded.sales_count,
+                    listing_count=excluded.listing_count
                 """,
                 rows,
             )
@@ -179,16 +202,38 @@ class Database:
         variant: str,
         source: str,
         days: int = 180,
+        as_of: str | None = None,
     ) -> list[sqlite3.Row]:
-        since = day(utcnow() - timedelta(days=days))
-        return self.query(
-            """
-            SELECT * FROM price_history
-            WHERE card_id = ? AND variant = ? AND source = ? AND captured_on >= ?
-            ORDER BY captured_on
-            """,
-            (card_id, variant, source, since),
+        """Stored prices for one printing.
+
+        ``as_of`` (an ISO date) hides everything after that day, which is what
+        keeps the backtester from reading the future.
+        """
+        anchor = date_.fromisoformat(as_of) if as_of else utcnow().date()
+        since = (anchor - timedelta(days=days)).isoformat()
+        sql = (
+            "SELECT * FROM price_history "
+            "WHERE card_id = ? AND variant = ? AND source = ? AND captured_on >= ?"
         )
+        params: list[Any] = [card_id, variant, source, since]
+        if as_of:
+            sql += " AND captured_on <= ?"
+            params.append(as_of)
+        return self.query(sql + " ORDER BY captured_on", params)
+
+    def full_series(self, source: str) -> dict[tuple[str, str], list[sqlite3.Row]]:
+        """Every stored price grouped by printing.
+
+        The backtester replays hundreds of days; loading once and slicing in
+        memory turns thousands of queries into one.
+        """
+        grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in self.query(
+            "SELECT * FROM price_history WHERE source = ? ORDER BY card_id, variant, captured_on",
+            (source,),
+        ):
+            grouped.setdefault((row["card_id"], row["variant"]), []).append(row)
+        return grouped
 
     def latest_price(self, card_id: str, variant: str, source: str) -> sqlite3.Row | None:
         return self.one(
@@ -199,6 +244,31 @@ class Database:
             """,
             (card_id, variant, source),
         )
+
+    def best_variant(self, card_id: str, source: str,
+                     preferred: str | None = None) -> str | None:
+        """The printing to use when the caller did not pin one down.
+
+        A card asked about as "sv3pt5-199" is almost always the printing that
+        actually trades, which is rarely the ``normal`` default.
+        """
+        if preferred:
+            row = self.one(
+                "SELECT 1 FROM price_history WHERE card_id = ? AND source = ? "
+                "AND variant = ? LIMIT 1",
+                (card_id, source, preferred),
+            )
+            if row:
+                return preferred
+        row = self.one(
+            """
+            SELECT variant FROM price_history
+            WHERE card_id = ? AND source = ?
+            ORDER BY captured_on DESC, market DESC LIMIT 1
+            """,
+            (card_id, source),
+        )
+        return row["variant"] if row else None
 
     def tracked_variants(self, source: str, card_ids: Iterable[str] | None = None
                          ) -> list[tuple[str, str]]:

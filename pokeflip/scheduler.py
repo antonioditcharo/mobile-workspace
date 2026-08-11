@@ -21,12 +21,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from . import backtest as backtest_mod
 from . import digest as digest_mod
-from . import ingest, notify, signals
+from . import ingest, notify, orders, signals
 from .alerts import evaluate_alerts, mark_delivered, store_alerts
 from .config import Config
 from .db import Database
-from .providers import build_provider
+from .providers import build_catalog_provider
 
 log = logging.getLogger("pokeflip.scheduler")
 
@@ -35,6 +36,9 @@ def run_refresh_cycle(db: Database, config: Config, deliver: bool = True
                       ) -> dict[str, Any]:
     """Fetch prices, re-score, raise alerts. The core periodic job."""
     stats = ingest.refresh_prices(db, config)
+    # Buy orders that were never going to fill should not keep counting against
+    # committed capital.
+    expired = orders.expire_stale(db, config)
     run = signals.generate(db, config)
     found = evaluate_alerts(db, config, run=run)
     stored = store_alerts(db, found)
@@ -45,12 +49,15 @@ def run_refresh_cycle(db: Database, config: Config, deliver: bool = True
         if any(d.get("ok") for d in delivery):
             mark_delivered(db, [a["id"] for a in stored])
 
+    listings = orders.listing_health(db, config)
     result = {
         "prices": stats,
         "buys": len(run.buys),
         "sells": len(run.sells),
         "scanned": run.scanned,
         "alerts": len(stored),
+        "expired_orders": expired,
+        "listings_needing_action": len(listings["needs_action"]),
         "delivery": delivery,
     }
     log.info(
@@ -78,16 +85,22 @@ def run_digest(db: Database, config: Config, kind: str = "daily",
 
 def run_catalog_sync(db: Database, config: Config) -> dict[str, Any]:
     """Refresh set metadata, and the card list of every tracked set."""
-    provider = build_provider(config)
+    provider = build_catalog_provider(config)
     try:
         sets = ingest.sync_sets(db, provider)
-        synced = []
-        for set_id in config.tracked_sets:
-            synced.append(ingest.sync_set_cards(db, config, set_id, provider=provider))
-        log.info("catalog: %s sets, %s tracked sets refreshed", sets, len(synced))
-        return {"sets": sets, "tracked": synced}
     finally:
         provider.close()
+    synced = [ingest.sync_set_cards(db, config, set_id)
+              for set_id in config.tracked_sets]
+    log.info("catalog: %s sets, %s tracked sets refreshed", sets, len(synced))
+    return {"sets": sets, "tracked": synced}
+
+
+def run_backtest(db: Database, config: Config) -> dict[str, Any]:
+    """Re-grade the signal rules against history."""
+    report = backtest_mod.run(db, config)
+    log.info("backtest: %s signals over %s days", report.signals, report.days_replayed)
+    return report.to_dict()
 
 
 class Scheduler:
@@ -124,6 +137,14 @@ class Scheduler:
             "catalog",
             IntervalTrigger(days=max(1, rules.catalog_refresh_days)),
             lambda: run_catalog_sync(self.db, self.config),
+        )
+        # Re-grading the rules is cheap and only meaningful once new outcomes
+        # have had time to resolve, so weekly is plenty.
+        self._add(
+            "backtest",
+            CronTrigger(day_of_week=rules.weekly_digest_day,
+                        hour=max(0, rules.weekly_digest_hour - 1), minute=30),
+            lambda: run_backtest(self.db, self.config),
         )
         self._configured = True
 

@@ -5,7 +5,7 @@ on a schedule, scores every card you track for buys and sells, values bulk lots
 before you bid on them, and hands you a short list of things to do — in the
 terminal, on a dashboard, or delivered to Slack, Discord, a webhook or email.
 
-It answers three questions:
+It answers five questions:
 
 1. **What should I buy today?** Cards trading below their own trend, listing
    floors well under market, and early upturns — filtered so the trade still
@@ -14,6 +14,10 @@ It answers three questions:
    started giving back a peak, went dead, or broke down far enough to cut.
 3. **Is this lot worth it?** Bulk buying and bulk selling, with the haircuts
    that separate a good lot from a garage full of cardboard.
+4. **What happened to the thing I listed three weeks ago?** Orders and listings
+   are tracked from bid to sale, with days on market and re-pricing advice.
+5. **Do these rules actually work?** The engine replays itself against history
+   and grades every rule on what really happened next.
 
 Every number is net of fees. A recommendation always shows the arithmetic
 behind it, so you can argue with it instead of just trusting it.
@@ -60,9 +64,35 @@ python -m pokeflip.cli hold add sv3pt5-199 --variant holofoil --quantity 2 --cos
 python -m pokeflip.cli refresh                       # fetch prices now
 ```
 
-Data comes from the [Pokémon TCG API](https://pokemontcg.io), which carries
-both TCGplayer (USD) and Cardmarket (EUR) prices. An API key is optional and
-raises the rate limit — put it in `provider.api_key`.
+### Price sources
+
+| `provider.name` | Gives you | Needs |
+|---|---|---|
+| `pokemontcg` (default) | TCGplayer (USD) + Cardmarket (EUR) aggregates, and the card catalog | nothing; an API key raises the rate limit |
+| `ebay` | **actual sold prices and sales velocity** | eBay app credentials; sold data needs extra approval |
+| `fixture` | deterministic offline data | nothing — this is what `demo` uses |
+
+eBay is the only source that can tell you **how fast a card sells**, which is
+what separates "cheap" from "cheap because nobody wants it". It is a
+marketplace rather than a card database, so keep `pokemontcg` as the catalog
+source and point prices at eBay:
+
+```jsonc
+"provider": {
+  "name": "ebay",
+  "catalog_name": "pokemontcg",
+  "ebay_client_id": "...",         // https://developer.ebay.com
+  "ebay_client_secret": "...",
+  "ebay_use_sold_data": true       // needs Marketplace Insights approval
+}
+```
+
+Without Marketplace Insights approval the provider still works from live
+listings, but it prices from the **lower quartile of asking prices** and
+reports velocity as unknown rather than passing asks off as sales. Lots,
+bundles, proxies and graded slabs are filtered out so a 100-card lot never sets
+the price of one card; set `ebay_track_graded` to price PSA/BGS copies as their
+own variants.
 
 > **Network note.** If your environment blocks `api.pokemontcg.io`, set
 > `provider.name` to `fixture` and the app runs entirely offline on generated
@@ -82,6 +112,7 @@ For every card printing, from your stored history:
 | **Position in range** | 90-day z-score, 30-day peak and trough, drawdown from peak, run-up from trough |
 | **Behaviour** | momentum (7d vs 30d), fitted 30-day trend slope, daily-return volatility, trend label |
 | **Opportunity** | spread between the listing floor and market price |
+| **Liquidity** | sales per week and a 0–1 score, labelled `observed` when the source reports real sales and `inferred` when it is guessed from price stability and spread |
 
 Prices are stored one snapshot per card, per printing, per marketplace, per day.
 Re-running a refresh on the same day updates that day's row rather than
@@ -141,6 +172,135 @@ up in the bulk plan instead.
 
 ---
 
+## Does any of this work? — the scorecard
+
+The engine grades itself. `pokeflip backtest` replays every day in the lookback
+window, re-runs the rules using **only the prices that existed on that day**,
+and checks what actually happened over the next 7 / 30 / 90 days:
+
+```
+KIND  REASON            HORIZON   N  GRADED  WIN RATE  MED ROI  AVG DRAWDOWN  VERDICT
+buy   buy_undervalued       30d  30      30      100%   +36.4%         -1.6%  reliable
+buy   buy_spread            30d   9       9      100%   +28.4%         -0.0%  reliable
+sell  sell_strength         30d  11      11       91%   +19.4%         -0.7%  reliable
+sell  sell_peak_fade        30d  18      18       22%    -2.9%        +14.9%  unreliable
+sell  sell_stop_loss        30d  46      46       22%    -5.0%        +21.6%  unreliable
+```
+
+Read that as: cutting losers early (`sell_stop_loss`) lost money more often
+than not on this data, because the cards recovered. That is the sort of thing
+you cannot know by staring at thresholds, and it is exactly what should drive
+you to raise `sell.stop_loss_pct` or turn the rule off.
+
+Two honesty notes, also printed with every report:
+
+- **No look-ahead.** Metrics on day D come from a series truncated at D. The
+  forward window is read only to score the outcome.
+- **Sell signals use a synthetic cost basis** — the card's own price 90 days
+  before the signal — because you did not actually hold every card. They
+  therefore measure *exit timing*, not a profit you made.
+
+`insufficient_data` is a real verdict; below eight graded signals the app
+declines to judge a rule at all.
+
+```bash
+pokeflip backtest --days 180 --horizon 30    # replay and grade
+pokeflip backtest --stored                   # last result, no re-run
+```
+
+The scheduler re-runs it weekly.
+
+---
+
+## Closing the loop: orders and listings
+
+A recommendation is not a trade. Orders are how the two get connected.
+
+```bash
+pokeflip scan                                  # "buy Giratina V at $27.72"
+pokeflip order take swsh11-186                 # becomes a pending bid at that price
+pokeflip order fill 2 --price 28.50            # it went through -> holding created
+```
+
+Filling a buy creates the holding with your real fill price and the signal that
+prompted it attached. Filling a sell closes the lot and books the realised
+profit. Partial fills leave the remainder open.
+
+**An open sell order is a live listing**, which means days on market and price
+cuts are tracked in the same place:
+
+```bash
+pokeflip listings                # every live listing, with a verdict on each
+pokeflip listings --apply        # re-price the ones flagged for a cut
+```
+
+| Verdict | Means |
+|---|---|
+| `hold` | priced in line with the market |
+| `raise` | the market moved up past your ask — you are leaving money behind |
+| `cut` | stale, or priced above where it will actually sell |
+| `pull` | stale *and* the card is trending down — cut hard or bulk it |
+
+Staleness is measured from the **last price change**, not from the listing
+date. Otherwise an auto-applied cut re-fires on the next cycle and ratchets
+your ask down to the floor one pass at a time.
+
+---
+
+## Condition, grading and capital
+
+**Condition affects value.** Quoted prices are near-mint prices;
+`conditions.multipliers` discounts what you actually hold (`LP` 0.85, `MP` 0.70,
+and so on). Positions are grouped by condition, because an LP copy is not the
+same asset as an NM one and averaging them hides the difference.
+
+**Grading is an expected-value question**, not a "what does a PSA 10 go for"
+question:
+
+```bash
+pokeflip grade card swsh7-215        # is this one worth sending?
+pokeflip grade scan                  # everything you hold, ranked
+pokeflip grade comp swsh7-215 10 --price 1450   # record a real observed sale
+```
+
+It weighs each grade by your assumed odds, nets off fees, grading cost and the
+weeks your capital is gone, and compares that against selling the card raw
+today. **Record comps.** Without them it falls back to configured multiples of
+the raw price, which are guesses — the output says so every time, and the
+verdict is not worth acting on until real sales are on file.
+
+**Capital allocation** warns when one card or one set has quietly become most
+of the book:
+
+```bash
+pokeflip risk
+```
+
+```
+! Charizard ex is 44% of your cost basis (limit 20%)
+! 151 is 56% of your cost basis (limit 40%)
+```
+
+Set `capital.bankroll` to also track free capital and how much is tied up in
+open bids.
+
+**Selling picks lots explicitly.** Which lot goes first changes the realised
+gain, so it is a choice rather than an accident of row order:
+
+```bash
+pokeflip sell sv3pt5-199 --quantity 2 --price 480 --method fifo
+```
+
+`fifo` (default), `lifo`, `highest_cost` (smallest gain now), `lowest_cost`.
+
+**Tax-ready export** of every closed position, with holding period:
+
+```bash
+pokeflip export --year 2026 --output sales-2026.csv
+```
+
+---
+
 ## Bulk
 
 Three haircuts separate a good lot from a bad one, and all three are applied:
@@ -196,6 +356,7 @@ pokeflip serve    # dashboard + API + scheduler in one process
 | `digest-daily` | 08:00 | build and deliver the daily report |
 | `digest-weekly` | Sunday 09:00 | the same with a weekly framing |
 | `catalog` | every 7 days | pick up new sets and printings |
+| `backtest` | Sunday 08:30 | re-grade the rules against history |
 
 A refresh prices, in priority order: your holdings, your watchlist, cards in
 lots you are evaluating, cards in `tracked_sets`, and anything already carrying
@@ -240,6 +401,13 @@ pokeflip hold add|list|sell|remove
 pokeflip watch add|list|remove
 pokeflip alerts [--unread] [--ack]
 pokeflip bulk value|estimate|plan|set
+pokeflip order new|take|fill|reprice|cancel|list
+pokeflip listings [--apply]       live listings and re-pricing advice
+pokeflip sell CARD_ID --quantity N --price P [--method fifo|lifo|...]
+pokeflip grade card|scan|comp     grading expected value
+pokeflip backtest [--days N] [--horizon N] [--stored]
+pokeflip risk                     capital allocation and concentration
+pokeflip export [--year Y] [--output F]   tax-ready CSV
 pokeflip runs                     recent job history
 pokeflip run                      scheduler in the foreground
 pokeflip serve                    dashboard, API and scheduler
@@ -274,6 +442,21 @@ POST   /api/bulk/value                value an itemised lot
 POST   /api/bulk/estimate             value an unsorted lot by card count
 GET    /api/bulk/sell-plan            singles vs bulk split of your inventory
 GET    /api/bulk/sets/{id}            value concentration in a set
+GET    /api/orders                    open orders and listings
+POST   /api/orders                    record a bid or listing
+POST   /api/orders/from-signal        turn a recommendation into an order
+POST   /api/orders/{id}/fill          it went through - update the portfolio
+POST   /api/orders/{id}/reprice       change a listing's ask
+GET    /api/listings                  every live listing with a verdict
+POST   /api/listings/apply-suggestions  re-price the ones flagged for a cut
+POST   /api/positions/sell            sell with automatic lot selection
+GET    /api/portfolio/concentration   capital allocation warnings
+GET    /api/portfolio/tax             closed positions with holding periods
+GET    /api/grading/{id}              is this card worth grading
+GET    /api/grading/scan              everything you hold, ranked
+POST   /api/grading/comps             record an observed graded sale
+GET    /api/backtest                  last signal scorecard
+POST   /api/backtest/run              replay history and re-grade the rules
 GET    /api/alerts                    recent alerts
 GET    /api/runs                      job history
 ```
@@ -327,6 +510,35 @@ The settings worth tuning first:
     "target_lot_margin": 0.45,     // margin required before bidding
     "single_out_threshold": 4.00
   },
+  "conditions": {
+    "multipliers": { "NM": 1.0, "LP": 0.85, "MP": 0.70, "HP": 0.55, "DMG": 0.35 }
+  },
+  "orders": {
+    "stale_listing_days": 21,      // no sale in this long needs a decision
+    "stale_cut_pct": 0.08,         // how much to cut by
+    "drift_tolerance": 0.07,       // re-price when the market moves this far
+    "price_floor_vs_market": 0.80, // never cut below this multiple of market
+    "buy_order_expiry_days": 14
+  },
+  "grading": {
+    "service": "PSA",
+    "fee_each": 25.00,
+    "turnaround_days": 45,
+    "grade_odds": { "10": 0.25, "9": 0.45, "8": 0.20, "7": 0.10 },
+    "min_expected_profit": 20.00,  // versus just selling it raw
+    "min_raw_price": 20.00
+  },
+  "capital": {
+    "bankroll": 0,                 // set this to track free capital
+    "max_position_pct": 0.20,      // warn above this share of cost basis
+    "max_set_pct": 0.40,
+    "lot_selection": "fifo"        // which lot to sell first
+  },
+  "backtest": {
+    "lookback_days": 180,
+    "horizons": [7, 30, 90],
+    "dedupe_days": 14              // one cheap card for a month is one call
+  },
   "tracked_sets": ["sv3pt5"],
   "schedule": { "refresh_interval_minutes": 360, "digest_hour": 8 }
 }
@@ -343,7 +555,7 @@ Secrets (`api_key`, SMTP password, webhook URLs) are redacted from
 python -m unittest discover -s tests -v
 ```
 
-66 tests, standard library only, no network. The offline provider is
+139 tests, standard library only, no network. The offline provider is
 deterministic, so results are stable run to run.
 
 ---
@@ -354,12 +566,15 @@ deterministic, so results are stable run to run.
 pokeflip/
   config.py       settings, fee model, all tunable thresholds
   db.py           SQLite access; schema.sql alongside it
-  providers/      pokemontcg (live) and fixture (offline) price sources
+  providers/      pokemontcg, ebay and fixture price sources
   ingest.py       catalog sync, price capture, demo seeding
   analytics.py    trend math — pure functions, rows in, numbers out
   signals.py      buy and sell scoring
   portfolio.py    inventory, cost basis, P&L
   bulk.py         lot valuation, bulk sell planning, set concentration
+  orders.py       order and listing lifecycle, re-pricing advice
+  grading.py      grading expected value and observed comps
+  backtest.py     replay the rules against history and grade them
   alerts.py       watchlist and alerting
   digest.py       the report, in JSON / Markdown / HTML
   notify.py       delivery channels
@@ -379,9 +594,15 @@ somewhere.
 - **Prices are marketplace aggregates, not your sale.** Condition, centring,
   grading and timing all move the real number. Verify live listings before
   trading.
-- **No sales-volume data.** The Pokémon TCG API does not publish it, so
-  liquidity is approximated by price stability and the listing spread. A card
-  that looks cheap may simply not sell.
+- **Sales-volume data depends on the source.** The Pokémon TCG API does not
+  publish it, so on that source liquidity is *inferred* from price stability and
+  the listing spread — a card that looks cheap may simply not sell. Point the
+  provider at eBay for observed sale counts; the metric is labelled either way.
+- **Backtest results are not a promise.** A window containing one big market
+  move can flatter or damn any rule, and the sell scorecard grades exit timing
+  against a synthetic cost basis rather than trades you actually made.
+- **Grade odds are assumptions.** Until you record real comps and your own
+  submission results, the grading verdict is arithmetic on guesses.
 - **Signals are backward-looking.** Reprint announcements, tournament results
   and set rotations move prices before any trend does. The app flags a sharp
   move; it cannot tell you why.

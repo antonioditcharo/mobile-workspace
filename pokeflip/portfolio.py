@@ -77,7 +77,13 @@ class ValuedPosition:
         return data
 
 
-def realistic_net_each(config: Config, price: float) -> float:
+def condition_price(config: Config, price: float, condition: str | None) -> float:
+    """Quoted prices are near-mint prices; discount them for what you hold."""
+    return price * config.conditions.multiplier(condition)
+
+
+def realistic_net_each(config: Config, price: float,
+                       condition: str | None = None) -> float:
     """What one card is actually worth to you, net.
 
     Selling a $1 card as its own order costs more in fees and postage than the
@@ -85,6 +91,7 @@ def realistic_net_each(config: Config, price: float) -> float:
     ships those individually - they go out by the hundred - so the value floor
     is the bulk price, and never below zero.
     """
+    price = condition_price(config, price, condition)
     single = config.fees.net_proceeds(price)
     rules = config.bulk
     if price < rules.filler_price_ceiling:
@@ -193,22 +200,92 @@ def remove_holding(db: Database, holding_id: int) -> bool:
     return db.execute("DELETE FROM holdings WHERE id = ?", (holding_id,)) > 0
 
 
+# Which lot to sell first, as (sort key, reverse).
+LOT_SELECTION: dict[str, tuple[Any, bool]] = {
+    # Oldest first: the default, and what most tax treatments assume.
+    "fifo": (lambda lot: lot["acquired_at"] or "", False),
+    "lifo": (lambda lot: lot["acquired_at"] or "", True),
+    # Realise the smallest gain now.
+    "highest_cost": (lambda lot: float(lot["cost_each"] or 0), True),
+    # Realise the largest gain now.
+    "lowest_cost": (lambda lot: float(lot["cost_each"] or 0), False),
+}
+
+
+def sell_position(
+    db: Database,
+    config: Config,
+    card_id: str,
+    quantity: int,
+    price_each: float,
+    variant: str = "normal",
+    condition: str | None = None,
+    method: str | None = None,
+    sold_at: str | None = None,
+) -> dict[str, Any]:
+    """Sell from a position without naming a lot.
+
+    Which lot goes first changes the realised gain, so the choice is explicit
+    and configurable rather than incidental to row order.
+    """
+    method = (method or config.capital.lot_selection or "fifo").lower()
+    if method not in LOT_SELECTION:
+        raise ValueError(
+            f"unknown lot selection {method!r}; use one of {', '.join(LOT_SELECTION)}")
+
+    lots = [
+        lot for lot in open_lots(db, card_id)
+        if lot["variant"] == variant
+        and (condition is None or lot["condition"] == condition)
+    ]
+    key, reverse = LOT_SELECTION[method]
+    lots.sort(key=key, reverse=reverse)
+    available = sum(int(lot["quantity"]) for lot in lots)
+    if quantity <= 0 or quantity > available:
+        raise ValueError(
+            f"can sell between 1 and {available} of {card_id} ({variant})")
+
+    sales: list[dict[str, Any]] = []
+    remaining = quantity
+    for lot in lots:
+        if remaining <= 0:
+            break
+        take = min(remaining, int(lot["quantity"]))
+        sales.append(sell_holding(db, int(lot["id"]), take, price_each, config, sold_at))
+        remaining -= take
+
+    return {
+        "card_id": card_id,
+        "variant": variant,
+        "condition": condition,
+        "method": method,
+        "quantity": quantity,
+        "price_each": round(price_each, 2),
+        "lots_used": len(sales),
+        "cost_basis": round(sum(s["cost_basis"] for s in sales), 2),
+        "net_proceeds": round(sum(s["net_proceeds"] for s in sales), 2),
+        "realized_pnl": round(sum(s["realized_pnl"] for s in sales), 2),
+        "sales": sales,
+    }
+
+
 # --- reads --------------------------------------------------------------
 
 
 def open_positions(db: Database) -> list[Position]:
     rows = db.query(
         """
-        SELECT h.card_id, h.variant,
+        SELECT h.card_id, h.variant, h.condition,
                SUM(h.quantity)                    AS quantity,
                SUM(h.quantity * h.cost_each)      AS total_cost,
                MIN(h.acquired_at)                 AS acquired_at,
-               MIN(h.condition)                   AS condition,
                GROUP_CONCAT(h.id)                 AS lot_ids,
                c.name, c.set_name, c.number, c.rarity, c.image_small
         FROM holdings h LEFT JOIN cards c ON c.id = h.card_id
         WHERE h.status = 'open'
-        GROUP BY h.card_id, h.variant
+        -- Condition is part of the identity: an LP copy is not the same asset
+        -- as an NM one and must not be averaged in with it.
+        GROUP BY h.card_id, h.variant, h.condition
         ORDER BY total_cost DESC
         """
     )
@@ -262,8 +339,9 @@ def value_positions(db: Database, config: Config, today: date | None = None
             out.append(ValuedPosition(position, None, None, None, None, None,
                                       None, "unknown", None))
             continue
-        market_value = price * position.quantity
-        net_value = realistic_net_each(config, price) * position.quantity
+        adjusted = condition_price(config, price, position.condition)
+        market_value = adjusted * position.quantity
+        net_value = realistic_net_each(config, price, position.condition) * position.quantity
         unrealized = net_value - position.total_cost
         roi = unrealized / position.total_cost if position.total_cost > 0 else None
         out.append(
@@ -379,4 +457,186 @@ def summary(db: Database, config: Config, today: date | None = None) -> dict[str
         "top_gainers": [v.to_dict() for v in reversed(movers[-5:])],
         "top_losers": [v.to_dict() for v in movers[:5]],
         "positions_detail": [v.to_dict() for v in valued],
+        "concentration": concentration(db, config, valued),
+    }
+
+
+# --- capital allocation -------------------------------------------------
+
+
+def concentration(db: Database, config: Config,
+                  valued: list[ValuedPosition] | None = None) -> dict[str, Any]:
+    """Where the capital is bunched up, and whether that is a problem.
+
+    One card going wrong should cost you a slice of the bankroll, not the
+    bankroll. These are warnings rather than blocks - some flippers do want a
+    concentrated book - but they should be a decision, not a surprise.
+    """
+    rules = config.capital
+    valued = valued if valued is not None else value_positions(db, config)
+    total_cost = sum(v.position.total_cost for v in valued)
+
+    positions = sorted(
+        (
+            {
+                "card_id": v.position.card_id,
+                "card_name": v.position.card_name,
+                "set_name": v.position.set_name,
+                "condition": v.position.condition,
+                "cost": v.position.total_cost,
+                "share": (v.position.total_cost / total_cost) if total_cost > 0 else 0.0,
+            }
+            for v in valued
+        ),
+        key=lambda e: e["cost"],
+        reverse=True,
+    )
+
+    by_set: dict[str, float] = {}
+    for v in valued:
+        by_set[v.position.set_name or "Unknown"] = (
+            by_set.get(v.position.set_name or "Unknown", 0.0) + v.position.total_cost)
+    sets = sorted(
+        (
+            {"set_name": name, "cost": round(cost, 2),
+             "share": (cost / total_cost) if total_cost > 0 else 0.0}
+            for name, cost in by_set.items()
+        ),
+        key=lambda e: e["cost"],
+        reverse=True,
+    )
+
+    committed = float((db.one(
+        "SELECT COALESCE(SUM(quantity * limit_price), 0) AS c FROM orders "
+        "WHERE kind = 'buy' AND status = 'open'"
+    ) or {"c": 0.0})["c"] or 0.0)
+
+    warnings: list[dict[str, Any]] = []
+    for entry in positions:
+        if entry["share"] > rules.max_position_pct:
+            warnings.append({
+                "kind": "position",
+                "subject": entry["card_name"] or entry["card_id"],
+                "share": round(entry["share"], 4),
+                "limit": rules.max_position_pct,
+                "message": (
+                    f"{entry['card_name'] or entry['card_id']} is "
+                    f"{entry['share'] * 100:.0f}% of your cost basis "
+                    f"(limit {rules.max_position_pct * 100:.0f}%)"
+                ),
+            })
+    for entry in sets:
+        if entry["share"] > rules.max_set_pct:
+            warnings.append({
+                "kind": "set",
+                "subject": entry["set_name"],
+                "share": round(entry["share"], 4),
+                "limit": rules.max_set_pct,
+                "message": (
+                    f"{entry['set_name']} is {entry['share'] * 100:.0f}% of your "
+                    f"cost basis (limit {rules.max_set_pct * 100:.0f}%)"
+                ),
+            })
+    if rules.bankroll > 0:
+        committed_share = (total_cost + committed) / rules.bankroll
+        if committed_share > rules.max_committed_pct:
+            warnings.append({
+                "kind": "committed",
+                "subject": "bankroll",
+                "share": round(committed_share, 4),
+                "limit": rules.max_committed_pct,
+                "message": (
+                    f"{committed_share * 100:.0f}% of your ${rules.bankroll:,.0f} "
+                    f"bankroll is tied up in inventory and open orders "
+                    f"(limit {rules.max_committed_pct * 100:.0f}%)"
+                ),
+            })
+
+    return {
+        "total_cost": round(total_cost, 2),
+        "open_buy_commitments": round(committed, 2),
+        "bankroll": rules.bankroll,
+        "free_capital": (
+            round(rules.bankroll - total_cost - committed, 2)
+            if rules.bankroll > 0 else None
+        ),
+        "largest_position_share": round(positions[0]["share"], 4) if positions else None,
+        "top_positions": [
+            {**e, "cost": round(e["cost"], 2), "share": round(e["share"], 4)}
+            for e in positions[:5]
+        ],
+        "by_set": [{**e, "share": round(e["share"], 4)} for e in sets[:8]],
+        "warnings": warnings,
+    }
+
+
+# --- tax reporting ------------------------------------------------------
+
+# Days held before a sale counts as long-term in most jurisdictions. Check
+# your own rules; this is a label on a report, not tax advice.
+LONG_TERM_DAYS = 365
+
+
+def tax_report(db: Database, year: int | None = None) -> dict[str, Any]:
+    """Closed positions with cost basis, proceeds, fees and holding period."""
+    sql = (
+        "SELECT h.*, c.name AS card_name, c.set_name FROM holdings h "
+        "LEFT JOIN cards c ON c.id = h.card_id "
+        "WHERE h.status = 'sold' AND h.sold_at IS NOT NULL"
+    )
+    params: list[Any] = []
+    if year:
+        sql += " AND h.sold_at >= ? AND h.sold_at < ?"
+        params += [f"{year}-01-01", f"{year + 1}-01-01"]
+
+    lines: list[dict[str, Any]] = []
+    for row in db.query(sql + " ORDER BY h.sold_at", params):
+        qty = int(row["quantity"] or 0)
+        cost = float(row["cost_each"] or 0) * qty
+        gross = float(row["sold_price_each"] or 0) * qty
+        net = float(row["sold_net_each"] or 0) * qty
+        try:
+            held = (parse_ts(row["sold_at"]).date()
+                    - parse_ts(row["acquired_at"]).date()).days
+        except (ValueError, TypeError):
+            held = None
+        lines.append({
+            "card_id": row["card_id"],
+            "card_name": row["card_name"] or row["card_id"],
+            "set_name": row["set_name"] or "",
+            "variant": row["variant"],
+            "condition": row["condition"],
+            "quantity": qty,
+            "acquired": (row["acquired_at"] or "")[:10],
+            "sold": (row["sold_at"] or "")[:10],
+            "held_days": held,
+            "term": ("long" if held is not None and held >= LONG_TERM_DAYS
+                     else "short" if held is not None else "unknown"),
+            "cost_basis": round(cost, 2),
+            "gross_proceeds": round(gross, 2),
+            "fees": round(gross - net, 2),
+            "net_proceeds": round(net, 2),
+            "gain": round(net - cost, 2),
+        })
+
+    return {
+        "year": year,
+        "lines": lines,
+        "totals": {
+            "sales": len(lines),
+            "cards": sum(line["quantity"] for line in lines),
+            "cost_basis": round(sum(line["cost_basis"] for line in lines), 2),
+            "gross_proceeds": round(sum(line["gross_proceeds"] for line in lines), 2),
+            "fees": round(sum(line["fees"] for line in lines), 2),
+            "net_proceeds": round(sum(line["net_proceeds"] for line in lines), 2),
+            "gain": round(sum(line["gain"] for line in lines), 2),
+            "short_term_gain": round(
+                sum(line["gain"] for line in lines if line["term"] == "short"), 2),
+            "long_term_gain": round(
+                sum(line["gain"] for line in lines if line["term"] == "long"), 2),
+        },
+        "note": (
+            "Figures come from what you recorded. Confirm them against your "
+            "marketplace statements before filing anything."
+        ),
     }

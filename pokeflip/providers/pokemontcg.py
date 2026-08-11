@@ -27,7 +27,9 @@ _TCG_FIELDS = ("low", "mid", "high", "market", "directLow")
 class PokemonTcgProvider:
     name = "pokemontcg"
 
-    def __init__(self, config: Config):
+    provides_catalog = True
+
+    def __init__(self, config: Config, catalog: Any = None):
         self.config = config
         self.settings = config.provider
         headers = {"User-Agent": "pokeflip/1.0"}

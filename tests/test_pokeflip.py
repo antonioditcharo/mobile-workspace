@@ -11,19 +11,23 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pokeflip import bulk, ingest, portfolio, signals  # noqa: E402
+from pokeflip import (  # noqa: E402
+    backtest, bulk, grading, ingest, orders, portfolio, providers, signals,
+)
 from pokeflip.alerts import add_watch, evaluate_alerts, store_alerts  # noqa: E402
 from pokeflip.analytics import (  # noqa: E402
-    compute_metrics, linear_slope, pct_change, sma, value_days_ago,
+    compute_metrics, linear_slope, load_metrics, pct_change, sma, value_days_ago,
 )
 from pokeflip.config import Config, MarketplaceFees  # noqa: E402
 from pokeflip.db import Database  # noqa: E402
 from pokeflip.digest import build as build_digest, render_html, render_markdown  # noqa: E402
+from pokeflip.providers import ebay  # noqa: E402
+from pokeflip.providers.base import CardRecord, ProviderError  # noqa: E402
 from pokeflip.providers.fixture import FixtureProvider  # noqa: E402
 from pokeflip.providers.pokemontcg import extract_quotes  # noqa: E402
 
@@ -598,6 +602,651 @@ class EndToEndTests(TempDbCase):
         held = {row["card_id"] for row in
                 self.db.query("SELECT card_id FROM holdings WHERE status='open'")}
         self.assertTrue(held.issubset(set(universe)))
+
+
+# --- condition ----------------------------------------------------------
+
+class ConditionTests(unittest.TestCase):
+    def setUp(self):
+        self.config = Config()
+
+    def test_played_copies_are_worth_less_than_near_mint(self):
+        self.assertEqual(portfolio.condition_price(self.config, 100.0, "NM"), 100.0)
+        self.assertEqual(portfolio.condition_price(self.config, 100.0, "LP"), 85.0)
+        self.assertEqual(portfolio.condition_price(self.config, 100.0, "DMG"), 35.0)
+
+    def test_unknown_condition_falls_back_to_the_default(self):
+        self.assertEqual(portfolio.condition_price(self.config, 100.0, "graded?"), 100.0)
+        self.assertEqual(portfolio.condition_price(self.config, 100.0, None), 100.0)
+
+    def test_condition_is_case_insensitive(self):
+        self.assertEqual(portfolio.condition_price(self.config, 100.0, "lp"), 85.0)
+
+    def test_net_proceeds_apply_the_condition_discount(self):
+        nm = portfolio.realistic_net_each(self.config, 100.0, "NM")
+        lp = portfolio.realistic_net_each(self.config, 100.0, "LP")
+        self.assertGreater(nm, lp)
+        self.assertAlmostEqual(lp, self.config.fees.net_proceeds(85.0), places=6)
+
+
+# --- lot selection ------------------------------------------------------
+
+class LotSelectionTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=40, include_portfolio=False)
+        self.card_id = FixtureProvider(self.config).all_card_ids()[0]
+        # Two lots: an old cheap one and a recent expensive one.
+        portfolio.add_holding(self.db, self.card_id, "holofoil", 2, 10.0,
+                              acquired_at="2025-01-01T00:00:00+00:00")
+        portfolio.add_holding(self.db, self.card_id, "holofoil", 2, 40.0,
+                              acquired_at="2025-06-01T00:00:00+00:00")
+
+    def remaining_costs(self):
+        return sorted(lot["cost_each"]
+                      for lot in portfolio.open_lots(self.db, self.card_id))
+
+    def test_fifo_sells_the_oldest_lot_first(self):
+        result = portfolio.sell_position(self.db, self.config, self.card_id, 2, 60.0,
+                                         "holofoil", method="fifo")
+        self.assertAlmostEqual(result["cost_basis"], 20.0)
+        self.assertEqual(self.remaining_costs(), [40.0])
+
+    def test_lifo_sells_the_newest_lot_first(self):
+        result = portfolio.sell_position(self.db, self.config, self.card_id, 2, 60.0,
+                                         "holofoil", method="lifo")
+        self.assertAlmostEqual(result["cost_basis"], 80.0)
+        self.assertEqual(self.remaining_costs(), [10.0])
+
+    def test_highest_cost_realises_the_smallest_gain(self):
+        result = portfolio.sell_position(self.db, self.config, self.card_id, 2, 60.0,
+                                         "holofoil", method="highest_cost")
+        self.assertAlmostEqual(result["cost_basis"], 80.0)
+
+    def test_a_sale_can_span_several_lots(self):
+        result = portfolio.sell_position(self.db, self.config, self.card_id, 3, 60.0,
+                                         "holofoil", method="fifo")
+        self.assertEqual(result["lots_used"], 2)
+        self.assertAlmostEqual(result["cost_basis"], 60.0)  # 2x10 + 1x40
+
+    def test_selling_more_than_held_is_refused(self):
+        with self.assertRaises(ValueError):
+            portfolio.sell_position(self.db, self.config, self.card_id, 99, 60.0,
+                                    "holofoil")
+
+    def test_unknown_method_is_refused(self):
+        with self.assertRaises(ValueError):
+            portfolio.sell_position(self.db, self.config, self.card_id, 1, 60.0,
+                                    "holofoil", method="vibes")
+
+
+# --- orders and listings ------------------------------------------------
+
+class OrderTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=90, include_portfolio=False)
+        provider = FixtureProvider(self.config)
+        self.card_id = provider.all_card_ids()[0]
+        self.variant = provider._catalog[self.card_id]["variant"]
+
+    def test_filling_a_buy_creates_a_holding(self):
+        order_id = orders.create_order(self.db, self.config, "buy", self.card_id,
+                                       2, 50.0, self.variant)
+        result = orders.fill_order(self.db, self.config, order_id, 48.0)
+        self.assertIn("holding_id", result)
+        lots = portfolio.open_lots(self.db, self.card_id)
+        self.assertEqual(sum(lot["quantity"] for lot in lots), 2)
+        self.assertAlmostEqual(lots[0]["cost_each"], 48.0)
+        self.assertEqual(orders.get_order(self.db, order_id).status, "filled")
+
+    def test_filling_a_listing_books_the_realised_profit(self):
+        portfolio.add_holding(self.db, self.card_id, self.variant, 1, 20.0)
+        order_id = orders.create_order(self.db, self.config, "sell", self.card_id,
+                                       1, 100.0, self.variant)
+        result = orders.fill_order(self.db, self.config, order_id, 100.0)
+        self.assertAlmostEqual(result["cost_basis"], 20.0)
+        self.assertAlmostEqual(
+            result["realized_pnl"],
+            round(self.config.fees.net_proceeds(100.0) - 20.0, 2), places=2)
+        self.assertEqual(portfolio.open_lots(self.db, self.card_id), [])
+
+    def test_a_partial_fill_leaves_the_rest_open(self):
+        order_id = orders.create_order(self.db, self.config, "buy", self.card_id,
+                                       5, 50.0, self.variant)
+        result = orders.fill_order(self.db, self.config, order_id, 50.0, quantity=2)
+        self.assertEqual(result["remaining_quantity"], 3)
+        self.assertEqual(orders.get_order(self.db, order_id).quantity, 3)
+        self.assertEqual(orders.get_order(self.db, order_id).status, "open")
+        self.assertEqual(sum(l["quantity"]
+                             for l in portfolio.open_lots(self.db, self.card_id)), 2)
+
+    def test_cannot_list_more_than_you_hold(self):
+        portfolio.add_holding(self.db, self.card_id, self.variant, 2, 20.0)
+        orders.create_order(self.db, self.config, "sell", self.card_id, 2, 100.0,
+                            self.variant)
+        with self.assertRaises(ValueError):
+            orders.create_order(self.db, self.config, "sell", self.card_id, 1, 100.0,
+                                self.variant)
+
+    def test_cannot_fill_the_same_order_twice(self):
+        order_id = orders.create_order(self.db, self.config, "buy", self.card_id,
+                                       1, 50.0, self.variant)
+        orders.fill_order(self.db, self.config, order_id, 50.0)
+        with self.assertRaises(ValueError):
+            orders.fill_order(self.db, self.config, order_id, 50.0)
+
+    def signal_dict(self, **overrides):
+        signal = {
+            "kind": "buy", "action": "buy_dip", "card_id": self.card_id,
+            "variant": self.variant, "condition": "NM", "price": 60.0,
+            "entry_price": 48.0, "quantity": 1, "score": 82.0,
+            "reasons": ["Trading 20% under its 30-day average"],
+        }
+        signal.update(overrides)
+        return signal
+
+    def test_a_buy_order_from_a_signal_bids_the_recommended_entry_price(self):
+        order_id = orders.create_from_signal(self.db, self.config, self.signal_dict())
+        order = orders.get_order(self.db, order_id)
+        self.assertEqual(order.kind, "buy")
+        self.assertAlmostEqual(order.limit_price, 48.0)   # the entry, not the market
+        self.assertAlmostEqual(order.reference_price, 60.0)
+        self.assertEqual(order.signal_action, "buy_dip")
+        self.assertEqual(order.signal_score, 82.0)
+        self.assertIn("30-day average", order.notes)
+
+    def test_a_sell_order_from_a_signal_lists_at_the_market_price(self):
+        portfolio.add_holding(self.db, self.card_id, self.variant, 3, 10.0)
+        order_id = orders.create_from_signal(
+            self.db, self.config,
+            self.signal_dict(kind="sell", action="sell_target", quantity=3))
+        order = orders.get_order(self.db, order_id)
+        self.assertEqual(order.kind, "sell")
+        self.assertEqual(order.quantity, 3)
+        self.assertAlmostEqual(order.limit_price, 60.0)
+
+    def test_a_signal_without_a_valid_kind_is_refused(self):
+        with self.assertRaises(ValueError):
+            orders.create_from_signal(self.db, self.config,
+                                      self.signal_dict(kind="maybe"))
+
+    def test_generated_signals_can_be_turned_into_orders_unchanged(self):
+        # The contract that matters: whatever `scan` emits, `order take` accepts.
+        run = signals.generate(self.db, self.config, persist=False)
+        for signal in (*run.buys, *run.sells)[:3]:
+            payload = signal.to_dict()
+            if payload["kind"] == "sell":
+                continue  # needs matching inventory, covered above
+            order_id = orders.create_from_signal(self.db, self.config, payload)
+            self.assertEqual(orders.get_order(self.db, order_id).signal_action,
+                             payload["action"])
+
+    def test_repricing_records_the_history(self):
+        portfolio.add_holding(self.db, self.card_id, self.variant, 1, 20.0)
+        order_id = orders.create_order(self.db, self.config, "sell", self.card_id,
+                                       1, 100.0, self.variant)
+        orders.reprice(self.db, order_id, 90.0, "test")
+        order = orders.get_order(self.db, order_id)
+        self.assertAlmostEqual(order.limit_price, 90.0)
+        self.assertAlmostEqual(order.original_price, 100.0)
+        self.assertEqual(len(order.price_cuts), 1)
+        self.assertAlmostEqual(order.price_cuts[0]["from"], 100.0)
+
+    def test_stale_buy_orders_expire(self):
+        order_id = orders.create_order(self.db, self.config, "buy", self.card_id,
+                                       1, 50.0, self.variant)
+        old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        self.db.execute("UPDATE orders SET created_at = ? WHERE id = ?", (old, order_id))
+        self.assertEqual(orders.expire_stale(self.db, self.config), [order_id])
+        self.assertEqual(orders.get_order(self.db, order_id).status, "expired")
+
+    def test_cancel_only_works_once(self):
+        order_id = orders.create_order(self.db, self.config, "buy", self.card_id,
+                                       1, 50.0, self.variant)
+        self.assertTrue(orders.cancel_order(self.db, order_id))
+        self.assertFalse(orders.cancel_order(self.db, order_id))
+
+
+class ListingReviewTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=90, include_portfolio=False)
+        provider = FixtureProvider(self.config)
+        self.card_id = provider.all_card_ids()[0]
+        self.variant = provider._catalog[self.card_id]["variant"]
+        self.market = self.db.latest_price(
+            self.card_id, self.variant, "tcgplayer")["market"]
+        portfolio.add_holding(self.db, self.card_id, self.variant, 4, 10.0)
+
+    def listing(self, ask: float, age_days: int = 0) -> int:
+        order_id = orders.create_order(self.db, self.config, "sell", self.card_id,
+                                       1, ask, self.variant)
+        if age_days:
+            when = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
+            self.db.execute("UPDATE orders SET created_at = ? WHERE id = ?",
+                            (when, order_id))
+        return order_id
+
+    def review(self, order_id: int):
+        return orders.review_listing(self.db, self.config,
+                                     orders.get_order(self.db, order_id))
+
+    def test_a_fresh_listing_at_market_is_left_alone(self):
+        self.assertEqual(self.review(self.listing(self.market)).verdict, "hold")
+
+    def test_an_underpriced_listing_should_be_raised(self):
+        review = self.review(self.listing(self.market * 0.7))
+        self.assertEqual(review.verdict, "raise")
+        self.assertGreater(review.suggested_price, self.market * 0.7)
+
+    def test_a_wildly_overpriced_listing_is_cut_even_when_fresh(self):
+        self.assertEqual(self.review(self.listing(self.market * 1.6)).verdict, "cut")
+
+    def test_a_stale_listing_needs_a_decision(self):
+        review = self.review(self.listing(self.market * 1.15, age_days=40))
+        self.assertIn(review.verdict, {"cut", "pull"})
+        self.assertIsNotNone(review.suggested_price)
+
+    def test_a_cut_is_not_immediately_re_cut(self):
+        # The ratchet bug: staleness must be measured from the last price
+        # change, or an auto-applied cut re-fires every cycle down to the floor.
+        order_id = self.listing(self.market * 1.15, age_days=40)
+        first = self.review(order_id)
+        self.assertEqual(first.verdict, "cut")
+        orders.reprice(self.db, order_id, first.suggested_price, "test")
+        self.assertEqual(self.review(order_id).verdict, "hold")
+
+    def test_suggested_cuts_never_go_below_the_floor(self):
+        review = self.review(self.listing(self.market * 1.05, age_days=40))
+        if review.suggested_price:
+            floor = self.market * self.config.orders.price_floor_vs_market
+            self.assertGreaterEqual(review.suggested_price, round(floor, 2) - 0.01)
+
+    def test_applying_suggestions_only_touches_flagged_listings(self):
+        self.listing(self.market)                       # hold
+        self.listing(self.market * 1.15, age_days=40)   # cut
+        applied = orders.apply_suggestions(self.db, self.config, ("cut",))
+        self.assertEqual(len(applied), 1)
+
+    def test_condition_is_accounted_for_in_the_comparison(self):
+        # A played copy listed at the near-mint price is overpriced, not fair.
+        portfolio.add_holding(self.db, self.card_id, self.variant, 1, 10.0,
+                              condition="MP")
+        order_id = orders.create_order(self.db, self.config, "sell", self.card_id,
+                                       1, self.market, self.variant, condition="MP")
+        review = self.review(order_id)
+        self.assertGreater(review.ask_vs_market, 0.3)
+
+
+# --- grading ------------------------------------------------------------
+
+class GradingTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=90, include_portfolio=False)
+        provider = FixtureProvider(self.config)
+        # Pick something comfortably above the grading price floor.
+        self.card_id = next(
+            cid for cid, entry in provider._catalog.items()
+            if entry["base_price"] > 100
+        )
+        self.variant = provider._catalog[self.card_id]["variant"]
+
+    def test_it_prices_the_printing_that_actually_trades(self):
+        verdict = grading.evaluate(self.db, self.config, self.card_id, "normal")
+        self.assertEqual(verdict.variant, self.variant)
+        self.assertIsNotNone(verdict.raw_price)
+
+    def test_cheap_cards_are_not_worth_grading(self):
+        self.config.grading.min_raw_price = 10_000.0
+        verdict = grading.evaluate(self.db, self.config, self.card_id, self.variant)
+        self.assertEqual(verdict.verdict, "sell_raw")
+
+    def test_probabilities_sum_to_one(self):
+        verdict = grading.evaluate(self.db, self.config, self.card_id, self.variant)
+        self.assertAlmostEqual(sum(o.probability for o in verdict.outcomes), 1.0,
+                               places=3)
+
+    def test_expected_value_nets_off_fees_and_grading_cost(self):
+        verdict = grading.evaluate(self.db, self.config, self.card_id, self.variant)
+        gross_expected = sum(o.probability * o.net_proceeds for o in verdict.outcomes)
+        self.assertAlmostEqual(
+            verdict.expected_net, round(gross_expected - verdict.grading_cost, 2),
+            places=1)
+        self.assertAlmostEqual(
+            verdict.expected_profit,
+            round(verdict.expected_net - verdict.raw_net, 2), places=2)
+
+    def test_recorded_comps_replace_the_guessed_multipliers(self):
+        before = grading.evaluate(self.db, self.config, self.card_id, self.variant)
+        self.assertEqual(before.basis, "multiplier")
+        for grade in ("10", "9", "8", "7"):
+            grading.record_comp(self.db, self.card_id, grade, 500.0, self.variant)
+        after = grading.evaluate(self.db, self.config, self.card_id, self.variant)
+        self.assertEqual(after.basis, "comp")
+        self.assertTrue(all(o.source == "comp" for o in after.outcomes))
+        self.assertTrue(all(o.price == 500.0 for o in after.outcomes))
+
+    def test_the_multiplier_caveat_is_stated_when_there_are_no_comps(self):
+        verdict = grading.evaluate(self.db, self.config, self.card_id, self.variant)
+        self.assertTrue(any("comps" in reason for reason in verdict.reasons))
+
+    def test_unknown_cards_return_an_unknown_verdict_not_an_error(self):
+        verdict = grading.evaluate(self.db, self.config, "ghost-1")
+        self.assertEqual(verdict.verdict, "unknown")
+
+    def test_comp_for_an_unknown_card_is_refused(self):
+        with self.assertRaises(ValueError):
+            grading.record_comp(self.db, "ghost-1", "10", 100.0)
+
+    def test_portfolio_scan_skips_played_copies(self):
+        portfolio.add_holding(self.db, self.config and self.card_id, self.variant,
+                              1, 50.0, condition="LP")
+        scan = grading.scan_portfolio(self.db, self.config)
+        self.assertEqual(scan["candidates"], [])
+        self.assertGreaterEqual(scan["skipped"], 1)
+
+
+# --- capital and tax ----------------------------------------------------
+
+class CapitalTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=60, include_portfolio=False)
+        self.ids = FixtureProvider(self.config).all_card_ids()
+
+    def test_an_oversized_position_is_flagged(self):
+        portfolio.add_holding(self.db, self.ids[0], "holofoil", 1, 900.0)
+        portfolio.add_holding(self.db, self.ids[1], "holofoil", 1, 100.0)
+        data = portfolio.concentration(self.db, self.config)
+        kinds = {w["kind"] for w in data["warnings"]}
+        self.assertIn("position", kinds)
+        self.assertAlmostEqual(data["largest_position_share"], 0.9, places=2)
+
+    def test_a_balanced_book_raises_nothing(self):
+        for card_id in self.ids[:12]:
+            portfolio.add_holding(self.db, card_id, "holofoil", 1, 100.0)
+        data = portfolio.concentration(self.db, self.config)
+        self.assertEqual(
+            [w for w in data["warnings"] if w["kind"] == "position"], [])
+
+    def test_open_buy_orders_count_against_the_bankroll(self):
+        self.config.capital.bankroll = 1000.0
+        portfolio.add_holding(self.db, self.ids[0], "holofoil", 1, 400.0)
+        orders.create_order(self.db, self.config, "buy", self.ids[1], 2, 100.0)
+        data = portfolio.concentration(self.db, self.config)
+        self.assertAlmostEqual(data["open_buy_commitments"], 200.0)
+        self.assertAlmostEqual(data["free_capital"], 400.0)
+        self.assertIn("committed", {w["kind"] for w in data["warnings"]})
+
+    def test_no_bankroll_means_no_free_capital_figure(self):
+        self.assertIsNone(portfolio.concentration(self.db, self.config)["free_capital"])
+
+
+class TaxReportTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=60, include_portfolio=False)
+        self.card_id = FixtureProvider(self.config).all_card_ids()[0]
+
+    def test_holding_period_is_classified(self):
+        old = portfolio.add_holding(self.db, self.card_id, "holofoil", 1, 10.0,
+                                    acquired_at="2023-01-01T00:00:00+00:00")
+        recent = portfolio.add_holding(self.db, self.card_id, "holofoil", 1, 10.0,
+                                       acquired_at="2026-01-01T00:00:00+00:00")
+        portfolio.sell_holding(self.db, old, 1, 100.0, self.config,
+                               sold_at="2026-06-01T00:00:00+00:00")
+        portfolio.sell_holding(self.db, recent, 1, 100.0, self.config,
+                               sold_at="2026-06-01T00:00:00+00:00")
+        terms = {line["term"] for line in portfolio.tax_report(self.db)["lines"]}
+        self.assertEqual(terms, {"long", "short"})
+
+    def test_totals_reconcile_with_the_lines(self):
+        holding_id = portfolio.add_holding(self.db, self.card_id, "holofoil", 2, 10.0)
+        portfolio.sell_holding(self.db, holding_id, 2, 100.0, self.config)
+        report = portfolio.tax_report(self.db)
+        line = report["lines"][0]
+        self.assertAlmostEqual(line["gain"],
+                               line["net_proceeds"] - line["cost_basis"], places=2)
+        self.assertAlmostEqual(line["fees"],
+                               line["gross_proceeds"] - line["net_proceeds"], places=2)
+        self.assertAlmostEqual(report["totals"]["gain"], line["gain"], places=2)
+
+    def test_a_year_filter_excludes_other_years(self):
+        holding_id = portfolio.add_holding(self.db, self.card_id, "holofoil", 1, 10.0)
+        portfolio.sell_holding(self.db, holding_id, 1, 100.0, self.config,
+                               sold_at="2024-05-05T00:00:00+00:00")
+        self.assertEqual(len(portfolio.tax_report(self.db, 2024)["lines"]), 1)
+        self.assertEqual(len(portfolio.tax_report(self.db, 2025)["lines"]), 0)
+
+
+# --- backtest -----------------------------------------------------------
+
+class BacktestTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=200, include_portfolio=False)
+
+    def test_a_replay_produces_graded_outcomes(self):
+        report = backtest.run(self.db, self.config, lookback_days=120,
+                              horizons=[30], persist=False)
+        self.assertGreater(report.days_replayed, 0)
+        self.assertGreater(len(report.outcomes), 0)
+        self.assertTrue(all(o.horizon_days == 30 for o in report.outcomes))
+
+    def test_signals_are_never_scored_using_future_prices(self):
+        report = backtest.run(self.db, self.config, lookback_days=90,
+                              horizons=[7], persist=False)
+        source = self.config.provider.preferred_source
+        for outcome in report.outcomes[:20]:
+            on = date.fromisoformat(outcome.signal_date)
+            metrics = load_metrics(self.db, outcome.card_id, outcome.variant,
+                                   source, as_of=on)
+            # Metrics as of the signal date must match the price it was scored on.
+            self.assertAlmostEqual(metrics.price, outcome.signal_price, places=2)
+
+    def test_the_forward_window_never_starts_before_the_signal(self):
+        report = backtest.run(self.db, self.config, lookback_days=90,
+                              horizons=[30], persist=False)
+        for outcome in report.outcomes:
+            if outcome.exit_price is None:
+                continue
+            self.assertLessEqual(
+                date.fromisoformat(outcome.signal_date) + timedelta(days=1),
+                date.fromisoformat(report.end) + timedelta(days=outcome.horizon_days))
+
+    def test_repeated_signals_on_one_card_are_counted_once_per_window(self):
+        self.config.backtest.dedupe_days = 30
+        sparse = backtest.run(self.db, self.config, lookback_days=120,
+                              horizons=[7], persist=False)
+        self.config.backtest.dedupe_days = 1
+        dense = backtest.run(self.db, self.config, lookback_days=120,
+                             horizons=[7], persist=False)
+        self.assertLess(sparse.signals, dense.signals)
+
+    def test_verdicts_need_a_minimum_sample(self):
+        outcomes = [
+            backtest.Outcome(kind="buy", action="buy_dip", card_id="c", variant="v",
+                             card_name="c", signal_date="2026-01-01", score=80,
+                             signal_price=10, entry_price=9, horizon_days=30,
+                             roi=0.5, forward_return=0.5, outcome="win")
+            for _ in range(3)
+        ]
+        self.assertEqual(backtest.summarise(outcomes)[0].verdict, "insufficient_data")
+
+    def test_a_losing_rule_is_called_unreliable(self):
+        outcomes = [
+            backtest.Outcome(kind="buy", action="buy_dip", card_id="c", variant="v",
+                             card_name="c", signal_date="2026-01-01", score=80,
+                             signal_price=10, entry_price=9, horizon_days=30,
+                             roi=-0.2, forward_return=-0.2, outcome="loss")
+            for _ in range(12)
+        ]
+        stats = backtest.summarise(outcomes)[0]
+        self.assertEqual(stats.verdict, "unreliable")
+        self.assertEqual(stats.win_rate, 0.0)
+
+    def test_a_winning_rule_is_called_reliable(self):
+        outcomes = [
+            backtest.Outcome(kind="buy", action="buy_dip", card_id="c", variant="v",
+                             card_name="c", signal_date="2026-01-01", score=80,
+                             signal_price=10, entry_price=9, horizon_days=30,
+                             roi=0.3, forward_return=0.3, outcome="win")
+            for _ in range(12)
+        ]
+        self.assertEqual(backtest.summarise(outcomes)[0].verdict, "reliable")
+
+    def test_flat_outcomes_do_not_count_as_wins(self):
+        self.assertEqual(backtest._label(0.001), "flat")
+        self.assertEqual(backtest._label(0.5), "win")
+        self.assertEqual(backtest._label(-0.5), "loss")
+        self.assertEqual(backtest._label(None), "unresolved")
+
+    def test_results_persist_and_can_be_read_back(self):
+        report = backtest.run(self.db, self.config, lookback_days=90, horizons=[30])
+        stored = backtest.latest(self.db)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["run_id"], report.run_id)
+        self.assertEqual(len(stored["stats"]), len(report.stats))
+
+    def test_an_empty_database_reports_rather_than_crashes(self):
+        empty = Database(str(Path(self._tmp.name) / "empty.db"))
+        report = backtest.run(empty, self.config, persist=False)
+        self.assertEqual(report.signals, 0)
+        self.assertTrue(report.notes)
+
+
+# --- ebay ---------------------------------------------------------------
+
+class EbayParsingTests(unittest.TestCase):
+    def test_lots_and_bundles_are_excluded(self):
+        for title in ("Pokemon Charizard LOT OF 50 cards", "Charizard bundle",
+                      "Charizard proxy custom", "mystery repack charizard"):
+            self.assertIsNone(ebay.classify_variant(title, False))
+
+    def test_graded_slabs_never_price_a_raw_card(self):
+        self.assertIsNone(ebay.classify_variant("Charizard PSA 10 GEM MINT", False))
+        self.assertIsNone(ebay.classify_variant("Charizard BGS 9.5", False))
+        self.assertIsNone(ebay.classify_variant("Charizard CGC 8", False))
+
+    def test_graded_slabs_become_their_own_variant_when_enabled(self):
+        self.assertEqual(ebay.classify_variant("Charizard PSA 10", True), "psa10")
+        self.assertEqual(ebay.classify_variant("Charizard PSA 9 mint", True), "psa9")
+
+    def test_printings_are_told_apart(self):
+        self.assertEqual(ebay.classify_variant("Pikachu reverse holo 025", False),
+                         "reverseHolofoil")
+        self.assertEqual(ebay.classify_variant("Pikachu holo rare", False), "holofoil")
+        self.assertEqual(ebay.classify_variant("Pikachu 025/165", False), "normal")
+
+    def test_the_query_names_the_card_and_the_game(self):
+        card = CardRecord(id="sv3pt5-199", name="Charizard ex", number="199/165",
+                          set_name="151")
+        query = ebay.build_query(card)
+        self.assertIn("Charizard ex", query)
+        self.assertIn("199", query)
+        self.assertIn("151", query)
+        self.assertIn("pokemon", query)
+
+    def test_sold_prices_beat_asking_prices_when_both_exist(self):
+        provider = ebay.EbayProvider(Config())
+        listings = [{"title": "Charizard holo", "price": {"value": "120.00"}},
+                    {"title": "Charizard holo", "price": {"value": "150.00"}}]
+        sold = [{"title": "Charizard holo", "lastSoldPrice": {"value": "100.00"},
+                 "lastSoldDate": datetime.now(timezone.utc).isoformat()}]
+        quote = provider._build_quote("x-1", "holofoil", listings, sold)
+        self.assertAlmostEqual(quote.market, 100.00)
+        self.assertAlmostEqual(quote.low, 120.00)
+        self.assertEqual(quote.extra["price_basis"], "sold_median")
+        self.assertEqual(quote.sales_count, 1)
+
+    def test_listings_only_uses_the_low_quartile_and_admits_it(self):
+        provider = ebay.EbayProvider(Config())
+        listings = [{"title": "Charizard holo", "price": {"value": str(p)}}
+                    for p in (100, 120, 140, 200)]
+        quote = provider._build_quote("x-1", "holofoil", listings, [])
+        self.assertLess(quote.market, 140)
+        self.assertIsNone(quote.sales_count)   # unknown, not zero
+        self.assertEqual(quote.extra["price_basis"], "listing_p25")
+
+    def test_old_sales_do_not_count_toward_velocity(self):
+        recent = datetime.now(timezone.utc).isoformat()
+        stale = (datetime.now(timezone.utc) - timedelta(days=80)).isoformat()
+        sold = [{"lastSoldDate": recent}, {"lastSoldDate": stale}]
+        self.assertEqual(len(ebay._recent_sales(sold, 30)), 1)
+
+    def test_it_refuses_catalog_questions_with_a_useful_message(self):
+        provider = ebay.EbayProvider(Config())
+        with self.assertRaises(ProviderError) as caught:
+            provider.search_cards("charizard")
+        self.assertIn("catalog", str(caught.exception))
+
+    def test_credentials_are_required_before_any_call(self):
+        provider = ebay.EbayProvider(Config())
+        with self.assertRaises(ProviderError) as caught:
+            provider._access_token()
+        self.assertIn("ebay_client_id", str(caught.exception))
+
+    def test_the_catalog_provider_falls_back_when_prices_come_from_ebay(self):
+        config = Config()
+        config.provider.name = "ebay"
+        self.assertFalse(providers.provides_catalog(config))
+        self.assertIsInstance(providers.build_catalog_provider(config),
+                              providers.PokemonTcgProvider)
+
+
+class LiquidityTests(unittest.TestCase):
+    def test_reported_sales_give_an_observed_liquidity_score(self):
+        rows = make_rows([50.0] * 30)
+        for row in rows:
+            row["sales_count"] = 12      # trailing 30-day total
+        metrics = compute_metrics("c", "v", "ebay", rows, today=date(2025, 1, 30))
+        self.assertEqual(metrics.liquidity_basis, "observed")
+        self.assertAlmostEqual(metrics.sales_per_week, 2.8, places=1)
+
+    def test_rolling_totals_are_not_summed_across_days(self):
+        # Thirty snapshots each reporting the same 30-day total is 12 sales,
+        # not 360.
+        rows = make_rows([50.0] * 30)
+        for row in rows:
+            row["sales_count"] = 12
+        metrics = compute_metrics("c", "v", "ebay", rows, today=date(2025, 1, 30))
+        self.assertLess(metrics.sales_per_week, 5)
+
+    def test_without_sales_data_liquidity_is_only_inferred(self):
+        metrics = compute_metrics("c", "v", "tcgplayer", make_rows([50.0] * 30),
+                                  today=date(2025, 1, 30))
+        self.assertEqual(metrics.liquidity_basis, "inferred")
+        self.assertIsNone(metrics.sales_per_week)
+
+    def test_no_history_means_no_liquidity_claim(self):
+        metrics = compute_metrics("c", "v", "tcgplayer", [])
+        self.assertEqual(metrics.liquidity_basis, "none")
+        self.assertIsNone(metrics.liquidity)
+
+
+class AsOfTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=90, include_portfolio=False)
+        self.card_id = FixtureProvider(self.config).all_card_ids()[0]
+        self.variant = FixtureProvider(self.config)._catalog[self.card_id]["variant"]
+
+    def test_as_of_hides_everything_after_that_day(self):
+        cutoff = date.today() - timedelta(days=30)
+        rows = self.db.price_series(self.card_id, self.variant, "tcgplayer",
+                                    days=365, as_of=cutoff.isoformat())
+        self.assertTrue(rows)
+        self.assertLessEqual(
+            max(date.fromisoformat(r["captured_on"]) for r in rows), cutoff)
+
+    def test_metrics_as_of_a_past_day_differ_from_today(self):
+        past = load_metrics(self.db, self.card_id, self.variant, "tcgplayer",
+                            as_of=date.today() - timedelta(days=30))
+        now = load_metrics(self.db, self.card_id, self.variant, "tcgplayer")
+        self.assertNotEqual(past.last_date, now.last_date)
+        self.assertEqual(past.stale_days, 0)
 
 
 if __name__ == "__main__":

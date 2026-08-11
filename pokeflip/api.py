@@ -20,9 +20,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import alerts as alerts_mod
+from . import backtest as backtest_mod
 from . import bulk as bulk_mod
 from . import digest as digest_mod
-from . import ingest, portfolio, scheduler as scheduler_mod, signals
+from . import grading as grading_mod
+from . import ingest, orders as orders_mod, portfolio, scheduler as scheduler_mod, signals
 from .analytics import load_metrics
 from .config import Config
 from .db import Database
@@ -83,6 +85,52 @@ class LotValueBody(BaseModel):
     items: list[LotItem]
     ask_price: float | None = None
     shipping: float = 0.0
+
+
+class OrderBody(BaseModel):
+    kind: str = Field(..., pattern="^(buy|sell)$")
+    card_id: str
+    variant: str = "normal"
+    condition: str = "NM"
+    quantity: int = Field(1, ge=1)
+    limit_price: float | None = None
+    marketplace: str | None = None
+    holding_id: int | None = None
+    notes: str = ""
+
+
+class FromSignalBody(BaseModel):
+    signal: dict[str, Any]
+    quantity: int | None = Field(None, ge=1)
+
+
+class FillBody(BaseModel):
+    price: float | None = Field(None, ge=0)
+    quantity: int | None = Field(None, ge=1)
+    when: str | None = None
+
+
+class RepriceBody(BaseModel):
+    price: float = Field(..., gt=0)
+    reason: str = ""
+
+
+class SellPositionBody(BaseModel):
+    card_id: str
+    variant: str = "normal"
+    condition: str | None = None
+    quantity: int = Field(1, ge=1)
+    price_each: float = Field(..., ge=0)
+    method: str | None = None
+
+
+class CompBody(BaseModel):
+    card_id: str
+    grade: str
+    price: float = Field(..., gt=0)
+    variant: str = "normal"
+    service: str = "PSA"
+    source: str = "manual"
 
 
 class EstimateBody(BaseModel):
@@ -266,6 +314,122 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
                                           body.price_each, config, body.sold_at)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/positions/sell")
+    def sell_from_position(body: SellPositionBody) -> dict[str, Any]:
+        try:
+            return portfolio.sell_position(
+                db, config, body.card_id, body.quantity, body.price_each,
+                body.variant, body.condition, body.method,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/portfolio/concentration")
+    def get_concentration() -> dict[str, Any]:
+        return portfolio.concentration(db, config)
+
+    @app.get("/api/portfolio/tax")
+    def get_tax(year: int | None = None) -> dict[str, Any]:
+        return portfolio.tax_report(db, year)
+
+    # --- orders and listings --------------------------------------------
+
+    @app.get("/api/orders")
+    def get_orders(kind: str | None = None, status: str | None = "open"
+                   ) -> list[dict[str, Any]]:
+        return [o.to_dict() for o in orders_mod.list_orders(db, kind, status)]
+
+    @app.post("/api/orders")
+    def create_order(body: OrderBody) -> dict[str, Any]:
+        try:
+            order_id = orders_mod.create_order(
+                db, config, body.kind, body.card_id, body.quantity, body.limit_price,
+                body.variant, body.condition, body.marketplace, body.holding_id,
+                notes=body.notes,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"id": order_id}
+
+    @app.post("/api/orders/from-signal")
+    def order_from_signal(body: FromSignalBody) -> dict[str, Any]:
+        try:
+            order_id = orders_mod.create_from_signal(db, config, body.signal,
+                                                     body.quantity)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"id": order_id}
+
+    @app.post("/api/orders/{order_id}/fill")
+    def fill(order_id: int, body: FillBody) -> dict[str, Any]:
+        try:
+            return orders_mod.fill_order(db, config, order_id, body.price,
+                                         body.quantity, body.when)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/orders/{order_id}/reprice")
+    def reprice(order_id: int, body: RepriceBody) -> dict[str, Any]:
+        try:
+            return orders_mod.reprice(db, order_id, body.price, body.reason)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.delete("/api/orders/{order_id}")
+    def cancel(order_id: int) -> dict[str, Any]:
+        if not orders_mod.cancel_order(db, order_id):
+            raise HTTPException(404, f"no open order {order_id}")
+        return {"cancelled": order_id}
+
+    @app.get("/api/listings")
+    def listings() -> dict[str, Any]:
+        return orders_mod.listing_health(db, config)
+
+    @app.post("/api/listings/apply-suggestions")
+    def apply_suggestions(verdicts: str = "cut") -> dict[str, Any]:
+        wanted = tuple(v.strip() for v in verdicts.split(",") if v.strip())
+        return {"applied": orders_mod.apply_suggestions(db, config, wanted)}
+
+    # --- grading --------------------------------------------------------
+
+    @app.get("/api/grading/scan")
+    def grading_scan(limit: int = Query(25, ge=1, le=100)) -> dict[str, Any]:
+        return grading_mod.scan_portfolio(db, config, limit=limit)
+
+    @app.get("/api/grading/{card_id}")
+    def grading_card(card_id: str, variant: str = "normal",
+                     condition: str = "NM") -> dict[str, Any]:
+        return grading_mod.evaluate(db, config, card_id, variant, condition).to_dict()
+
+    @app.post("/api/grading/comps")
+    def add_comp(body: CompBody) -> dict[str, Any]:
+        try:
+            comp_id = grading_mod.record_comp(db, body.card_id, body.grade, body.price,
+                                              body.variant, body.service, body.source)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"id": comp_id}
+
+    @app.get("/api/grading/comps/list")
+    def get_comps(card_id: str | None = None) -> list[dict[str, Any]]:
+        return grading_mod.list_comps(db, card_id)
+
+    # --- backtest -------------------------------------------------------
+
+    @app.get("/api/backtest")
+    def get_backtest() -> dict[str, Any]:
+        stored = backtest_mod.latest(db)
+        if stored is None:
+            raise HTTPException(
+                404, "no backtest has been run yet; POST /api/backtest/run")
+        return stored
+
+    @app.post("/api/backtest/run")
+    def run_backtest(lookback_days: int | None = None,
+                     include_outcomes: bool = False) -> dict[str, Any]:
+        report = backtest_mod.run(db, config, lookback_days=lookback_days)
+        return report.to_dict(include_outcomes=include_outcomes)
 
     # --- watchlist ------------------------------------------------------
 

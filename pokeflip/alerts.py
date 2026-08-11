@@ -81,14 +81,7 @@ def list_watch(db: Database, config: Config, today: date | None = None
     for row in rows:
         variant = row["variant"]
         if variant == "any":
-            picked = db.one(
-                """
-                SELECT variant FROM price_history WHERE card_id = ? AND source = ?
-                ORDER BY captured_on DESC, market DESC LIMIT 1
-                """,
-                (row["card_id"], source),
-            )
-            variant = picked["variant"] if picked else "normal"
+            variant = db.best_variant(row["card_id"], source) or "normal"
         metrics = load_metrics(db, row["card_id"], variant, source, today=today)
         entry = dict(row)
         entry["resolved_variant"] = variant
@@ -204,6 +197,37 @@ def evaluate_alerts(db: Database, config: Config, run: SignalRun | None = None,
                 dedupe_key=f"loss:{position.card_id}:{position.variant}",
             ))
 
+    # A listing that has gone stale is capital you already decided to release,
+    # sitting still. That is worth an interruption.
+    from . import orders as orders_mod  # imported here to avoid a circular import
+
+    for listing in orders_mod.listing_health(db, config, today=today)["needs_action"]:
+        severity = "warn" if listing["verdict"] != "raise" else "info"
+        suggested = listing.get("suggested_price")
+        alerts.append(Alert(
+            kind=f"listing_{listing['verdict']}",
+            severity=severity,
+            card_id=listing["card_id"],
+            variant=listing["variant"],
+            title=(
+                f"{listing['card_name']}: {listing['verdict']} your listing"
+                + (f" to ${suggested:,.2f}" if suggested else "")
+            ),
+            body=listing.get("reason", ""),
+            payload={"listing": listing},
+            dedupe_key=f"listing:{listing['id']}:{listing['verdict']}",
+        ))
+
+    for warning in _concentration_warnings(db, config):
+        alerts.append(Alert(
+            kind="concentration",
+            severity="warn",
+            title=f"Concentration: {warning['subject']}",
+            body=warning["message"],
+            payload=warning,
+            dedupe_key=f"concentration:{warning['kind']}:{warning['subject']}",
+        ))
+
     if run:
         for signal in run.buys[:5]:
             if signal.score >= 75:
@@ -231,6 +255,12 @@ def evaluate_alerts(db: Database, config: Config, run: SignalRun | None = None,
                 ))
 
     return alerts
+
+
+def _concentration_warnings(db: Database, config: Config) -> list[dict[str, Any]]:
+    from .portfolio import concentration
+
+    return concentration(db, config).get("warnings", [])
 
 
 def store_alerts(db: Database, alerts: Iterable[Alert]) -> list[dict[str, Any]]:

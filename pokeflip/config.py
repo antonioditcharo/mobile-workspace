@@ -134,6 +134,115 @@ class BulkRules:
 
 
 @dataclass
+class ConditionRules:
+    """What a condition grade does to a card's value.
+
+    Quoted prices are near-mint prices. A lightly played copy is not worth
+    near-mint money, and valuing your inventory as though it were is the
+    quickest way to a portfolio number that never survives contact with a buyer.
+    """
+
+    multipliers: dict[str, float] = field(default_factory=lambda: {
+        "NM": 1.00,   # near mint
+        "LP": 0.85,   # lightly played
+        "MP": 0.70,   # moderately played
+        "HP": 0.55,   # heavily played
+        "DMG": 0.35,  # damaged
+    })
+    # Used for any condition string not in the table above.
+    default_multiplier: float = 1.00
+
+    def multiplier(self, condition: str | None) -> float:
+        if not condition:
+            return self.default_multiplier
+        return self.multipliers.get(condition.strip().upper(), self.default_multiplier)
+
+
+@dataclass
+class GradingRules:
+    """Economics of sending a raw card away to be graded.
+
+    The grade distribution is an assumption about your own eye and your own
+    cards, not a fact. Override it per submission once you know your own rate.
+    """
+
+    service: str = "PSA"
+    # Per-card grading fee at your usual service level.
+    fee_each: float = 25.00
+    # Shipping and insurance for a submission, spread over the cards in it.
+    shipping_each: float = 3.50
+    # Cards you typically send at once, used to spread fixed costs.
+    submission_size: int = 20
+    # Weeks your capital is unavailable.
+    turnaround_days: int = 45
+    # Your realistic outcome distribution for cards you choose to submit.
+    grade_odds: dict[str, float] = field(default_factory=lambda: {
+        "10": 0.25, "9": 0.45, "8": 0.20, "7": 0.10,
+    })
+    # Fallback value of a graded copy as a multiple of the raw price, used only
+    # when you have no observed comps for the card.
+    default_multipliers: dict[str, float] = field(default_factory=lambda: {
+        "10": 4.50, "9": 1.80, "8": 1.15, "7": 0.95,
+    })
+    # Minimum expected profit before grading is worth the wait.
+    min_expected_profit: float = 20.00
+    # Don't bother grading anything cheaper than this raw.
+    min_raw_price: float = 20.00
+
+
+@dataclass
+class OrderRules:
+    """How open buy orders and live listings are managed."""
+
+    # A listing older than this with no sale needs a decision.
+    stale_listing_days: int = 21
+    # Suggested cut when a listing has gone stale, as a fraction of the ask.
+    stale_cut_pct: float = 0.08
+    # Re-price when the market has drifted this far from your ask.
+    drift_tolerance: float = 0.07
+    # Never cut below this multiple of current market.
+    price_floor_vs_market: float = 0.80
+    # A pending buy order this old is assumed dead.
+    buy_order_expiry_days: int = 14
+    # Default marketplace recorded on new orders.
+    default_marketplace: str = "tcgplayer"
+
+
+@dataclass
+class CapitalRules:
+    """Concentration limits, so one bad card cannot take the whole bankroll."""
+
+    # Warn when a single position exceeds this share of cost basis.
+    max_position_pct: float = 0.20
+    # Warn when a single set exceeds this share.
+    max_set_pct: float = 0.40
+    # Warn when open buy orders exceed this share of your bankroll.
+    max_committed_pct: float = 0.50
+    # Your working capital, used for the committed-capital check. 0 disables it.
+    bankroll: float = 0.0
+    # Lot picked first when selling from a position with several.
+    lot_selection: str = "fifo"  # fifo | lifo | highest_cost | lowest_cost
+
+
+@dataclass
+class BacktestRules:
+    """How the signal scorecard is produced."""
+
+    # How far back to replay.
+    lookback_days: int = 180
+    # Forward windows the outcome is measured over.
+    horizons: list[int] = field(default_factory=lambda: [7, 30, 90])
+    # Days between replayed decisions; 1 grades every day.
+    step_days: int = 1
+    # Signals are only graded once per printing per this many days, so a card
+    # sitting cheap for a month is not counted as thirty separate calls.
+    dedupe_days: int = 14
+    # Synthetic cost basis for sell signals: what you would have paid if you had
+    # bought the card this many days before the signal.
+    sell_entry_lookback: int = 90
+
+
+@dataclass
 class ScheduleRules:
     """When the app goes and gets fresh data on its own."""
 
@@ -178,8 +287,11 @@ class NotifyRules:
 class ProviderRules:
     """Price source selection and politeness."""
 
-    # "pokemontcg" for the live Pokemon TCG API, "fixture" for offline/demo data.
+    # Price source: "pokemontcg", "ebay", or "fixture" for offline/demo data.
     name: str = "pokemontcg"
+    # Catalog source, used when the price source has no card database of its
+    # own (eBay). Empty means "same as the price source".
+    catalog_name: str = ""
     api_key: str = ""
     base_url: str = "https://api.pokemontcg.io/v2"
     # Which price block to treat as the source of truth.
@@ -193,6 +305,26 @@ class ProviderRules:
     eur_to_usd: float = 1.08
     # Directory of JSON fixtures for the offline provider.
     fixture_dir: str = "data/fixtures"
+
+    # --- eBay (provider.name = "ebay") ---
+    # Application credentials from https://developer.ebay.com
+    ebay_client_id: str = ""
+    ebay_client_secret: str = ""
+    ebay_marketplace: str = "EBAY_US"
+    ebay_sandbox: bool = False
+    # Marketplace Insights (90-day sold data) needs separate eBay approval.
+    # Without it the provider still works from active listings alone, but
+    # cannot report what anything actually sold for.
+    ebay_use_sold_data: bool = True
+    # Trading-card category, used to keep searches off unrelated listings.
+    ebay_category_id: str = "183454"
+    # Words that mean the listing is not a single raw card.
+    ebay_exclude_terms: list[str] = field(default_factory=lambda: [
+        "lot", "bundle", "proxy", "custom", "fake", "orica", "playset", "bulk",
+    ])
+    # Track graded copies as their own variants (psa10, psa9, ...).
+    ebay_track_graded: bool = False
+    ebay_max_results: int = 50
 
 
 @dataclass
@@ -212,6 +344,11 @@ class Config:
     buy: BuyRules = field(default_factory=BuyRules)
     sell: SellRules = field(default_factory=SellRules)
     bulk: BulkRules = field(default_factory=BulkRules)
+    conditions: ConditionRules = field(default_factory=ConditionRules)
+    grading: GradingRules = field(default_factory=GradingRules)
+    orders: OrderRules = field(default_factory=OrderRules)
+    capital: CapitalRules = field(default_factory=CapitalRules)
+    backtest: BacktestRules = field(default_factory=BacktestRules)
     schedule: ScheduleRules = field(default_factory=ScheduleRules)
     notify: NotifyRules = field(default_factory=NotifyRules)
 
@@ -276,6 +413,7 @@ class Config:
         data = self.to_dict()
         secrets = (
             ("provider", "api_key"),
+            ("provider", "ebay_client_secret"),
             ("notify", "smtp_password"),
             ("notify", "webhook_url"),
             ("notify", "slack_webhook_url"),
@@ -311,4 +449,6 @@ def _coerce(raw: str, current: Any) -> Any:
         if raw.startswith("["):
             return json.loads(raw)
         return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(current, dict):
+        return json.loads(raw)
     return raw

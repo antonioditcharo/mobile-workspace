@@ -510,6 +510,175 @@ async function openCard(cardId) {
 
 async function viewBulk() { /* form-driven */ }
 
+// --- orders & listings --------------------------------------------------
+
+const VERDICT_CLASS = { cut: "alert", raise: "buy", pull: "sell", hold: "" };
+
+async function viewOrders() {
+  const [health, book, risk] = await Promise.all([
+    api("/api/listings"),
+    api("/api/orders?status=open"),
+    api("/api/portfolio/concentration"),
+  ]);
+
+  const buys = book.filter((o) => o.kind === "buy");
+  $("#order-kpis").innerHTML = `
+    <div class="kpi"><div class="label">Open bids</div>
+      <div class="value">${buys.length}</div>
+      <div class="sub">${money(buys.reduce((a, o) => a + (o.limit_price || 0) * o.quantity, 0))} committed</div></div>
+    <div class="kpi"><div class="label">Live listings</div>
+      <div class="value">${health.count}</div>
+      <div class="sub">${money(health.listed_value)} at ask</div></div>
+    <div class="kpi"><div class="label">Need a decision</div>
+      <div class="value ${health.needs_action.length ? "down" : ""}">${health.needs_action.length}</div>
+      <div class="sub">${health.stale_count} stale</div></div>
+    <div class="kpi"><div class="label">Free capital</div>
+      <div class="value">${risk.free_capital == null ? "-" : money(risk.free_capital)}</div>
+      <div class="sub">${risk.bankroll ? `of ${money(risk.bankroll)}` : "set capital.bankroll"}</div></div>`;
+
+  $("#listings-table").innerHTML = table(
+    [
+      { label: "Card", render: cardCell },
+      { label: "Qty", num: true, render: (r) => r.quantity },
+      { label: "Ask", num: true, render: (r) => money(r.limit_price) },
+      { label: "Market", num: true, render: (r) => money(r.market_price) },
+      { label: "vs mkt", num: true,
+        render: (r) => `<span class="${signClass(-(r.ask_vs_market ?? 0))}">${pct(r.ask_vs_market, 0)}</span>` },
+      { label: "Days", num: true, render: (r) => r.days_on_market ?? "-" },
+      { label: "At price", num: true, render: (r) => r.days_at_price ?? "-" },
+      { label: "Verdict", render: (r) =>
+          `<span class="pill ${VERDICT_CLASS[r.verdict] || ""}">${esc(r.verdict)}</span>` },
+      { label: "Suggest", num: true, render: (r) => money(r.suggested_price) },
+      { label: "Why", cls: "reason",
+        render: (r) => `<span class="meta">${esc(r.reason || "")}</span>` },
+      { label: "", render: (r) => r.suggested_price
+          ? `<button class="btn tiny" data-reprice="${r.id}"
+               data-price="${r.suggested_price}">Apply</button>` : "" },
+    ],
+    health.listings,
+    "Nothing listed. Record a listing below, or take a sell recommendation from Today."
+  );
+
+  const rows = await api(`/api/orders?status=${$("#orders-all").checked ? "" : "open"}`);
+  $("#orders-table").innerHTML = table(
+    [
+      { label: "#", num: true, render: (r) => r.id },
+      { label: "Kind", render: (r) => `<span class="pill ${r.kind}">${esc(r.kind)}</span>` },
+      { label: "Status", render: (r) => esc(r.status) },
+      { label: "Card", render: cardCell },
+      { label: "Qty", num: true, render: (r) => r.quantity },
+      { label: "Price", num: true, render: (r) => money(r.limit_price) },
+      { label: "Cond", render: (r) => esc(r.condition) },
+      { label: "Signal", render: (r) => `<span class="meta">${esc(r.signal_action || "")}</span>` },
+      { label: "", render: (r) => r.status !== "open" ? "" :
+          `<button class="btn tiny" data-fill="${r.id}" data-qty="${r.quantity}"
+             data-price="${r.limit_price ?? ""}">Filled</button>
+           <button class="btn tiny" data-cancel-order="${r.id}">Cancel</button>` },
+    ],
+    rows,
+    "No orders yet."
+  );
+
+  $("#risk-panel").innerHTML = `
+    ${risk.warnings.length
+      ? `<ul class="notes">${risk.warnings.map((w) =>
+          `<li class="down">${esc(w.message)}</li>`).join("")}</ul>`
+      : `<div class="empty">No concentration limits exceeded.</div>`}
+    <div class="split" style="margin-top:12px">
+      <div>${table(
+        [
+          { label: "Position", render: (r) => `${esc(r.card_name)} <span class="meta">${esc(r.condition)}</span>` },
+          { label: "Cost", num: true, render: (r) => money(r.cost) },
+          { label: "Share", num: true, render: (r) => `${(r.share * 100).toFixed(1)}%` },
+        ],
+        risk.top_positions
+      )}</div>
+      <div>${table(
+        [
+          { label: "Set", render: (r) => esc(r.set_name) },
+          { label: "Cost", num: true, render: (r) => money(r.cost) },
+          { label: "Share", num: true, render: (r) => `${(r.share * 100).toFixed(1)}%` },
+        ],
+        risk.by_set
+      )}</div>
+    </div>`;
+}
+
+// --- grading ------------------------------------------------------------
+
+function renderGrading(v) {
+  const cls = { grade: "up", marginal: "", sell_raw: "down" }[v.verdict] || "";
+  return `
+    <div class="kpis" style="margin-top:12px">
+      <div class="kpi"><div class="label">Raw price</div>
+        <div class="value">${money(v.raw_price)}</div>
+        <div class="sub">${money(v.raw_net)} net if sold raw</div></div>
+      <div class="kpi"><div class="label">Expected net</div>
+        <div class="value">${money(v.expected_net)}</div>
+        <div class="sub">after ${money(v.grading_cost)} of fees</div></div>
+      <div class="kpi"><div class="label">Expected gain</div>
+        <div class="value ${signClass(v.expected_profit)}">${money(v.expected_profit)}</div>
+        <div class="sub">${v.expected_roi == null ? "" : pct(v.expected_roi, 0)} over selling raw</div></div>
+      <div class="kpi"><div class="label">Verdict</div>
+        <div class="value ${cls}">${esc(v.verdict.replace(/_/g, " ").toUpperCase())}</div>
+        <div class="sub">${v.turnaround_days}d tied up &middot; basis: ${esc(v.basis)}</div></div>
+    </div>
+    <div style="margin-top:12px">${table(
+      [
+        { label: "Grade", render: (r) => esc(r.grade) },
+        { label: "Odds", num: true, render: (r) => `${(r.probability * 100).toFixed(0)}%` },
+        { label: "Price", num: true, render: (r) => money(r.price) },
+        { label: "Net", num: true, render: (r) => money(r.net_proceeds) },
+        { label: "Source", render: (r) => `<span class="pill ${r.source === "comp" ? "buy" : ""}">${esc(r.source)}</span>` },
+      ],
+      v.outcomes
+    )}</div>
+    <ul class="notes">${(v.reasons || []).map((r) => `<li>${esc(r)}</li>`).join("")}</ul>`;
+}
+
+async function viewGrading() { /* form-driven */ }
+
+// --- scorecard ----------------------------------------------------------
+
+const VERDICT_TONE = {
+  reliable: "up", positive: "up", mixed: "", unreliable: "down",
+  insufficient_data: "muted",
+};
+
+function renderScorecard(report) {
+  $("#scorecard-table").innerHTML = table(
+    [
+      { label: "Kind", render: (r) => `<span class="pill ${r.kind}">${esc(r.kind)}</span>` },
+      { label: "Reason", render: (r) => `<span class="name">${esc(r.action)}</span>` },
+      { label: "Horizon", num: true, render: (r) => `${r.horizon_days}d` },
+      { label: "Signals", num: true, render: (r) => r.signals },
+      { label: "Graded", num: true, render: (r) => r.resolved },
+      { label: "Win rate", num: true,
+        render: (r) => r.win_rate == null ? "-" : `${(r.win_rate * 100).toFixed(0)}%` },
+      { label: "Median ROI", num: true,
+        render: (r) => `<span class="${signClass(r.median_roi)}">${pct(r.median_roi)}</span>` },
+      { label: "Median move", num: true, render: (r) => pct(r.median_return) },
+      { label: "Avg drawdown", num: true, render: (r) => pct(r.avg_max_adverse) },
+      { label: "Verdict", render: (r) =>
+          `<span class="${VERDICT_TONE[r.verdict] ?? ""}">${esc(r.verdict.replace(/_/g, " "))}</span>` },
+    ],
+    report.stats || [],
+    "No scorecard yet — replay history to build one."
+  );
+  $("#scorecard-notes").innerHTML =
+    (report.notes || []).map((n) => `<li>${esc(n)}</li>`).join("");
+}
+
+async function viewScorecard() {
+  try {
+    renderScorecard(await api("/api/backtest"));
+  } catch (err) {
+    $("#scorecard-table").innerHTML =
+      `<div class="empty">No backtest stored yet. Hit "Replay history".</div>`;
+    $("#scorecard-notes").innerHTML = "";
+  }
+}
+
 async function viewAlerts() {
   const rows = await api("/api/alerts?limit=60");
   $("#alerts-table").innerHTML = table(
@@ -609,8 +778,11 @@ const VIEWS = {
   today: viewToday,
   portfolio: viewPortfolio,
   watchlist: viewWatchlist,
+  orders: viewOrders,
   cards: viewCards,
   bulk: viewBulk,
+  grading: viewGrading,
+  scorecard: viewScorecard,
   alerts: viewAlerts,
 };
 
@@ -872,6 +1044,166 @@ $("#load-plan").addEventListener("click", async () => {
       </div>`;
   } catch (err) {
     $("#plan-result").innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+  }
+});
+
+// --- orders, grading, scorecard events ---------------------------------
+
+document.addEventListener("click", async (e) => {
+  const fill = e.target.closest("[data-fill]");
+  if (fill) {
+    const max = fill.dataset.qty;
+    const qty = prompt(`How many filled? (1-${max})`, max);
+    if (!qty) return;
+    const price = prompt("Actual price per card", fill.dataset.price || "");
+    if (!price) return;
+    try {
+      const result = await api(`/api/orders/${fill.dataset.fill}/fill`, {
+        method: "POST",
+        body: JSON.stringify({ quantity: Number(qty), price: Number(price) }),
+      });
+      toast(result.kind === "buy"
+        ? `Bought ${result.quantity} — holding created`
+        : `Realised ${money(result.realized_pnl)} (${pct(result.roi, 0)})`);
+      viewOrders();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
+
+  const cancel = e.target.closest("[data-cancel-order]");
+  if (cancel) {
+    try {
+      await api(`/api/orders/${cancel.dataset.cancelOrder}`, { method: "DELETE" });
+      toast("Order cancelled");
+      viewOrders();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
+
+  const rep = e.target.closest("[data-reprice]");
+  if (rep) {
+    const price = prompt("New asking price", rep.dataset.price);
+    if (!price) return;
+    try {
+      await api(`/api/orders/${rep.dataset.reprice}/reprice`, {
+        method: "POST",
+        body: JSON.stringify({ price: Number(price), reason: "manual" }),
+      });
+      toast("Re-priced");
+      viewOrders();
+    } catch (err) { toast(err.message, true); }
+  }
+});
+
+$("#orders-all").addEventListener("change", () => viewOrders());
+
+$("#apply-cuts").addEventListener("click", async () => {
+  if (!confirm("Re-price every listing flagged for a cut?")) return;
+  try {
+    const result = await api("/api/listings/apply-suggestions?verdicts=cut",
+                             { method: "POST" });
+    toast(`Re-priced ${result.applied.length} listing(s)`);
+    viewOrders();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#order-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  try {
+    await api("/api/orders", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: form.get("kind"),
+        card_id: form.get("card_id").trim(),
+        variant: form.get("variant").trim() || "normal",
+        condition: form.get("condition").trim() || "NM",
+        quantity: Number(form.get("quantity")),
+        limit_price: Number(form.get("limit_price")),
+      }),
+    });
+    toast("Order recorded");
+    e.target.reset();
+    viewOrders();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#grading-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  $("#grading-result").innerHTML = `<div class="empty"><span class="spin"></span> Evaluating…</div>`;
+  try {
+    const params = new URLSearchParams({
+      variant: form.get("variant").trim() || "normal",
+      condition: form.get("condition").trim() || "NM",
+    });
+    const verdict = await api(
+      `/api/grading/${encodeURIComponent(form.get("card_id").trim())}?${params}`);
+    $("#grading-result").innerHTML = renderGrading(verdict);
+  } catch (err) {
+    $("#grading-result").innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+  }
+});
+
+$("#comp-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  try {
+    await api("/api/grading/comps", {
+      method: "POST",
+      body: JSON.stringify({
+        card_id: form.get("card_id").trim(),
+        grade: form.get("grade").trim(),
+        price: Number(form.get("price")),
+        variant: form.get("variant").trim() || "normal",
+        service: form.get("service").trim() || "PSA",
+      }),
+    });
+    toast("Comp recorded — it will replace the guessed multiplier");
+    e.target.reset();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#scan-grading").addEventListener("click", async () => {
+  const panel = $("#grading-scan-panel");
+  panel.classList.remove("hidden");
+  $("#grading-scan").innerHTML = `<div class="empty"><span class="spin"></span> Scanning…</div>`;
+  try {
+    const scan = await api("/api/grading/scan");
+    $("#grading-scan").innerHTML = table(
+      [
+        { label: "Card", render: cardCell },
+        { label: "Raw", num: true, render: (r) => money(r.raw_price) },
+        { label: "Exp. net", num: true, render: (r) => money(r.expected_net) },
+        { label: "Gain", num: true,
+          render: (r) => `<span class="${signClass(r.expected_profit)}">${money(r.expected_profit)}</span>` },
+        { label: "Verdict", render: (r) =>
+            `<span class="pill ${r.verdict === "grade" ? "buy" : r.verdict === "sell_raw" ? "sell" : "alert"}">${
+              esc(r.verdict.replace(/_/g, " "))}</span>` },
+        { label: "Basis", render: (r) => `<span class="meta">${esc(r.basis)}</span>` },
+      ],
+      scan.candidates,
+      "Nothing you hold clears the grading price floor."
+    ) + `<ul class="notes"><li>${esc(scan.note)}</li>
+         <li>${scan.recommended.length} worth submitting: ${money(scan.submission_cost)}
+         in fees for ${money(scan.total_expected_profit)} of expected upside.</li></ul>`;
+  } catch (err) {
+    $("#grading-scan").innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+  }
+});
+
+$("#run-backtest").addEventListener("click", async (e) => {
+  const button = e.currentTarget;
+  button.disabled = true;
+  button.innerHTML = `<span class="spin"></span> Replaying`;
+  try {
+    renderScorecard(await api("/api/backtest/run", { method: "POST" }));
+    toast("Scorecard rebuilt");
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Replay history";
   }
 });
 

@@ -176,6 +176,12 @@ td.reason .meta { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
 .pill.bulk { background: rgba(42, 120, 214, 0.13); color: var(--accent); }
 .pill.rising { background: rgba(10, 125, 63, 0.13); color: var(--good); }
 .pill.falling { background: rgba(180, 35, 42, 0.13); color: var(--bad); }
+.pill.listing { background: rgba(42, 120, 214, 0.13); color: var(--accent); }
+.pill.grade { background: rgba(74, 58, 167, 0.15); color: #5b4bc4; }
+.pill.risk { background: rgba(180, 35, 42, 0.13); color: var(--bad); }
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .pill.grade { color: #9085e9; }
+}
 
 .score { display: inline-block; min-width: 30px; text-align: center;
          font-weight: 650; font-variant-numeric: tabular-nums; }

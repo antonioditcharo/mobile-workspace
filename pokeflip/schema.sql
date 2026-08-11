@@ -165,3 +165,72 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- An order is one intent to trade. A buy order becomes a holding when it
+-- fills; an open sell order is a live listing, which is why days on market and
+-- price-cut history live here rather than in a separate table.
+CREATE TABLE IF NOT EXISTS orders (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind           TEXT NOT NULL,                     -- buy | sell
+    status         TEXT NOT NULL DEFAULT 'open',      -- open | filled | cancelled | expired
+    card_id        TEXT NOT NULL REFERENCES cards(id),
+    variant        TEXT NOT NULL DEFAULT 'normal',
+    condition      TEXT NOT NULL DEFAULT 'NM',
+    quantity       INTEGER NOT NULL DEFAULT 1,
+    limit_price    REAL,                              -- max bid, or the ask on a listing
+    original_price REAL,                              -- the first ask, before any cuts
+    marketplace    TEXT NOT NULL DEFAULT '',
+    holding_id     INTEGER REFERENCES holdings(id),   -- source lot for a listing
+    signal_action  TEXT,                              -- signal that prompted it
+    signal_score   REAL,
+    reference_price REAL,                             -- market price when created
+    filled_price   REAL,
+    filled_quantity INTEGER,
+    fees           REAL,
+    price_cuts     TEXT,                              -- JSON history of ask changes
+    notes          TEXT,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    closed_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, kind);
+CREATE INDEX IF NOT EXISTS idx_orders_card ON orders(card_id, status);
+
+-- Observed prices for graded copies. Without these, grading ROI falls back to
+-- configured multipliers, which are assumptions rather than comps.
+CREATE TABLE IF NOT EXISTS graded_comps (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id    TEXT NOT NULL REFERENCES cards(id),
+    variant    TEXT NOT NULL DEFAULT 'normal',
+    service    TEXT NOT NULL DEFAULT 'PSA',
+    grade      TEXT NOT NULL,
+    price      REAL NOT NULL,
+    source     TEXT,
+    observed_at TEXT NOT NULL,
+    UNIQUE(card_id, variant, service, grade, observed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_graded_card ON graded_comps(card_id, variant, service, grade);
+
+-- One row per signal replayed against history, with what actually happened.
+CREATE TABLE IF NOT EXISTS backtest_results (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       INTEGER REFERENCES runs(id),
+    kind         TEXT NOT NULL,
+    action       TEXT NOT NULL,
+    card_id      TEXT NOT NULL,
+    variant      TEXT NOT NULL,
+    signal_date  TEXT NOT NULL,
+    score        REAL,
+    entry_price  REAL,
+    signal_price REAL,
+    horizon_days INTEGER NOT NULL,
+    exit_price   REAL,
+    forward_return REAL,
+    net_profit   REAL,
+    roi          REAL,
+    max_favorable REAL,
+    max_adverse  REAL,
+    outcome      TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backtest_run ON backtest_results(run_id, action, horizon_days);

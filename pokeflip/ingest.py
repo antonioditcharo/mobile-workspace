@@ -13,10 +13,34 @@ from typing import Any, Iterable, Sequence
 
 from .config import Config
 from .db import Database, day, iso, utcnow
-from .providers import PriceProvider, ProviderError, build_provider
+from .providers import (
+    CardRecord, PriceProvider, ProviderError, build_catalog_provider, build_provider,
+)
 from .providers.fixture import FixtureProvider
 
 log = logging.getLogger("pokeflip.ingest")
+
+
+def catalog_lookup(db: Database):
+    """Card metadata by id, for price sources that search by name.
+
+    eBay has no card database, so it needs to be told what "sv3pt5-199" is
+    before it can look up a price for it.
+    """
+    def lookup(card_id: str) -> CardRecord | None:
+        row = db.get_card(card_id)
+        if row is None:
+            return None
+        return CardRecord(
+            id=row["id"], name=row["name"] or "", set_id=row["set_id"] or "",
+            set_name=row["set_name"] or "", number=row["number"] or "",
+            rarity=row["rarity"] or "", supertype=row["supertype"] or "",
+            subtypes=row["subtypes"] or "", artist=row["artist"] or "",
+            image_small=row["image_small"] or "", image_large=row["image_large"] or "",
+            tcgplayer_url=row["tcgplayer_url"] or "",
+            cardmarket_url=row["cardmarket_url"] or "",
+        )
+    return lookup
 
 
 def tracking_universe(db: Database, config: Config) -> list[str]:
@@ -64,24 +88,26 @@ def sync_set_cards(db: Database, config: Config, set_id: str,
                    provider: PriceProvider | None = None) -> dict[str, Any]:
     """Pull a whole set into the catalog and price it immediately."""
     owned = provider is None
-    provider = provider or build_provider(config)
+    provider = provider or build_catalog_provider(config)
     try:
         cards = provider.cards_in_set(set_id)
         db.upsert_cards(c.as_row() for c in cards)
-        result = capture_prices(db, config, [c.id for c in cards], provider=provider)
-        result["set_id"] = set_id
-        result["cards_synced"] = len(cards)
-        return result
     finally:
         if owned:
             provider.close()
+
+    # Prices come from the price source, which is not always the catalog source.
+    result = capture_prices(db, config, [c.id for c in cards])
+    result["set_id"] = set_id
+    result["cards_synced"] = len(cards)
+    return result
 
 
 def search_and_store(db: Database, config: Config, query: str, limit: int = 25,
                      provider: PriceProvider | None = None) -> list[dict[str, Any]]:
     """Search the provider, store what comes back, return catalog rows."""
     owned = provider is None
-    provider = provider or build_provider(config)
+    provider = provider or build_catalog_provider(config)
     try:
         cards = provider.search_cards(query, limit=limit)
         db.upsert_cards(c.as_row() for c in cards)
@@ -98,7 +124,7 @@ def capture_prices(db: Database, config: Config, card_ids: Sequence[str],
         return {"cards": 0, "quotes": 0, "errors": []}
 
     owned = provider is None
-    provider = provider or build_provider(config)
+    provider = provider or build_provider(config, catalog_lookup(db))
     captured_at = iso()
     captured_on = day()
     errors: list[str] = []

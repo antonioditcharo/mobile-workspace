@@ -21,9 +21,12 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from . import alerts as alerts_mod
+from . import backtest as backtest_mod
 from . import bulk as bulk_mod
 from . import digest as digest_mod
-from . import ingest, notify, portfolio, scheduler as scheduler_mod, signals
+from . import grading as grading_mod
+from . import ingest, notify, orders as orders_mod, portfolio
+from . import scheduler as scheduler_mod, signals
 from .analytics import load_metrics
 from .config import Config
 from .db import Database
@@ -621,6 +624,340 @@ def _read_items(args: argparse.Namespace) -> list[tuple[str, str, int]]:
     return items
 
 
+def cmd_order(args: argparse.Namespace, db: Database, config: Config) -> int:
+    if args.order_action == "new":
+        try:
+            order_id = orders_mod.create_order(
+                db, config, args.kind, args.card_id, args.quantity, args.price,
+                args.variant, args.condition, args.marketplace, notes=args.note,
+            )
+        except ValueError as exc:
+            print(_c(str(exc), RED))
+            return 1
+        verb = "Bidding on" if args.kind == "buy" else "Listing"
+        print(f"Order {order_id}: {verb} {args.quantity}x {args.card_id} "
+              f"at {money(args.price)}")
+        return 0
+
+    if args.order_action == "take":
+        run = signals.generate(db, config, persist=False)
+        pool = run.buys if args.kind == "buy" else run.sells
+        match = next((s for s in pool if s.card_id == args.card_id), None)
+        if match is None:
+            print(_c(f"No current {args.kind} signal for {args.card_id}. "
+                     f"Run: pokeflip scan", RED))
+            return 1
+        order_id = orders_mod.create_from_signal(db, config, match.to_dict(),
+                                                 args.quantity)
+        price = match.entry_price if args.kind == "buy" else match.price
+        print(f"Order {order_id} from {match.action}: "
+              f"{args.kind} {match.card_name} at {money(price)}")
+        print(_c(f"  {match.reasons[0] if match.reasons else ''}", DIM))
+        return 0
+
+    if args.order_action == "fill":
+        try:
+            result = orders_mod.fill_order(db, config, args.order_id, args.price,
+                                           args.quantity)
+        except ValueError as exc:
+            print(_c(str(exc), RED))
+            return 1
+
+        def render() -> None:
+            if result["kind"] == "buy":
+                print(f"Bought {result['quantity']}x {result['card_id']} at "
+                      f"{money(result['price_each'])} "
+                      f"(holding {result['holding_id']})")
+            else:
+                print(f"Sold {result['quantity']}x {result['card_id']} at "
+                      f"{money(result['price_each'])}")
+                print(f"  Net proceeds   {money(result['net_proceeds'])}")
+                print(f"  Cost basis     {money(result['cost_basis'])}")
+                print(f"  Realised P&L   {signed(result['realized_pnl'])} "
+                      f"({pct(result['roi'], 0)})")
+            if result.get("remaining_quantity"):
+                print(_c(f"  {result['remaining_quantity']} still open as order "
+                         f"{result['remaining_order_id']}", DIM))
+        emit(args, result, render)
+        return 0
+
+    if args.order_action == "cancel":
+        ok = orders_mod.cancel_order(db, args.order_id)
+        print(f"Cancelled order {args.order_id}" if ok
+              else f"No open order {args.order_id}")
+        return 0 if ok else 1
+
+    if args.order_action == "reprice":
+        try:
+            result = orders_mod.reprice(db, args.order_id, args.price, args.reason)
+        except ValueError as exc:
+            print(_c(str(exc), RED))
+            return 1
+        print(f"Order {args.order_id}: {money(result['from'])} -> "
+              f"{money(result['to'])}")
+        return 0
+
+    rows = orders_mod.list_orders(db, args.kind, None if args.all else "open")
+
+    def render() -> None:
+        heading("Orders")
+        table(
+            [[
+                o.id, o.kind, o.status, o.card_name, f"{o.set_name} {o.number}",
+                o.quantity, money(o.limit_price), o.condition,
+                (o.days_open() if o.days_open() is not None else "-"),
+                o.signal_action or "",
+            ] for o in rows],
+            ["ID", "KIND", "STATUS", "CARD", "SET", "QTY", "PRICE", "COND",
+             "DAYS", "SIGNAL"],
+            ["r", "l", "l", "l", "l", "r", "r", "l", "r", "l"],
+        )
+        book = orders_mod.summary(db, config)
+        print()
+        print(f"  {book['open_buys']} open buys ({money(book['open_buy_value'])}), "
+              f"{book['open_listings']} listings ({money(book['listed_value'])})")
+    emit(args, [o.to_dict() for o in rows], render)
+    return 0
+
+
+def cmd_listings(args: argparse.Namespace, db: Database, config: Config) -> int:
+    if args.apply:
+        applied = orders_mod.apply_suggestions(db, config, tuple(args.verdicts))
+        emit(args, applied, lambda: (
+            print(f"Re-priced {len(applied)} listing(s)"),
+            *[print(f"  order {a['order_id']}: {money(a['from'])} -> {money(a['to'])}")
+              for a in applied],
+        ))
+        return 0
+
+    health = orders_mod.listing_health(db, config)
+
+    def render() -> None:
+        heading("Live listings")
+        colors = {"cut": YELLOW, "raise": GREEN, "pull": RED, "hold": ""}
+        table(
+            [[
+                l["id"], l["card_name"], f"{l['set_name']} {l['number']}",
+                l["quantity"], money(l["limit_price"]), money(l["market_price"]),
+                pct(l["ask_vs_market"], 0), l["days_on_market"],
+                _c(l["verdict"].upper(), colors.get(l["verdict"], "")),
+                money(l["suggested_price"]),
+            ] for l in health["listings"]],
+            ["ID", "CARD", "SET", "QTY", "ASK", "MARKET", "VS MKT", "DAYS",
+             "VERDICT", "SUGGEST"],
+            ["r", "l", "l", "r", "r", "r", "r", "r", "l", "r"],
+        )
+        print()
+        print(f"  {health['count']} listed, {money(health['listed_value'])} at ask, "
+              f"{health['stale_count']} stale, "
+              f"{len(health['needs_action'])} need a decision")
+        for entry in health["needs_action"]:
+            print(_c(f"  - {entry['card_name']}: {entry['reason']}", DIM))
+    emit(args, health, render)
+    return 0
+
+
+def cmd_sell(args: argparse.Namespace, db: Database, config: Config) -> int:
+    try:
+        result = portfolio.sell_position(
+            db, config, args.card_id, args.quantity, args.price,
+            args.variant, args.condition, args.method,
+        )
+    except ValueError as exc:
+        print(_c(str(exc), RED))
+        return 1
+
+    def render() -> None:
+        print(f"Sold {result['quantity']}x {result['card_id']} at "
+              f"{money(result['price_each'])} using {result['method']} "
+              f"across {result['lots_used']} lot(s)")
+        print(f"  Cost basis     {money(result['cost_basis'])}")
+        print(f"  Net proceeds   {money(result['net_proceeds'])}")
+        print(f"  Realised P&L   {signed(result['realized_pnl'])}")
+    emit(args, result, render)
+    return 0
+
+
+def cmd_grade(args: argparse.Namespace, db: Database, config: Config) -> int:
+    if args.grade_action == "comp":
+        try:
+            grading_mod.record_comp(db, args.card_id, args.grade, args.price,
+                                    args.variant, args.service)
+        except ValueError as exc:
+            print(_c(str(exc), RED))
+            return 1
+        print(f"Recorded {args.service} {args.grade} at {money(args.price)} "
+              f"for {args.card_id}")
+        return 0
+
+    if args.grade_action == "card":
+        verdict = grading_mod.evaluate(db, config, args.card_id, args.variant,
+                                       args.condition)
+
+        def render() -> None:
+            heading(f"Grade {verdict.card_name}? ({verdict.set_name})")
+            colors = {"grade": GREEN, "marginal": YELLOW, "sell_raw": RED}
+            print(f"  Raw price        {money(verdict.raw_price)}")
+            print(f"  Net if sold raw  {money(verdict.raw_net)}")
+            print(f"  Grading cost     {money(verdict.grading_cost)} each")
+            print(f"  Expected net     {money(verdict.expected_net)}")
+            print(f"  Expected gain    {signed(verdict.expected_profit)}"
+                  + (f"  ({pct(verdict.expected_roi, 0)})"
+                     if verdict.expected_roi is not None else ""))
+            print(f"  Capital tied up  {verdict.turnaround_days} days")
+            print(f"  Verdict          "
+                  f"{_c(verdict.verdict.replace('_', ' ').upper(), colors.get(verdict.verdict, ''))}"
+                  f"  {_c(f'(basis: {verdict.basis})', DIM)}")
+            heading("Outcome by grade")
+            table(
+                [[o.grade, plain_pct(o.probability), money(o.price),
+                  money(o.net_proceeds), o.source] for o in verdict.outcomes],
+                ["GRADE", "ODDS", "PRICE", "NET", "SOURCE"],
+                ["l", "r", "r", "r", "l"],
+            )
+            print()
+            for reason in verdict.reasons:
+                print(_c(f"  - {reason}", DIM))
+        emit(args, verdict.to_dict(), render)
+        return 0
+
+    scan = grading_mod.scan_portfolio(db, config, limit=args.limit)
+
+    def render() -> None:
+        heading(f"Grading candidates ({scan['service']})")
+        colors = {"grade": GREEN, "marginal": YELLOW, "sell_raw": RED}
+        table(
+            [[
+                c["card_name"], c["set_name"], money(c["raw_price"]),
+                money(c["expected_net"]), signed(c["expected_profit"]),
+                _c(c["verdict"].replace("_", " ").upper(),
+                   colors.get(c["verdict"], "")),
+                c["basis"],
+            ] for c in scan["candidates"]],
+            ["CARD", "SET", "RAW", "EXP NET", "GAIN", "VERDICT", "BASIS"],
+            ["l", "l", "r", "r", "r", "l", "l"],
+        )
+        print()
+        print(f"  {len(scan['recommended'])} worth submitting, "
+              f"{money(scan['submission_cost'])} in fees for "
+              f"{money(scan['total_expected_profit'])} of expected upside")
+        print(_c(f"  {scan['note']}", DIM))
+    emit(args, scan, render)
+    return 0
+
+
+def cmd_backtest(args: argparse.Namespace, db: Database, config: Config) -> int:
+    if args.stored:
+        report = backtest_mod.latest(db)
+        if report is None:
+            print("No stored backtest. Run: pokeflip backtest")
+            return 1
+        stats = report["stats"]
+        generated = report["generated_at"]
+        notes: list[str] = []
+    else:
+        result = backtest_mod.run(db, config, lookback_days=args.days,
+                                  horizons=args.horizon or None)
+        stats = [s.to_dict() for s in result.stats]
+        generated = result.generated_at
+        notes = result.notes
+        report = result.to_dict()
+
+    def render() -> None:
+        heading("Signal scorecard")
+        colors = {"reliable": GREEN, "positive": GREEN, "mixed": YELLOW,
+                  "unreliable": RED, "insufficient_data": DIM}
+        shown = [s for s in stats
+                 if args.horizon is None or s["horizon_days"] in args.horizon]
+        table(
+            [[
+                s["kind"], s["action"], f"{s['horizon_days']}d", s["signals"],
+                s["resolved"], plain_pct(s["win_rate"]),
+                pct(s["median_roi"], 1), pct(s["median_return"], 1),
+                pct(s["avg_max_adverse"], 1),
+                _c(s["verdict"].replace("_", " "), colors.get(s["verdict"], "")),
+            ] for s in shown],
+            ["KIND", "REASON", "HORIZON", "N", "GRADED", "WIN RATE", "MED ROI",
+             "MED MOVE", "AVG DRAWDOWN", "VERDICT"],
+            ["l", "l", "r", "r", "r", "r", "r", "r", "r", "l"],
+        )
+        print()
+        print(_c(f"  Generated {generated}", DIM))
+        for note in notes:
+            print(_c(f"  - {note}", DIM))
+    emit(args, report, render)
+    return 0
+
+
+def cmd_risk(args: argparse.Namespace, db: Database, config: Config) -> int:
+    data = portfolio.concentration(db, config)
+
+    def render() -> None:
+        heading("Capital allocation")
+        print(f"  Cost basis          {money(data['total_cost'])}")
+        print(f"  Open buy orders     {money(data['open_buy_commitments'])}")
+        if data["bankroll"]:
+            print(f"  Bankroll            {money(data['bankroll'])}")
+            print(f"  Free capital        {money(data['free_capital'])}")
+        else:
+            print(_c("  Set capital.bankroll to track free capital", DIM))
+        heading("Largest positions")
+        table(
+            [[p["card_name"], p["set_name"], p["condition"], money(p["cost"]),
+              plain_pct(p["share"], 1)] for p in data["top_positions"]],
+            ["CARD", "SET", "COND", "COST", "SHARE"],
+            ["l", "l", "l", "r", "r"],
+        )
+        heading("By set")
+        table(
+            [[s["set_name"], money(s["cost"]), plain_pct(s["share"], 1)]
+             for s in data["by_set"]],
+            ["SET", "COST", "SHARE"], ["l", "r", "r"],
+        )
+        print()
+        if data["warnings"]:
+            for warning in data["warnings"]:
+                print(_c(f"  ! {warning['message']}", YELLOW))
+        else:
+            print(_c("  No concentration limits exceeded.", DIM))
+    emit(args, data, render)
+    return 0
+
+
+def cmd_export(args: argparse.Namespace, db: Database, config: Config) -> int:
+    report = portfolio.tax_report(db, args.year)
+    if not report["lines"]:
+        print("No completed sales to export"
+              + (f" for {args.year}" if args.year else ""))
+        return 1
+
+    columns = ["card_id", "card_name", "set_name", "variant", "condition",
+               "quantity", "acquired", "sold", "held_days", "term",
+               "cost_basis", "gross_proceeds", "fees", "net_proceeds", "gain"]
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows({k: line[k] for k in columns}
+                             for line in report["lines"])
+        print(f"Wrote {len(report['lines'])} rows to {path}")
+    else:
+        writer = csv.DictWriter(sys.stdout, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows({k: line[k] for k in columns} for line in report["lines"])
+
+    totals = report["totals"]
+    print(_c(
+        f"\n{totals['sales']} sales, {money(totals['cost_basis'])} basis, "
+        f"{money(totals['net_proceeds'])} net, gain {money(totals['gain'])} "
+        f"(short {money(totals['short_term_gain'])}, "
+        f"long {money(totals['long_term_gain'])})", DIM), file=sys.stderr)
+    print(_c(report["note"], DIM), file=sys.stderr)
+    return 0
+
+
 def cmd_runs(args: argparse.Namespace, db: Database, config: Config) -> int:
     rows = [dict(r) for r in db.recent_runs(args.limit)]
 
@@ -817,6 +1154,87 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("set_id")
     c.add_argument("--top", type=int, default=10)
     p.set_defaults(func=cmd_bulk)
+
+    p = cmd(sub, "order", help="open buy orders and live listings")
+    order = p.add_subparsers(dest="order_action", required=True)
+    a = cmd(order, "new", help="record a bid or a listing")
+    a.add_argument("kind", choices=["buy", "sell"])
+    a.add_argument("card_id")
+    a.add_argument("--quantity", type=int, default=1)
+    a.add_argument("--price", type=float, required=True,
+                   help="your max bid, or your asking price")
+    a.add_argument("--variant", default="normal")
+    a.add_argument("--condition", default="NM")
+    a.add_argument("--marketplace")
+    a.add_argument("--note", default="")
+    b = cmd(order, "take", help="turn today's recommendation into an order")
+    b.add_argument("card_id")
+    b.add_argument("--kind", choices=["buy", "sell"], default="buy")
+    b.add_argument("--quantity", type=int)
+    c = cmd(order, "fill", help="it went through - update the portfolio")
+    c.add_argument("order_id", type=int)
+    c.add_argument("--price", type=float, help="actual price; defaults to the order's")
+    c.add_argument("--quantity", type=int, help="partial fills are fine")
+    d = cmd(order, "reprice", help="change a listing's ask")
+    d.add_argument("order_id", type=int)
+    d.add_argument("--price", type=float, required=True)
+    d.add_argument("--reason", default="")
+    e = cmd(order, "cancel")
+    e.add_argument("order_id", type=int)
+    f = cmd(order, "list")
+    f.add_argument("--kind", choices=["buy", "sell"])
+    f.add_argument("--all", action="store_true", help="include closed orders")
+    p.set_defaults(func=cmd_order, kind=None, all=False)
+
+    p = cmd(sub, "listings", help="how your live listings are doing")
+    p.add_argument("--apply", action="store_true",
+                   help="actually re-price the ones flagged for a cut")
+    p.add_argument("--verdicts", nargs="+", default=["cut"],
+                   choices=["cut", "raise", "pull"],
+                   help="which verdicts --apply should act on")
+    p.set_defaults(func=cmd_listings)
+
+    p = cmd(sub, "sell", help="sell from a position, picking lots automatically")
+    p.add_argument("card_id")
+    p.add_argument("--quantity", type=int, default=1)
+    p.add_argument("--price", type=float, required=True, help="sale price per card")
+    p.add_argument("--variant", default="normal")
+    p.add_argument("--condition")
+    p.add_argument("--method", choices=list(portfolio.LOT_SELECTION),
+                   help="which lot to sell first")
+    p.set_defaults(func=cmd_sell)
+
+    p = cmd(sub, "grade", help="is it worth sending cards away to be graded")
+    grade = p.add_subparsers(dest="grade_action", required=True)
+    a = cmd(grade, "card", help="evaluate one card")
+    a.add_argument("card_id")
+    a.add_argument("--variant", default="normal")
+    a.add_argument("--condition", default="NM")
+    b = cmd(grade, "scan", help="check everything you hold")
+    b.add_argument("--limit", type=int, default=25)
+    c = cmd(grade, "comp", help="record an observed graded sale price")
+    c.add_argument("card_id")
+    c.add_argument("grade")
+    c.add_argument("--price", type=float, required=True)
+    c.add_argument("--variant", default="normal")
+    c.add_argument("--service", default="PSA")
+    p.set_defaults(func=cmd_grade, limit=25)
+
+    p = cmd(sub, "backtest", help="grade the signal rules against history")
+    p.add_argument("--days", type=int, help="how far back to replay")
+    p.add_argument("--horizon", type=int, action="append",
+                   help="forward window in days (repeatable)")
+    p.add_argument("--stored", action="store_true",
+                   help="show the last result instead of re-running")
+    p.set_defaults(func=cmd_backtest)
+
+    p = cmd(sub, "risk", help="capital allocation and concentration")
+    p.set_defaults(func=cmd_risk)
+
+    p = cmd(sub, "export", help="tax-ready CSV of completed sales")
+    p.add_argument("--year", type=int)
+    p.add_argument("--output", help="write here instead of stdout")
+    p.set_defaults(func=cmd_export)
 
     p = cmd(sub, "runs", help="recent job history")
     p.add_argument("--limit", type=int, default=20)

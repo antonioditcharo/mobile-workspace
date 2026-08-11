@@ -24,6 +24,8 @@ class PricePoint:
     mid: float | None = None
     high: float | None = None
     direct_low: float | None = None
+    sales_count: int | None = None
+    listing_count: int | None = None
 
 
 @dataclass
@@ -67,6 +69,14 @@ class TrendMetrics:
     trend_slope: float | None = None    # fitted %/day over 30d
     spread_pct: float | None = None     # (market - low) / market
     direction: str = "unknown"          # rising | falling | flat | unknown
+
+    # Only sources with real transaction data fill these in. ``None`` means the
+    # source does not report it, which is not the same as "nothing sold".
+    sales_per_week: float | None = None
+    listing_count: int | None = None
+    liquidity: float | None = None      # 0-1, higher is easier to sell
+    liquidity_basis: str = "none"       # observed | inferred | none
+
     history: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self, include_history: bool = False) -> dict[str, Any]:
@@ -102,10 +112,29 @@ def rows_to_points(rows: Iterable[Any]) -> list[PricePoint]:
                 mid=_pos(row["mid"]),
                 high=_pos(row["high"]),
                 direct_low=_pos(row["direct_low"]),
+                sales_count=_int(_get(row, "sales_count")),
+                listing_count=_int(_get(row, "listing_count")),
             )
         )
     points.sort(key=lambda p: p.on)
     return points
+
+
+def _get(row: Any, key: str) -> Any:
+    """Read a column that older databases may not have."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _pos(value: Any) -> float | None:
@@ -262,6 +291,7 @@ def compute_metrics(
         metrics.spread_pct = (latest.market - latest.low) / latest.market
 
     metrics.direction = classify_direction(metrics)
+    _apply_liquidity(metrics, points)
 
     if include_history:
         metrics.history = [
@@ -274,6 +304,54 @@ def compute_metrics(
             for p in points
         ]
     return metrics
+
+
+# Weekly sales that count as fully liquid. Above this, more volume does not
+# make a card meaningfully easier to move.
+LIQUID_SALES_PER_WEEK = 12.0
+# ``sales_count`` is a *trailing window total*, not sales since the last
+# snapshot. Providers normalise to this window so consecutive days can be
+# compared and never summed - summing rolling totals would count the same sale
+# thirty times.
+SALES_WINDOW_DAYS = 30
+
+
+def _apply_liquidity(metrics: TrendMetrics, points: Sequence[PricePoint]) -> None:
+    """Score how easy the card is to actually sell.
+
+    Two regimes. If the source reports real sales counts, liquidity is
+    *observed* and comes straight from the sale rate. If it does not - which is
+    the case for marketplace-aggregate sources - liquidity is *inferred* from
+    price stability and a tight bid/ask spread, and is a much weaker claim. The
+    basis is reported alongside the number so nobody mistakes one for the other.
+    """
+    recent = window(points, 30)
+    observed = [p for p in recent if p.sales_count is not None]
+
+    if observed:
+        # Latest reading only: each is already a trailing-window total.
+        latest_count = observed[-1].sales_count or 0
+        metrics.sales_per_week = round(latest_count / SALES_WINDOW_DAYS * 7, 2)
+        metrics.liquidity = round(
+            min(1.0, metrics.sales_per_week / LIQUID_SALES_PER_WEEK), 3)
+        metrics.liquidity_basis = "observed"
+    else:
+        # No transaction data: a card whose price barely moves and whose
+        # cheapest listing sits close to market is probably trading.
+        stability = None
+        if metrics.dispersion is not None:
+            stability = max(0.0, 1 - metrics.dispersion / 0.35)
+        tightness = None
+        if metrics.spread_pct is not None:
+            tightness = max(0.0, 1 - metrics.spread_pct / 0.40)
+        parts = [v for v in (stability, tightness) if v is not None]
+        if parts:
+            metrics.liquidity = round(sum(parts) / len(parts), 3)
+            metrics.liquidity_basis = "inferred"
+
+    listings = [p.listing_count for p in recent if p.listing_count is not None]
+    if listings:
+        metrics.listing_count = listings[-1]
 
 
 def classify_direction(metrics: TrendMetrics) -> str:
@@ -305,11 +383,18 @@ def load_metrics(
     days: int = 180,
     include_history: bool = False,
     today: date | None = None,
+    as_of: date | None = None,
 ) -> TrendMetrics:
-    rows = db.price_series(card_id, variant, source, days=days)
+    """Metrics for one printing.
+
+    ``as_of`` restricts the series to what was knowable on that date, so a
+    replay cannot see prices that had not happened yet.
+    """
+    rows = db.price_series(card_id, variant, source, days=days,
+                           as_of=as_of.isoformat() if as_of else None)
     currency = rows[-1]["currency"] if rows else "USD"
     return compute_metrics(card_id, variant, source, rows, currency=currency,
-                           today=today, include_history=include_history)
+                           today=today or as_of, include_history=include_history)
 
 
 def load_many(

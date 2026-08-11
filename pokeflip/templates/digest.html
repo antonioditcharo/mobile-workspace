@@ -44,6 +44,9 @@
   .tag.sell { background: #fdecec; color: #b4232a; }
   .tag.alert { background: #fff3d9; color: #8a5b00; }
   .tag.bulk { background: #ecefff; color: #3a44a8; }
+  .tag.listing { background: #e6f0fb; color: #1c5ba8; }
+  .tag.grade { background: #efeaff; color: #4a3aa7; }
+  .tag.risk { background: #fdecec; color: #b4232a; }
   .why { color: #6b7280; font-size: 12.5px; }
   .alert-row { padding: 8px 0; border-bottom: 1px solid #eef0f3; }
   .alert-row:last-child { border-bottom: none; }
@@ -63,6 +66,9 @@
     .tag.sell { background: #3a1b1d; color: #f08a8f; }
     .tag.alert { background: #392c10; color: #e5bb60; }
     .tag.bulk { background: #1e2350; color: #97a2ee; }
+    .tag.listing { background: #10263d; color: #6fa8e6; }
+    .tag.grade { background: #241d47; color: #9085e9; }
+    .tag.risk { background: #3a1b1d; color: #f08a8f; }
     .up { color: #64d394; } .down { color: #f08a8f; }
   }
 </style>
@@ -159,6 +165,74 @@
       </tr>
       {% endfor %}
     </table>
+  </section>
+  {% endif %}
+
+  {% if d.listings and d.listings.count %}
+  <section>
+    <h2>Listings</h2>
+    <div class="kpis" style="margin-bottom:12px">
+      <div class="kpi"><div class="label">Live</div>
+        <div class="value">{{ d.listings.count }}</div></div>
+      <div class="kpi"><div class="label">At ask</div>
+        <div class="value">{{ d.listings.listed_value | money }}</div></div>
+      <div class="kpi"><div class="label">Stale</div>
+        <div class="value">{{ d.listings.stale_count }}</div></div>
+      <div class="kpi"><div class="label">Need a decision</div>
+        <div class="value">{{ d.listings.needs_action | length }}</div></div>
+    </div>
+    {% if d.listings.needs_action %}
+    <table>
+      <tr><th>Card</th><th class="num">Ask</th><th class="num">Market</th>
+          <th class="num">Days</th><th>Do</th></tr>
+      {% for l in d.listings.needs_action %}
+      <tr>
+        <td><strong>{{ l.card_name }}</strong><br>
+            <span class="why">{{ l.set_name }} {{ l.number }} &middot; {{ l.reason }}</span></td>
+        <td class="num">{{ l.limit_price | money }}</td>
+        <td class="num">{{ l.market_price | money }}</td>
+        <td class="num">{{ l.days_on_market }}</td>
+        <td><span class="tag {{ 'sell' if l.verdict == 'pull' else 'alert' }}">{{ l.verdict }}</span>
+            {% if l.suggested_price %}{{ l.suggested_price | money }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if d.grading and d.grading.recommended %}
+  <section>
+    <h2>Grading</h2>
+    <table>
+      <tr><th>Card</th><th class="num">Raw</th><th class="num">Expected net</th>
+          <th class="num">Gain</th><th>Basis</th></tr>
+      {% for g in d.grading.recommended %}
+      <tr>
+        <td><strong>{{ g.card_name }}</strong><br>
+            <span class="why">{{ g.set_name }}</span></td>
+        <td class="num">{{ g.raw_price | money }}</td>
+        <td class="num">{{ g.expected_net | money }}</td>
+        <td class="num up">{{ g.expected_profit | money }}</td>
+        <td><span class="why">{{ g.basis }}</span></td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="why" style="margin-bottom:0">
+      {{ d.grading.submission_cost | money }} in fees for
+      {{ d.grading.total_expected_profit | money }} of expected upside. Expected
+      values use assumed grade odds &mdash; replace them with your own results.
+    </p>
+  </section>
+  {% endif %}
+
+  {% if d.concentration and d.concentration.warnings %}
+  <section>
+    <h2>Risk</h2>
+    {% for w in d.concentration.warnings %}
+    <div class="alert-row"><span class="sev warn">CONCENTRATION</span>
+      {{ w.message }}</div>
+    {% endfor %}
   </section>
   {% endif %}
 

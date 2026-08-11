@@ -16,6 +16,8 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from . import grading as grading_mod
+from . import orders as orders_mod
 from .alerts import evaluate_alerts, store_alerts
 from .analytics import load_metrics
 from .bulk import sell_plan
@@ -37,6 +39,10 @@ class Digest:
     alerts: list[dict[str, Any]] = field(default_factory=list)
     movers: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     bulk: dict[str, Any] = field(default_factory=dict)
+    listings: dict[str, Any] = field(default_factory=dict)
+    orders: dict[str, Any] = field(default_factory=dict)
+    grading: dict[str, Any] = field(default_factory=dict)
+    concentration: dict[str, Any] = field(default_factory=dict)
     actions: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
 
@@ -70,6 +76,20 @@ def build(db: Database, config: Config, kind: str = "daily",
     digest.alerts = store_alerts(db, found) if persist_alerts else [a.to_dict() for a in found]
 
     digest.movers = _movers(db, config, today=today)
+
+    # Live listings that need a decision, and the order book behind them.
+    digest.listings = orders_mod.listing_health(db, config, today=today)
+    digest.orders = orders_mod.summary(db, config)
+    digest.concentration = digest.portfolio.get("concentration", {})
+
+    grading_scan = grading_mod.scan_portfolio(db, config, today=today, limit=5)
+    digest.grading = {
+        "recommended": grading_scan["recommended"][:3],
+        "total_expected_profit": grading_scan["total_expected_profit"],
+        "submission_cost": grading_scan["submission_cost"],
+        "service": grading_scan["service"],
+    }
+
     plan = sell_plan(db, config, today=today)
     digest.bulk = {
         "bulk_card_count": plan["bulk_card_count"],
@@ -162,6 +182,54 @@ def _actions(digest: Digest) -> list[dict[str, Any]]:
             "why": signal["reasons"][0] if signal["reasons"] else "",
             "value": signal["net_profit"],
             "card_id": signal["card_id"],
+        })
+
+    # A listing sitting unsold is money you have already decided to release;
+    # it deserves the same prominence as a new trade.
+    for listing in (digest.listings or {}).get("needs_action", [])[:8]:
+        verb = {"cut": "Re-price", "raise": "Raise", "pull": "Pull"}.get(
+            listing["verdict"], "Review")
+        suggested = listing.get("suggested_price")
+        actions.append({
+            "priority": 2 if listing["verdict"] != "raise" else 1,
+            "type": "listing",
+            "card": f"{listing['card_name']} ({listing['set_name']} {listing['number']})",
+            "detail": (
+                f"{verb} {listing['quantity']}x from "
+                f"${listing['limit_price']:,.2f}"
+                + (f" to ${suggested:,.2f}" if suggested else "")
+                + f" - {listing['days_on_market']} days listed"
+            ),
+            "why": listing.get("reason", ""),
+            "value": abs((listing.get("limit_price") or 0) - (suggested or 0))
+                     * listing["quantity"],
+            "card_id": listing["card_id"],
+        })
+
+    for candidate in (digest.grading or {}).get("recommended", [])[:3]:
+        actions.append({
+            "priority": 3,
+            "type": "grade",
+            "card": f"{candidate['card_name']} ({candidate['set_name']})",
+            "detail": (
+                f"Grading looks worth about "
+                f"${candidate['expected_profit']:,.2f} more than selling raw at "
+                f"${candidate['raw_price']:,.2f}"
+            ),
+            "why": (candidate.get("reasons") or [""])[0],
+            "value": candidate["expected_profit"],
+            "card_id": candidate["card_id"],
+        })
+
+    for warning in (digest.concentration or {}).get("warnings", []):
+        actions.append({
+            "priority": 2,
+            "type": "risk",
+            "card": warning["subject"],
+            "detail": warning["message"],
+            "why": "capital concentration limit",
+            "value": 0.0,
+            "card_id": None,
         })
 
     for alert in digest.alerts:
@@ -291,6 +359,40 @@ def render_markdown(digest: Digest) -> str:
                 add(f"- {m['card_name']} ({m['set_name']}): {_m(m['price'])} "
                     f"{m['change_7d'] * 100:+.1f}%")
             add("")
+
+    listings = digest.listings or {}
+    if listings.get("count"):
+        add("## Listings")
+        add("")
+        add(f"- {listings['count']} live, {_m(listings['listed_value'])} at ask, "
+            f"{listings['stale_count']} stale")
+        for listing in listings.get("needs_action", []):
+            suggested = listing.get("suggested_price")
+            add(f"- **{listing['verdict'].upper()}** {listing['card_name']}: "
+                f"{_m(listing['limit_price'])}"
+                + (f" -> {_m(suggested)}" if suggested else "")
+                + f" ({listing['days_on_market']}d) - {listing.get('reason', '')}")
+        add("")
+
+    grading = digest.grading or {}
+    if grading.get("recommended"):
+        add("## Grading")
+        add("")
+        for candidate in grading["recommended"]:
+            add(f"- {candidate['card_name']}: raw {_m(candidate['raw_price'])}, "
+                f"expected {_m(candidate['expected_profit'])} extra from "
+                f"{grading.get('service', 'PSA')} ({candidate['verdict']})")
+        add(f"- Submission cost {_m(grading.get('submission_cost'))} for "
+            f"{_m(grading.get('total_expected_profit'))} of expected upside")
+        add("")
+
+    warnings = (digest.concentration or {}).get("warnings", [])
+    if warnings:
+        add("## Risk")
+        add("")
+        for warning in warnings:
+            add(f"- {warning['message']}")
+        add("")
 
     if digest.alerts:
         add("## Alerts")

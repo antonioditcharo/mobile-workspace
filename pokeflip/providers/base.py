@@ -66,6 +66,11 @@ class PriceQuote:
     high: float | None = None
     direct_low: float | None = None
     currency: str = "USD"
+    # How many copies actually sold in the source's observation window, and how
+    # many are listed right now. Only sources with real transaction data can
+    # fill these; ``None`` means "unknown", never "zero".
+    sales_count: int | None = None
+    listing_count: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -92,6 +97,8 @@ class PriceQuote:
             "mid": self.mid,
             "high": self.high,
             "direct_low": self.direct_low,
+            "sales_count": self.sales_count,
+            "listing_count": self.listing_count,
         }
 
 
