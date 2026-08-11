@@ -123,10 +123,64 @@ source and point prices at eBay:
 
 Without Marketplace Insights approval the provider still works from live
 listings, but it prices from the **lower quartile of asking prices** and
-reports velocity as unknown rather than passing asks off as sales. Lots,
-bundles, proxies and graded slabs are filtered out so a 100-card lot never sets
-the price of one card; set `ebay_track_graded` to price PSA/BGS copies as their
-own variants.
+reports velocity as unknown rather than passing asks off as sales.
+
+#### What gets filtered, and why
+
+A stored quote is meant to represent **one raw, English, near-mint copy of one
+printing** — because everything downstream assumes exactly that. Condition
+multipliers discount *from* a near-mint baseline, and the signal engine compares
+a card against its own history. Anything else in the series is not noise, it is
+a different asset.
+
+| Rejected | Why it matters |
+|---|---|
+| Lots, bundles, playsets, binders, `4x`, `50 cards` | A 50-card lot at $30 is not a $30 card |
+| Sealed product — booster boxes, ETBs, tins | A different market entirely |
+| **Online code cards** (PTCGO/PTCGL) | Sell for pennies and share every keyword with the card they depict — the most destructive thing that can get in |
+| Proxies, customs, oricas, art cards | Not the card |
+| Non-English printings | A Japanese Charizard is a different asset at a different price |
+| Graded slabs | Set `ebay_track_graded` to price PSA 10 / PSA 9 / BGS 9.5 as their own series instead |
+| Played, creased, water-damaged copies | They would drag the near-mint baseline down and make every condition multiplier wrong |
+| Misprints and miscuts | A separate collector market |
+
+Three subtleties that are easy to get wrong, and that the tests pin down:
+
+- **`1x Charizard` is one card**; `4x` is a lot. Quantity filtering starts at two.
+- **"PSA 10 READY" is a raw card**, not a slab — it is one of the most common
+  raw-card marketing phrases there is. Grade mentions are only treated as slabs
+  when nothing nearby marks them as aspirational. "PSA 10 – ready to ship" *is*
+  a slab, and is handled separately.
+- **"Ships from Japan" is not a Japanese card.** The origin word is recognised
+  on either side of the country name, so English singles posted from abroad
+  survive while genuinely Japanese printings do not.
+
+Every filter is whole-word anchored, because Pokémon names are full of traps —
+**Lotad** contains "lot", **Slowking** contains "slow" — and substring matching
+silently discards real listings.
+
+#### Printings
+
+Variant names match TCGplayer's, so an eBay series and a pokemontcg series for
+the same printing line up. `reverseHolofoil`, `1stEditionHolofoil` and
+`shadowlessHolofoil` are tracked separately — a 1st Edition Base Charizard
+trades at many multiples of the unlimited print, and averaging them would be
+meaningless.
+
+Crucially, **a card that is foil by definition is treated as foil even when the
+title never says "holo"**. "Snorlax 143/165 Illustration Rare" is a holo; without
+this it would land in a phantom `normal` series that never lines up with the
+card's real one. The catalog's rarity is used as the default and the title
+overrides it only when explicit (`non-holo`, `reverse`, `1st edition`).
+
+#### Tuning them
+
+`ebay_exclude_terms` adds your own terms on top (matched whole-word, so
+configuring `lot` will not take out every Lotad listing).
+`ebay_english_only` and `ebay_exclude_damaged` turn those two filters off.
+
+`pokeflip provider probe CARD_ID` groups rejections **by reason**, because "38
+rejected" tells you nothing and "31 lots, 7 graded" tells you what to change.
 
 #### Setting eBay up
 
@@ -167,6 +221,7 @@ Example output (illustrative):
 
 ```
 Search query     Charizard ex 199 151 pokemon
+Catalog rarity   Special Illustration Rare  (assumes holofoil)
 Live listings    38
 Sold items       12
 
@@ -175,9 +230,14 @@ VARIANT     PRICE  TITLE
 holofoil  $448.00  Charizard ex 199/165 SIR 151 Near Mint
 holofoil  $465.99  Pokemon 151 Charizard ex 199/165 Special Illustration
 
-  Filtered out 6 (lots, bundles, graded):
-    Pokemon 151 Charizard ex PSA 10 GEM MINT
-    Charizard ex 199/165 + 3 card lot
+  Filtered out 14, by reason:
+      8  multiple cards
+           Pokemon Card Lot 50 Cards Charizard ex
+           Charizard ex 199/165 + 3 card lot
+      4  graded (psa10)
+           Pokemon 151 Charizard ex PSA 10 GEM MINT
+      2  online code card
+           Charizard ex PTCGO Code Card
 
 Resulting quotes
 VARIANT    MARKET      LOW     HIGH  SALES/30D  LISTED  BASIS
@@ -793,7 +853,7 @@ Secrets (`api_key`, SMTP password, webhook URLs) are redacted from
 python -m unittest discover -s tests -v
 ```
 
-214 tests, standard library only, no network. The offline provider is
+239 tests, standard library only, no network. The offline provider is
 deterministic, so results are stable run to run.
 
 ---

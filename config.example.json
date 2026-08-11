@@ -24,17 +24,10 @@
     "ebay_sandbox": false,
     "ebay_use_sold_data": true,
     "ebay_category_id": "183454",
-    "ebay_exclude_terms": [
-      "lot",
-      "bundle",
-      "proxy",
-      "custom",
-      "fake",
-      "orica",
-      "playset",
-      "bulk"
-    ],
+    "ebay_exclude_terms": [],
     "ebay_track_graded": false,
+    "ebay_english_only": true,
+    "ebay_exclude_damaged": true,
     "ebay_max_results": 50
   },
   "fees": {

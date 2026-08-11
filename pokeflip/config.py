@@ -362,12 +362,19 @@ class ProviderRules:
     ebay_use_sold_data: bool = True
     # Trading-card category, used to keep searches off unrelated listings.
     ebay_category_id: str = "183454"
-    # Words that mean the listing is not a single raw card.
-    ebay_exclude_terms: list[str] = field(default_factory=lambda: [
-        "lot", "bundle", "proxy", "custom", "fake", "orica", "playset", "bulk",
-    ])
+    # Extra words that mean a listing is not the card you are pricing. The
+    # built-in filters already cover lots, sealed product, code cards, proxies,
+    # graded slabs and foreign printings; this is for anything they miss.
+    # Matched whole-word, so "lot" here will not take out every Lotad listing.
+    ebay_exclude_terms: list[str] = field(default_factory=list)
     # Track graded copies as their own variants (psa10, psa9, ...).
     ebay_track_graded: bool = False
+    # Skip non-English printings. A Japanese Charizard is a different asset at
+    # a different price, and mixing the two ruins both series.
+    ebay_english_only: bool = True
+    # Skip copies described as played or damaged. Stored quotes are a near-mint
+    # baseline, because condition multipliers are applied downstream.
+    ebay_exclude_damaged: bool = True
     ebay_max_results: int = 50
 
 

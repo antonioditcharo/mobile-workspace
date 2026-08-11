@@ -1252,6 +1252,9 @@ def cmd_provider(args: argparse.Namespace, db: Database, config: Config) -> int:
     def render() -> None:
         heading(f"{result['card_name']} on {config.provider.name}")
         print(f"  Search query     {result['query']}")
+        rarity = result.get("rarity") or "-"
+        assumed = _c(f"(assumes {result.get('assumed_printing', 'normal')})", DIM)
+        print(f"  Catalog rarity   {rarity}  {assumed}")
         print(f"  Live listings    {result['listings_found']}")
         print(f"  Sold items       {result['sold_found']}"
               + ("" if result["sold_available"] else _c("  (no sold access)", DIM)))
@@ -1269,10 +1272,13 @@ def cmd_provider(args: argparse.Namespace, db: Database, config: Config) -> int:
             table(rows, ["VARIANT", "PRICE", "TITLE"], ["l", "r", "l"])
             if block["rejected"]:
                 print()
-                print(_c(f"  Filtered out {len(block['rejected'])} "
-                         f"(lots, bundles, graded):", DIM))
-                for title in block["rejected"][:5]:
-                    print(_c(f"    {title[:70]}", DIM))
+                print(_c(f"  Filtered out {block['rejected_count']}, by reason:",
+                         DIM))
+                for reason, titles in sorted(
+                        block["rejected"].items(), key=lambda kv: -len(kv[1])):
+                    print(_c(f"    {len(titles):>3}  {reason}", DIM))
+                    for title in titles[:2]:
+                        print(_c(f"         {title[:64]}", DIM))
 
         heading("Resulting quotes")
         table(

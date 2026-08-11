@@ -1137,26 +1137,204 @@ class BacktestTests(TempDbCase):
 
 # --- ebay ---------------------------------------------------------------
 
+class EbayListingFilterTests(unittest.TestCase):
+    """The filters decide what a price series is made of, so they get the
+    scrutiny. A wrongly kept listing poisons the number; a wrongly rejected one
+    silently starves it."""
+
+    def reason(self, title, **kwargs):
+        return ebay.classify(title, **kwargs).reason
+
+    def assertKept(self, title, variant=None, **kwargs):
+        verdict = ebay.classify(title, **kwargs)
+        self.assertTrue(verdict.kept,
+                        f"wrongly rejected ({verdict.reason}): {title}")
+        if variant:
+            self.assertEqual(verdict.variant, variant, title)
+
+    def assertDropped(self, title, reason_contains=None, **kwargs):
+        verdict = ebay.classify(title, **kwargs)
+        self.assertFalse(verdict.kept, f"wrongly kept as {verdict.variant}: {title}")
+        if reason_contains:
+            self.assertIn(reason_contains, verdict.reason, title)
+
+    # --- multiples ---
+
+    def test_lots_in_all_their_forms_are_excluded(self):
+        for title in ("Pokemon Card Lot 50 Cards Charizard",
+                      "Job Lot Pokemon Cards Charizard",
+                      "Charizard ex Bundle of cards",
+                      "Charizard ex x4 Playset",
+                      "Bulk Pokemon Cards Charizard",
+                      "Charizard ex 199/165 Binder Collection",
+                      "Pokemon 151 Complete Master Set",
+                      "Pick Your Card Pokemon 151 Singles"):
+            self.assertDropped(title, "multiple")
+
+    def test_quantities_above_one_are_excluded(self):
+        for title in ("4x Charizard ex 199/165", "Charizard ex x10",
+                      "Charizard ex 199/165 (5) cards", "50 cards Charizard"):
+            self.assertDropped(title, "quantity")
+
+    def test_a_single_copy_written_as_a_quantity_survives(self):
+        # "1x Charizard" is one card and must not be read as a lot.
+        self.assertKept("1x Charizard ex 199/165 NM")
+        self.assertKept("Charizard ex 199/165 - 1 card only")
+
+    def test_pokemon_names_containing_filter_words_survive(self):
+        # The whole reason every pattern is word-boundary anchored.
+        self.assertKept("Lotad 43/165 Common 151 NM")
+        self.assertKept("Slowking 199/165 Holo")
+        self.assertKept("Slowbro 43/132 Holo")
+
+    # --- not a raw single ---
+
+    def test_online_code_cards_never_reach_the_price_series(self):
+        for title in ("Charizard ex PTCGO Code Card",
+                      "Pokemon Online Code Cards",
+                      "Charizard ex PTCGL redeemable code"):
+            self.assertDropped(title, "code card")
+
+    def test_sealed_product_is_a_different_market(self):
+        for title in ("Pokemon 151 Booster Box Sealed",
+                      "Pokemon 151 Elite Trainer Box ETB",
+                      "Pokemon 151 Booster Pack",
+                      "Charizard Premium Collection Tin"):
+            self.assertDropped(title, "sealed")
+
+    def test_pack_fresh_describes_a_raw_single_not_a_pack(self):
+        self.assertKept("Charizard ex 199/165 - Pack Fresh NM")
+        self.assertKept("Charizard ex straight from the pack")
+
+    def test_proxies_and_customs_are_excluded(self):
+        for title in ("Charizard ex Custom Orica Proxy",
+                      "Charizard fan made art card",
+                      "Charizard ex counterfeit replica"):
+            self.assertDropped(title, "proxy")
+
+    def test_foreign_printings_are_a_different_asset(self):
+        self.assertDropped("Charizard Japanese 151 SIR", "English")
+        self.assertDropped("Charizard Korean 151", "English")
+        self.assertDropped("Charizard German Glurak", "English")
+
+    def test_an_explicit_english_marker_wins_over_a_stray_language_word(self):
+        self.assertKept("Charizard ex 199/165 English NM Japanese seller")
+
+    def test_shipping_from_a_country_is_not_a_foreign_printing(self):
+        # An English single posted from Japan is the card you wanted. The
+        # origin word can sit on either side of the country name.
+        for title in ("Charizard ex 199/165 - Free Shipping from Japan",
+                      "Charizard ex 199/165 - Japan seller, fast post",
+                      "Charizard ex 199/165 Japan Post tracked",
+                      "Charizard ex 199/165 imported from Japan"):
+            self.assertKept(title)
+
+    def test_a_foreign_card_posted_from_abroad_is_still_foreign(self):
+        self.assertDropped("Pokemon Japanese Charizard - ships from Japan",
+                           "English")
+
+    def test_foreign_filtering_can_be_switched_off(self):
+        self.assertKept("Charizard Japanese 151 SIR", english_only=False)
+
+    def test_damaged_copies_do_not_set_a_near_mint_baseline(self):
+        for title in ("Charizard 4/102 Heavily Played Creased",
+                      "Charizard 4/102 water damage",
+                      "Charizard 4/102 as is for parts"):
+            self.assertDropped(title, "near-mint")
+
+    def test_damage_filtering_can_be_switched_off(self):
+        self.assertKept("Charizard 4/102 Heavily Played", exclude_damaged=False)
+
+    def test_misprints_are_a_separate_market(self):
+        self.assertDropped("Charizard ex Misprint Error Card", "misprint")
+
+    # --- graded ---
+
+    def test_slabs_are_excluded_from_the_raw_price(self):
+        for title in ("Charizard ex PSA 10 GEM MINT", "Charizard BGS 9.5 Beckett",
+                      "Charizard ex CGC 9 Slabbed", "Charizard ex ACE 10 Graded",
+                      "Charizard ex SGC 8", "Charizard encapsulated graded"):
+            self.assertDropped(title, "graded")
+
+    def test_liquid_grades_get_their_own_variant_when_tracked(self):
+        self.assertEqual(ebay.classify("Charizard PSA 10", track_graded=True).variant,
+                         "psa10")
+        self.assertEqual(ebay.classify("Charizard PSA 9 mint", track_graded=True).variant,
+                         "psa9")
+        self.assertEqual(ebay.classify("Charizard BGS 9.5", track_graded=True).variant,
+                         "bgs95")
+        self.assertEqual(ebay.classify("Charizard SGC 8", track_graded=True).variant,
+                         "graded_other")
+
+    def test_grade_marketing_on_a_raw_card_is_not_a_slab(self):
+        # "PSA 10 READY" is one of the commonest raw-card phrases there is.
+        # Treating it as graded throws away real listings.
+        for title in ("Charizard ex PSA 10 READY Gem Mint Candidate",
+                      "Charizard ex PSA 10 worthy",
+                      "Charizard ex would grade PSA 9",
+                      "Charizard ex raw ungraded PSA 10 potential"):
+            self.assertKept(title)
+
+    def test_a_slab_that_ships_fast_is_still_a_slab(self):
+        # "ready to ship" must not be mistaken for "PSA 10 ready".
+        self.assertDropped("Charizard ex PSA 10 - ready to ship today", "graded")
+
+    def test_explicitly_ungraded_beats_a_grade_mention(self):
+        self.assertKept("Charizard ex 199/165 Ungraded Raw NM")
+
+    # --- printings ---
+
+    def test_reverse_holos_are_their_own_series(self):
+        self.assertKept("Pikachu 025/165 Reverse Holo 151 NM", "reverseHolofoil")
+        self.assertKept("Bulbasaur 001/165 rev holo", "reverseHolofoil")
+
+    def test_first_edition_and_shadowless_are_separate_assets(self):
+        # A 1st edition Base Charizard trades at many multiples of unlimited.
+        self.assertKept("Base Set Charizard 4/102 1st Edition Holo",
+                        "1stEditionHolofoil")
+        self.assertKept("Charizard 4/102 Shadowless Holo", "shadowlessHolofoil")
+        self.assertKept("Machamp 8/102 1st Edition Base Set", "1stEditionHolofoil",
+                        default_printing="holofoil")
+
+    def test_a_foil_rarity_is_foil_even_when_the_title_never_says_holo(self):
+        # Otherwise these land in a phantom "normal" series that never lines up
+        # with the same card's real one.
+        for title in ("Snorlax 143/165 Illustration Rare 151",
+                      "Iono 269/193 Special Illustration Rare",
+                      "Umbreon VMAX 215/203 Alt Art",
+                      "Mew ex 205/165 Gold Secret Rare",
+                      "Charizard ex 199/165 Trading Card"):
+            self.assertKept(title, "holofoil", default_printing="holofoil")
+
+    def test_an_explicit_non_holo_beats_the_catalog_default(self):
+        self.assertKept("Pikachu 025/165 151 Non-Holo", "normal",
+                        default_printing="holofoil")
+
+    def test_plain_cards_stay_normal(self):
+        self.assertKept("Bulbasaur 001/165 Common 151 NM", "normal")
+        self.assertKept("Lickitung 38/102 Base Set NM", "normal")
+
+    def test_rarity_maps_to_the_expected_default_printing(self):
+        for rarity in ("Common", "Uncommon", "Rare"):
+            self.assertEqual(ebay.variant_for_rarity(rarity), "normal")
+        for rarity in ("Rare Holo", "Illustration Rare", "Ultra Rare",
+                       "Special Illustration Rare", "Secret Rare", "Double Rare"):
+            self.assertEqual(ebay.variant_for_rarity(rarity), "holofoil")
+        self.assertEqual(ebay.variant_for_rarity(None), "normal")
+
+    # --- configuration ---
+
+    def test_extra_exclusions_match_whole_words_only(self):
+        # A configured "lot" must not take out every Lotad listing.
+        self.assertDropped("Charizard ex signed by artist",
+                           "signed", extra_exclusions=["signed"])
+        self.assertKept("Lotad 43/165 Common", extra_exclusions=["lot"])
+
+    def test_an_empty_title_is_rejected_rather_than_guessed_at(self):
+        self.assertDropped("   ", "empty")
+
+
 class EbayParsingTests(unittest.TestCase):
-    def test_lots_and_bundles_are_excluded(self):
-        for title in ("Pokemon Charizard LOT OF 50 cards", "Charizard bundle",
-                      "Charizard proxy custom", "mystery repack charizard"):
-            self.assertIsNone(ebay.classify_variant(title, False))
-
-    def test_graded_slabs_never_price_a_raw_card(self):
-        self.assertIsNone(ebay.classify_variant("Charizard PSA 10 GEM MINT", False))
-        self.assertIsNone(ebay.classify_variant("Charizard BGS 9.5", False))
-        self.assertIsNone(ebay.classify_variant("Charizard CGC 8", False))
-
-    def test_graded_slabs_become_their_own_variant_when_enabled(self):
-        self.assertEqual(ebay.classify_variant("Charizard PSA 10", True), "psa10")
-        self.assertEqual(ebay.classify_variant("Charizard PSA 9 mint", True), "psa9")
-
-    def test_printings_are_told_apart(self):
-        self.assertEqual(ebay.classify_variant("Pikachu reverse holo 025", False),
-                         "reverseHolofoil")
-        self.assertEqual(ebay.classify_variant("Pikachu holo rare", False), "holofoil")
-        self.assertEqual(ebay.classify_variant("Pikachu 025/165", False), "normal")
 
     def test_the_query_names_the_card_and_the_game(self):
         card = CardRecord(id="sv3pt5-199", name="Charizard ex", number="199/165",
@@ -1872,7 +2050,9 @@ class EbayCredentialTests(unittest.TestCase):
         result = self.provider.probe(card)
         self.assertIn("Charizard ex", result["query"])
         self.assertEqual(result["listings_found"], 3)
-        self.assertEqual(len(result["listings"]["rejected"]), 2)  # lot + slab
+        self.assertEqual(result["listings"]["rejected_count"], 2)  # lot + slab
+        self.assertEqual(set(result["listings"]["rejected"]),
+                         {"multiple cards", "graded (psa10)"})
         self.assertIn("holofoil", result["listings"]["kept"])
 
     def test_error_detail_prefers_the_body_over_the_status_line(self):
