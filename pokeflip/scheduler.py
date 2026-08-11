@@ -21,10 +21,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from . import actions
 from . import backtest as backtest_mod
 from . import digest as digest_mod
 from . import ingest, notify, orders, signals
 from .alerts import evaluate_alerts, mark_delivered, store_alerts
+from .bot import TelegramBot
 from .config import Config
 from .db import Database
 from .providers import build_catalog_provider
@@ -45,7 +47,8 @@ def run_refresh_cycle(db: Database, config: Config, deliver: bool = True
 
     delivery: list[dict[str, Any]] = []
     if stored and deliver:
-        delivery = notify.deliver_alerts(config, stored)
+        # The database is passed so alerts can carry one-tap action buttons.
+        delivery = notify.deliver_alerts(config, stored, db=db)
         if any(d.get("ok") for d in delivery):
             mark_delivered(db, [a["id"] for a in stored])
 
@@ -111,6 +114,7 @@ class Scheduler:
         self.config = config
         self._scheduler = BackgroundScheduler(timezone=config.timezone)
         self._configured = False
+        self.bot = TelegramBot(db, config)
 
     def configure(self) -> None:
         if self._configured:
@@ -146,6 +150,12 @@ class Scheduler:
                         hour=max(0, rules.weekly_digest_hour - 1), minute=30),
             lambda: run_backtest(self.db, self.config),
         )
+        # Expired action links and long-dead alert history are not worth keeping.
+        self._add(
+            "housekeeping",
+            IntervalTrigger(days=1),
+            lambda: {"tokens_pruned": actions.prune(self.db)},
+        )
         self._configured = True
 
     def _add(self, job_id: str, trigger: Any, func: Callable[[], Any]) -> None:
@@ -162,6 +172,9 @@ class Scheduler:
         )
 
     def start(self) -> None:
+        # The bot is independent of the job scheduler: you may want to query
+        # the app from your phone without any periodic jobs running.
+        self.bot.start()
         if not self.config.schedule.enabled:
             log.info("scheduler disabled by config")
             return
@@ -185,6 +198,7 @@ class Scheduler:
         run_digest(self.db, self.config, "daily")
 
     def shutdown(self, wait: bool = False) -> None:
+        self.bot.stop()
         if self._scheduler.running:
             self._scheduler.shutdown(wait=wait)
 

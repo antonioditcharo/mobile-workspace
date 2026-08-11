@@ -234,3 +234,26 @@ CREATE TABLE IF NOT EXISTS backtest_results (
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_backtest_run ON backtest_results(run_id, action, horizon_days);
+
+-- One-tap buttons on a push notification. Each token authorises exactly one
+-- state change, once, before it expires. The token IS the authorisation, so it
+-- must be unguessable and must never be reusable.
+CREATE TABLE IF NOT EXISTS action_tokens (
+    token      TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at    TEXT,
+    result     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_action_expires ON action_tokens(expires_at);
+
+-- Alerts you have told the app to stop raising. Acknowledging only clears the
+-- badge; the underlying condition would re-raise it on the next cycle.
+CREATE TABLE IF NOT EXISTS alert_snoozes (
+    dedupe_key TEXT PRIMARY KEY,
+    until      TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);

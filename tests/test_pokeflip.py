@@ -7,18 +7,23 @@ never touch the network.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import sys
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pokeflip import (  # noqa: E402
-    backtest, bulk, grading, ingest, orders, portfolio, providers, signals,
+    actions, backtest, bot, bulk, grading, ingest, notify, orders, portfolio,
+    providers, signals,
 )
+from pokeflip import alerts as alerts_mod  # noqa: E402
 from pokeflip.alerts import add_watch, evaluate_alerts, store_alerts  # noqa: E402
 from pokeflip.analytics import (  # noqa: E402
     compute_metrics, linear_slope, load_metrics, pct_change, sma, value_days_ago,
@@ -30,6 +35,18 @@ from pokeflip.providers import ebay  # noqa: E402
 from pokeflip.providers.base import CardRecord, ProviderError  # noqa: E402
 from pokeflip.providers.fixture import FixtureProvider  # noqa: E402
 from pokeflip.providers.pokemontcg import extract_quotes  # noqa: E402
+
+
+@contextlib.contextmanager
+def quiet(logger_name: str):
+    """Silence a logger while a test exercises a deliberate failure path."""
+    logger = logging.getLogger(logger_name)
+    previous = logger.disabled
+    logger.disabled = True
+    try:
+        yield
+    finally:
+        logger.disabled = previous
 
 
 def make_rows(prices, start=None, variant="normal", card_id="test-1"):
@@ -1247,6 +1264,369 @@ class AsOfTests(TempDbCase):
         now = load_metrics(self.db, self.card_id, self.variant, "tcgplayer")
         self.assertNotEqual(past.last_date, now.last_date)
         self.assertEqual(past.stale_days, 0)
+
+
+# --- push delivery ------------------------------------------------------
+
+class PushFilterTests(unittest.TestCase):
+    def setUp(self):
+        self.config = Config()
+        self.config.notify.push_min_severity = "warn"
+        self.config.notify.quiet_hours_start = 22
+        self.config.notify.quiet_hours_end = 7
+
+    def alert(self, severity="warn"):
+        return {"severity": severity, "title": "t", "body": "b"}
+
+    def test_quiet_hours_wrap_past_midnight(self):
+        for hour in (22, 23, 0, 3, 6):
+            self.assertTrue(notify.in_quiet_hours(self.config, hour), hour)
+        for hour in (7, 12, 21):
+            self.assertFalse(notify.in_quiet_hours(self.config, hour), hour)
+
+    def test_a_daytime_quiet_window_does_not_wrap(self):
+        self.config.notify.quiet_hours_start = 9
+        self.config.notify.quiet_hours_end = 17
+        self.assertTrue(notify.in_quiet_hours(self.config, 12))
+        self.assertFalse(notify.in_quiet_hours(self.config, 20))
+
+    def test_equal_bounds_disable_quiet_hours(self):
+        self.config.notify.quiet_hours_start = 0
+        self.config.notify.quiet_hours_end = 0
+        self.assertFalse(notify.in_quiet_hours(self.config, 3))
+
+    def test_low_severity_alerts_do_not_reach_a_phone(self):
+        self.assertFalse(notify.should_push(self.config, self.alert("info"), hour=12))
+        self.assertTrue(notify.should_push(self.config, self.alert("warn"), hour=12))
+
+    def test_only_urgent_alerts_break_quiet_hours(self):
+        self.assertFalse(notify.should_push(self.config, self.alert("warn"), hour=3))
+        self.assertTrue(notify.should_push(self.config, self.alert("urgent"), hour=3))
+
+    def test_quiet_hours_can_mute_even_urgent_alerts(self):
+        self.config.notify.quiet_hours_allow_urgent = False
+        self.assertFalse(notify.should_push(self.config, self.alert("urgent"), hour=3))
+
+    def test_telegram_markdown_is_escaped(self):
+        escaped = notify._escape_md("Charizard ex (151) - $4.50!")
+        for char in "()-.!":
+            self.assertIn(f"\\{char}", escaped)
+
+
+class PushPayloadTests(TempDbCase):
+    """Payload shape, verified without touching the network."""
+
+    def setUp(self):
+        super().setUp()
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+        self.config.notify.channels = ["ntfy"]
+        self.config.notify.ntfy_topic = "test-topic"
+        self.config.server.public_base_url = "https://pokeflip.example"
+
+    def capture(self, url, json=None, data=None, headers=None, timeout=None):
+        self.sent.append((url, json if json is not None else data))
+
+        class _Response:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"ok": True, "result": {}}
+
+        return _Response()
+
+    def deliver(self, alerts, db=None):
+        original = notify.httpx.post
+        notify.httpx.post = self.capture
+        try:
+            return notify.deliver_alerts(self.config, alerts, db=db)
+        finally:
+            notify.httpx.post = original
+
+    def alert(self, **overrides):
+        base = {"id": 1, "kind": "strong_buy", "severity": "urgent",
+                "title": "Strong buy: Test", "body": "cheap",
+                "card_id": "x-1", "variant": "normal", "dedupe_key": "k",
+                "payload": {"card_id": "x-1", "entry_price": 10.0, "price": 20.0}}
+        base.update(overrides)
+        return base
+
+    def test_each_alert_becomes_its_own_push(self):
+        self.deliver([self.alert(id=1), self.alert(id=2, dedupe_key="k2")])
+        self.assertEqual(len(self.sent), 2)
+
+    def test_severity_maps_to_priority_and_a_tag(self):
+        self.deliver([self.alert(severity="urgent")])
+        _, payload = self.sent[0]
+        self.assertEqual(payload["priority"], 5)
+        self.assertEqual(payload["tags"], ["rotating_light"])
+        self.assertEqual(payload["topic"], "test-topic")
+
+    def test_suppressed_alerts_are_reported_not_silently_dropped(self):
+        self.config.notify.push_min_severity = "urgent"
+        results = self.deliver([self.alert(severity="info")])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(results[0]["sent"], 0)
+        self.assertIn("threshold", results[0]["note"])
+
+    def test_buttons_appear_when_the_server_is_reachable(self):
+        self.db.upsert_cards([{"id": "x-1", "name": "Test", "set_id": None,
+                               "set_name": "S", "number": "1", "rarity": "",
+                               "supertype": "", "subtypes": "", "artist": "",
+                               "image_small": "", "image_large": "",
+                               "tcgplayer_url": "", "cardmarket_url": ""}])
+        self.deliver([self.alert()], db=self.db)
+        _, payload = self.sent[0]
+        labels = [a["label"] for a in payload["actions"]]
+        self.assertIn("Bid placed", labels)
+        self.assertLessEqual(len(payload["actions"]), notify.MAX_ACTIONS)
+        self.assertTrue(payload["actions"][0]["url"].startswith(
+            "https://pokeflip.example/api/act/"))
+
+    def test_no_buttons_without_a_public_url(self):
+        self.config.server.public_base_url = ""
+        self.deliver([self.alert()], db=self.db)
+        self.assertNotIn("actions", self.sent[0][1])
+
+    def test_a_missing_topic_is_reported_as_a_failure(self):
+        self.config.notify.ntfy_topic = ""
+        with quiet("pokeflip.notify"):
+            results = self.deliver([self.alert()])
+        self.assertFalse(results[0]["ok"])
+        self.assertIn("ntfy_topic", results[0]["error"])
+
+
+# --- one-tap actions ----------------------------------------------------
+
+class ActionTokenTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=60, include_portfolio=False)
+        provider = FixtureProvider(self.config)
+        self.card_id = provider.all_card_ids()[0]
+        self.variant = provider._catalog[self.card_id]["variant"]
+        self.config.server.public_base_url = "https://pokeflip.example"
+
+    def test_no_token_is_minted_without_a_public_url(self):
+        self.config.server.public_base_url = ""
+        self.assertIsNone(actions.mint(self.db, self.config, "ack", "Dismiss", {}))
+
+    def test_tokens_are_long_and_unguessable(self):
+        first = actions.mint(self.db, self.config, "ack", "Dismiss", {})
+        second = actions.mint(self.db, self.config, "ack", "Dismiss", {})
+        self.assertGreaterEqual(len(first.token), 32)
+        self.assertNotEqual(first.token, second.token)
+
+    def test_an_unknown_action_kind_is_refused(self):
+        with self.assertRaises(actions.ActionError):
+            actions.mint(self.db, self.config, "rm_rf", "Oops", {})
+
+    def test_a_buy_link_records_an_order_once(self):
+        link = actions.mint(self.db, self.config, "place_buy", "Bid placed",
+                            {"card_id": self.card_id, "variant": self.variant,
+                             "price": 12.5, "quantity": 1})
+        first = actions.execute(self.db, self.config, link.token)
+        self.assertEqual(first["status"], "ok")
+        order_id = first["result"]["order_id"]
+        self.assertAlmostEqual(
+            orders.get_order(self.db, order_id).limit_price, 12.5)
+
+        # A phone prefetch or a double tap must not place a second bid.
+        second = actions.execute(self.db, self.config, link.token)
+        self.assertEqual(second["status"], "already_done")
+        self.assertEqual(second["result"]["order_id"], order_id)
+        self.assertEqual(len(orders.list_orders(self.db, kind="buy")), 1)
+
+    def test_an_unknown_token_is_refused(self):
+        with self.assertRaises(actions.ActionError):
+            actions.execute(self.db, self.config, "not-a-token")
+
+    def test_an_expired_token_is_refused(self):
+        link = actions.mint(self.db, self.config, "ack", "Dismiss", {})
+        self.db.execute("UPDATE action_tokens SET expires_at = ? WHERE token = ?",
+                        ("2020-01-01T00:00:00+00:00", link.token))
+        with self.assertRaises(actions.ActionError):
+            actions.execute(self.db, self.config, link.token)
+
+    def test_a_listing_link_reprices_the_order(self):
+        portfolio.add_holding(self.db, self.card_id, self.variant, 1, 10.0)
+        order_id = orders.create_order(self.db, self.config, "sell", self.card_id,
+                                       1, 100.0, self.variant)
+        link = actions.mint(self.db, self.config, "apply_reprice", "Re-price",
+                            {"order_id": order_id, "price": 85.0})
+        actions.execute(self.db, self.config, link.token)
+        self.assertAlmostEqual(orders.get_order(self.db, order_id).limit_price, 85.0)
+
+    def test_snoozing_stops_the_alert_recurring(self):
+        alert = alerts_mod.Alert(kind="price_spike", title="t", dedupe_key="spike:x")
+        self.assertEqual(len(alerts_mod.store_alerts(self.db, [alert])), 1)
+
+        link = actions.mint(self.db, self.config, "snooze", "Not interested",
+                            {"dedupe_key": "spike:x", "days": 30})
+        actions.execute(self.db, self.config, link.token)
+
+        # Dedupe alone would have let it back after DEDUPE_HOURS; a snooze
+        # must not.
+        self.db.execute("DELETE FROM alerts")
+        self.assertEqual(alerts_mod.store_alerts(self.db, [alert]), [])
+        self.assertTrue(alerts_mod.unsnooze(self.db, "spike:x"))
+        self.assertEqual(len(alerts_mod.store_alerts(self.db, [alert])), 1)
+
+    def test_expired_tokens_are_pruned(self):
+        link = actions.mint(self.db, self.config, "ack", "Dismiss", {})
+        self.db.execute("UPDATE action_tokens SET expires_at = ? WHERE token = ?",
+                        ("2020-01-01T00:00:00+00:00", link.token))
+        self.assertGreaterEqual(actions.prune(self.db), 1)
+        self.assertIsNone(
+            self.db.one("SELECT 1 FROM action_tokens WHERE token = ?", (link.token,)))
+
+    def test_alert_links_stay_within_the_button_limit(self):
+        alert = {"id": 5, "kind": "strong_buy", "card_id": self.card_id,
+                 "variant": self.variant, "dedupe_key": "k",
+                 "payload": {"card_id": self.card_id, "entry_price": 10.0}}
+        links = actions.links_for_alert(self.db, self.config, alert)
+        self.assertTrue(links)
+        self.assertLessEqual(len(links), notify.MAX_ACTIONS)
+
+    def test_no_links_when_actionable_is_off(self):
+        self.config.notify.actionable = False
+        self.assertEqual(
+            actions.links_for_alert(self.db, self.config,
+                                    {"id": 1, "kind": "strong_buy"}), [])
+
+
+# --- HTTP surface -------------------------------------------------------
+
+class ApiAuthTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        from fastapi.testclient import TestClient
+
+        from pokeflip.api import create_app
+
+        ingest.seed_demo(self.db, self.config, days=30, include_portfolio=False)
+        self.config.server.api_token = "s3cret"
+        self.config.server.public_base_url = "https://pokeflip.example"
+        self.client = TestClient(create_app(self.config, start_scheduler=False))
+
+    def test_health_is_reachable_without_a_token(self):
+        self.assertEqual(self.client.get("/api/health").status_code, 200)
+
+    def test_data_endpoints_require_the_token(self):
+        self.assertEqual(self.client.get("/api/portfolio").status_code, 401)
+
+    def test_a_bearer_header_is_accepted(self):
+        response = self.client.get("/api/portfolio",
+                                   headers={"Authorization": "Bearer s3cret"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_query_token_is_accepted(self):
+        self.assertEqual(
+            self.client.get("/api/portfolio?token=s3cret").status_code, 200)
+
+    def test_a_wrong_token_is_rejected(self):
+        self.assertEqual(
+            self.client.get("/api/portfolio?token=nope").status_code, 401)
+
+    def test_action_links_bypass_the_header_check(self):
+        # A phone following a notification button cannot set headers, so the
+        # single-use token in the URL has to be sufficient on its own.
+        link = actions.mint(self.db, self.config, "ack", "Dismiss", {"alert_id": None})
+        response = self.client.post(f"/api/act/{link.token}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+
+    def test_following_a_link_in_a_browser_returns_a_page(self):
+        link = actions.mint(self.db, self.config, "ack", "Dismiss", {"alert_id": None})
+        response = self.client.get(f"/api/act/{link.token}")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers["content-type"])
+
+    def test_a_dead_link_explains_itself_in_the_browser(self):
+        response = self.client.get("/api/act/nope")
+        self.assertEqual(response.status_code, 410)
+        self.assertIn("not valid", response.text)
+
+    def test_get_actions_can_be_disabled(self):
+        self.config.server.allow_get_actions = False
+        link = actions.mint(self.db, self.config, "ack", "Dismiss", {"alert_id": None})
+        self.assertEqual(self.client.get(f"/api/act/{link.token}").status_code, 405)
+
+
+# --- telegram bot -------------------------------------------------------
+
+class BotTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=90)
+        self.config.notify.telegram_bot_token = "token"
+        self.config.notify.telegram_chat_id = "4242"
+        self.bot = bot.TelegramBot(self.db, self.config)
+        self.sent: list[dict[str, Any]] = []
+        self.bot._api = lambda method, payload, timeout=30.0: self._api(method, payload)
+        self.updates: list[dict[str, Any]] = []
+
+    def _api(self, method: str, payload: dict[str, Any]):
+        if method == "sendMessage":
+            self.sent.append(payload)
+            return {}
+        if method == "getUpdates":
+            batch, self.updates = self.updates, []
+            return batch
+        return {}
+
+    def update(self, text: str, chat_id: str = "4242", update_id: int = 1):
+        return {"update_id": update_id,
+                "message": {"chat": {"id": chat_id}, "text": text}}
+
+    def test_help_lists_the_commands(self):
+        reply = self.bot.handle("/help", "4242")
+        for command in ("/scan", "/portfolio", "/listings"):
+            self.assertIn(command, reply)
+
+    def test_an_unknown_command_still_helps(self):
+        self.assertIn("Unknown command", self.bot.handle("/frobnicate", "4242"))
+
+    def test_scan_reports_signals(self):
+        reply = self.bot.handle("/scan", "4242")
+        self.assertTrue(reply)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_portfolio_reports_money(self):
+        self.assertIn("Cost basis", self.bot.handle("/portfolio", "4242"))
+
+    def test_a_failing_command_replies_instead_of_crashing(self):
+        self.bot.commands["boom"] = lambda args: 1 / 0
+        with quiet("pokeflip.bot"):
+            self.assertIn("failed", self.bot.handle("/boom", "4242"))
+
+    def test_messages_from_other_chats_are_ignored(self):
+        self.updates = [self.update("/portfolio", chat_id="9999")]
+        with quiet("pokeflip.bot"):
+            self.assertEqual(self.bot.poll_once(), 0)
+        self.assertEqual(self.sent, [])
+
+    def test_the_offset_advances_past_ignored_messages(self):
+        # Otherwise a stranger's message would be replayed on every poll.
+        self.updates = [self.update("/portfolio", chat_id="9999", update_id=7)]
+        with quiet("pokeflip.bot"):
+            self.bot.poll_once()
+        self.assertEqual(self.db.get_setting(bot.OFFSET_KEY), 8)
+
+    def test_authorised_messages_are_handled_and_acknowledged(self):
+        self.updates = [self.update("/help", update_id=11)]
+        self.assertEqual(self.bot.poll_once(), 1)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.db.get_setting(bot.OFFSET_KEY), 12)
+
+    def test_command_suffixes_from_group_chats_are_stripped(self):
+        self.assertIn("/scan", self.bot.handle("/help@pokeflip_bot", "4242"))
+
+    def test_it_reports_when_it_is_not_configured(self):
+        self.config.notify.telegram_bot_token = ""
+        self.assertFalse(bot.TelegramBot(self.db, self.config).configured)
 
 
 if __name__ == "__main__":

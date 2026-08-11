@@ -262,14 +262,58 @@ class ScheduleRules:
 
 
 @dataclass
+class ServerRules:
+    """Settings that only matter once the app is reachable from elsewhere.
+
+    Tap-to-act notifications need your phone to reach this server, which means
+    exposing it. ``api_token`` is what stops anyone else who finds it from
+    editing your portfolio.
+    """
+
+    # How your phone reaches this server, e.g. "https://pokeflip.example.com".
+    # Without it, notifications carry no action buttons.
+    public_base_url: str = ""
+    # Bearer token required for anything that changes state. Strongly
+    # recommended before exposing the server; leave empty for localhost only.
+    api_token: str = ""
+    # How long an action link from a notification stays valid.
+    action_token_ttl_hours: int = 168
+    # Allow action links to be followed by a plain browser GET. Convenient on a
+    # phone; turn off if you would rather only accept POSTs.
+    allow_get_actions: bool = True
+
+
+@dataclass
 class NotifyRules:
     """Where the digest and alerts get delivered."""
 
-    # Any of: console, file, webhook, slack, discord, email
+    # Any of: console, file, webhook, slack, discord, email, ntfy, pushover,
+    # telegram
     channels: list[str] = field(default_factory=lambda: ["console", "file"])
     webhook_url: str = ""
     slack_webhook_url: str = ""
     discord_webhook_url: str = ""
+
+    # --- phone push ---
+    # ntfy: no account needed. Pick an unguessable topic - anyone who knows it
+    # can read your alerts.
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_topic: str = ""
+    ntfy_token: str = ""
+    pushover_token: str = ""
+    pushover_user: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # Attach one-tap buttons ("Bought", "Listed", "Snooze") to push alerts.
+    # Requires server.public_base_url.
+    actionable: bool = True
+    # Only push alerts at least this severe: info | warn | urgent.
+    push_min_severity: str = "warn"
+    # Quiet hours, 24h local clock. Equal values disable them.
+    quiet_hours_start: int = 22
+    quiet_hours_end: int = 7
+    # Urgent alerts ignore quiet hours.
+    quiet_hours_allow_urgent: bool = True
     email_to: str = ""
     email_from: str = "pokeflip@localhost"
     smtp_host: str = ""
@@ -351,6 +395,7 @@ class Config:
     backtest: BacktestRules = field(default_factory=BacktestRules)
     schedule: ScheduleRules = field(default_factory=ScheduleRules)
     notify: NotifyRules = field(default_factory=NotifyRules)
+    server: ServerRules = field(default_factory=ServerRules)
 
     # --- loading -------------------------------------------------------
 
@@ -418,6 +463,12 @@ class Config:
             ("notify", "webhook_url"),
             ("notify", "slack_webhook_url"),
             ("notify", "discord_webhook_url"),
+            ("notify", "ntfy_token"),
+            ("notify", "ntfy_topic"),
+            ("notify", "pushover_token"),
+            ("notify", "pushover_user"),
+            ("notify", "telegram_bot_token"),
+            ("server", "api_token"),
         )
         for section, key in secrets:
             if data.get(section, {}).get(key):

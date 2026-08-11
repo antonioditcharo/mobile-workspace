@@ -1,0 +1,63 @@
+# Unattended pokeflip under systemd.
+#
+#   sudo useradd --system --create-home --home-dir /var/lib/pokeflip pokeflip
+#   sudo -u pokeflip python3 -m venv /var/lib/pokeflip/venv
+#   sudo -u pokeflip /var/lib/pokeflip/venv/bin/pip install /path/to/pokeflip
+#   sudo install -m 0640 -o pokeflip -g pokeflip .env /etc/pokeflip.env
+#   sudo cp deploy/pokeflip.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pokeflip
+#
+#   journalctl -u pokeflip -f
+
+[Unit]
+Description=pokeflip - Pokemon card price tracking and flip signals
+Documentation=https://github.com/antonioditcharo/mobile-workspace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pokeflip
+Group=pokeflip
+WorkingDirectory=/var/lib/pokeflip
+
+# Secrets live here, not in the unit file.
+EnvironmentFile=/etc/pokeflip.env
+Environment=POKEFLIP_DATABASE=/var/lib/pokeflip/pokeflip.db
+Environment=POKEFLIP_NOTIFY__REPORT_DIR=/var/lib/pokeflip/reports
+
+ExecStart=/var/lib/pokeflip/venv/bin/pokeflip serve
+
+Restart=on-failure
+RestartSec=15s
+# Give up only if it is failing repeatedly, not on a bad afternoon of network.
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
+# The app needs its own data directory, outbound HTTPS, and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/pokeflip
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pokeflip
+
+[Install]
+WantedBy=multi-user.target

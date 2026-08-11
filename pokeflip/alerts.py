@@ -263,11 +263,44 @@ def _concentration_warnings(db: Database, config: Config) -> list[dict[str, Any]
     return concentration(db, config).get("warnings", [])
 
 
+def snooze(db: Database, dedupe_key: str, days: int = 30) -> str:
+    """Stop raising this exact alert until the snooze expires."""
+    until = iso(utcnow() + timedelta(days=max(1, days)))
+    db.execute(
+        "INSERT INTO alert_snoozes (dedupe_key, until, created_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(dedupe_key) DO UPDATE SET until = excluded.until",
+        (dedupe_key, until, iso()),
+    )
+    return until
+
+
+def unsnooze(db: Database, dedupe_key: str) -> bool:
+    return db.execute("DELETE FROM alert_snoozes WHERE dedupe_key = ?",
+                      (dedupe_key,)) > 0
+
+
+def snoozed_keys(db: Database) -> set[str]:
+    now = iso()
+    return {
+        row["dedupe_key"]
+        for row in db.query("SELECT dedupe_key FROM alert_snoozes WHERE until > ?",
+                            (now,))
+    }
+
+
+def list_snoozes(db: Database) -> list[dict[str, Any]]:
+    return [dict(r) for r in db.query(
+        "SELECT * FROM alert_snoozes ORDER BY until DESC")]
+
+
 def store_alerts(db: Database, alerts: Iterable[Alert]) -> list[dict[str, Any]]:
-    """Persist alerts, dropping any raised recently for the same reason."""
+    """Persist alerts, dropping any snoozed or raised recently for the same reason."""
     cutoff = (utcnow() - timedelta(hours=DEDUPE_HOURS)).isoformat()
+    muted = snoozed_keys(db)
     stored: list[dict[str, Any]] = []
     for alert in alerts:
+        if alert.dedupe_key and alert.dedupe_key in muted:
+            continue
         if alert.dedupe_key:
             recent = db.one(
                 "SELECT 1 FROM alerts WHERE dedupe_key = ? AND created_at >= ? LIMIT 1",

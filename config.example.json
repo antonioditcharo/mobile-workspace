@@ -154,6 +154,18 @@
     "webhook_url": "",
     "slack_webhook_url": "",
     "discord_webhook_url": "",
+    "ntfy_server": "https://ntfy.sh",
+    "ntfy_topic": "",
+    "ntfy_token": "",
+    "pushover_token": "",
+    "pushover_user": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "actionable": true,
+    "push_min_severity": "warn",
+    "quiet_hours_start": 22,
+    "quiet_hours_end": 7,
+    "quiet_hours_allow_urgent": true,
     "email_to": "",
     "email_from": "pokeflip@localhost",
     "smtp_host": "",
@@ -163,5 +175,11 @@
     "smtp_starttls": true,
     "report_dir": "reports",
     "realtime_alerts": true
+  },
+  "server": {
+    "public_base_url": "",
+    "api_token": "",
+    "action_token_ttl_hours": 168,
+    "allow_get_actions": true
   }
 }

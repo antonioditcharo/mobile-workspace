@@ -3,7 +3,8 @@
 Price, trend and signal tracking for Pokémon card flippers. It watches prices
 on a schedule, scores every card you track for buys and sells, values bulk lots
 before you bid on them, and hands you a short list of things to do — in the
-terminal, on a dashboard, or delivered to Slack, Discord, a webhook or email.
+terminal, on a dashboard, or pushed to your phone with one-tap buttons that
+record the trade for you.
 
 It answers five questions:
 
@@ -357,6 +358,7 @@ pokeflip serve    # dashboard + API + scheduler in one process
 | `digest-weekly` | Sunday 09:00 | the same with a weekly framing |
 | `catalog` | every 7 days | pick up new sets and printings |
 | `backtest` | Sunday 08:30 | re-grade the rules against history |
+| `housekeeping` | daily | drop expired action links |
 
 A refresh prices, in priority order: your holdings, your watchlist, cards in
 lots you are evaluating, cards in `tracked_sets`, and anything already carrying
@@ -368,20 +370,151 @@ silent: `pokeflip runs`.
 ### Delivery
 
 Set `notify.channels` to any of `console`, `file`, `webhook`, `slack`,
-`discord`, `email`. **The default is `console` and `file` only** — a fresh
-install never posts anywhere until you tell it where.
+`discord`, `email`, `ntfy`, `pushover`, `telegram`. **The default is `console`
+and `file` only** — a fresh install never posts anywhere until you tell it
+where.
 
-```jsonc
-"notify": {
-  "channels": ["file", "slack"],
-  "slack_webhook_url": "https://hooks.slack.com/services/...",
-  "report_dir": "reports",
-  "realtime_alerts": true
-}
+```bash
+pokeflip notify test          # send a test alert to every configured channel
 ```
 
 Alerts are deduplicated for 20 hours, so a card parked below your buy price
-does not page you every cycle.
+does not page you every cycle. To stop one permanently:
+
+```bash
+pokeflip notify snooze spike:sv3pt5-25:holofoil --days 60
+pokeflip notify list
+```
+
+---
+
+## Hands-off: phone push and one-tap actions
+
+The three channels that reach a phone — `ntfy`, `pushover`, `telegram` —
+behave differently from the rest. They respect a **severity floor** and **quiet
+hours**, and they carry **one-tap buttons**.
+
+```jsonc
+"notify": {
+  "channels": ["file", "ntfy"],
+  "ntfy_topic": "pick-something-long-and-random",
+  "push_min_severity": "warn",     // info | warn | urgent
+  "quiet_hours_start": 22,
+  "quiet_hours_end": 7,
+  "quiet_hours_allow_urgent": true // a buy at your limit still wakes you
+}
+```
+
+ntfy needs no account — install the app, subscribe to your topic, done. **Pick
+an unguessable topic**: anyone who knows it can read your alerts.
+
+### One-tap actions
+
+A *Strong buy* alert arrives with **Bid placed** / **Not interested** /
+**Dismiss**. Tapping *Bid placed* records the buy order at the price the
+recommendation quoted; a listing alert offers *Re-price to $56.86* and *It
+sold*. No dashboard visit, no retyping.
+
+This needs your phone to reach the server, so it needs two settings:
+
+```jsonc
+"server": {
+  "public_base_url": "https://pokeflip.example.com",
+  "api_token": "generate-me"       // python -c "import secrets; print(secrets.token_urlsafe(32))"
+}
+```
+
+Without `public_base_url` the notifications still arrive, just without buttons.
+
+**How the buttons are secured.** Each button is a distinct single-use token
+generated from `secrets`, valid once, with an expiry (7 days by default). A
+replayed link — phones prefetch, people double-tap — reports what already
+happened rather than doing it twice. Only a fixed set of action kinds is
+executable; a tampered payload cannot reach arbitrary code.
+
+**Set `server.api_token` before exposing the server.** With it set, everything
+except `/api/health` and the action links requires
+`Authorization: Bearer <token>` (or `?token=`). Action links are exempt because
+a phone following a notification button cannot send headers — the unguessable
+single-use token in the URL *is* the authorisation. Put TLS in front of it;
+don't expose the port directly.
+
+### Telegram: ask it things
+
+Notifications push at you; the bot pulls. `/scan` while standing in a card shop
+is the point of it.
+
+```
+/scan        what to buy and sell right now
+/portfolio   holdings, value and P&L
+/listings    live listings needing a decision
+/orders      open bids and listings
+/risk        capital concentration
+/bulk        your bulk tail
+/digest      today's full action list
+/refresh     fetch fresh prices now
+```
+
+```jsonc
+"notify": {
+  "channels": ["telegram"],
+  "telegram_bot_token": "from @BotFather",
+  "telegram_chat_id": "your numeric chat id"
+}
+```
+
+The bot long-polls, so it needs no inbound port and works behind any NAT. It
+starts automatically with `pokeflip serve` / `pokeflip run`, or on its own with
+`pokeflip bot`. **Only the configured chat is answered** — a bot token is a URL
+anyone can message.
+
+Tap-to-act buttons do *not* depend on the bot running; they are plain links.
+
+---
+
+## Running it unattended
+
+### Docker
+
+```bash
+cp .env.example .env        # fill in your keys
+docker compose up -d
+docker compose logs -f
+```
+
+The database lives in the `pokeflip-data` volume, so the container stays
+disposable. Back it up with:
+
+```bash
+docker run --rm -v pokeflip-data:/data -v "$PWD":/out alpine \
+  tar czf /out/pokeflip-backup.tgz -C /data .
+```
+
+The port binds to `127.0.0.1` by default. For tap-to-act you need it reachable
+from your phone — put a reverse proxy with TLS in front rather than opening the
+port, and set `POKEFLIP_SERVER__API_TOKEN` first.
+
+### systemd
+
+`deploy/pokeflip.service` runs it as a dedicated unprivileged user with the
+usual hardening (`ProtectSystem=strict`, no capabilities, a single writable
+path). Setup instructions are in the file's header comment.
+
+### Configuration by environment variable
+
+Every setting works as `POKEFLIP_<SECTION>__<KEY>`, which is what makes the
+container and unit file possible:
+
+```bash
+POKEFLIP_NOTIFY__CHANNELS=file,ntfy
+POKEFLIP_NOTIFY__NTFY_TOPIC=...
+POKEFLIP_SERVER__API_TOKEN=...
+POKEFLIP_CAPITAL__BANKROLL=2500
+```
+
+`GET /api/health` reports what is actually wired up — which push channels are
+ready, whether actions are enabled, whether the bot is running, and whether the
+API is authenticated. Worth checking once after deploying.
 
 ---
 
@@ -408,6 +541,8 @@ pokeflip grade card|scan|comp     grading expected value
 pokeflip backtest [--days N] [--horizon N] [--stored]
 pokeflip risk                     capital allocation and concentration
 pokeflip export [--year Y] [--output F]   tax-ready CSV
+pokeflip notify test|snooze|list  check delivery, mute an alert
+pokeflip bot                      Telegram bot in the foreground
 pokeflip runs                     recent job history
 pokeflip run                      scheduler in the foreground
 pokeflip serve                    dashboard, API and scheduler
@@ -457,6 +592,8 @@ GET    /api/grading/scan              everything you hold, ranked
 POST   /api/grading/comps             record an observed graded sale
 GET    /api/backtest                  last signal scorecard
 POST   /api/backtest/run              replay history and re-grade the rules
+POST   /api/act/{token}               redeem a one-tap notification action
+GET    /api/act/{token}               same, from a browser (returns a page)
 GET    /api/alerts                    recent alerts
 GET    /api/runs                      job history
 ```
@@ -555,7 +692,7 @@ Secrets (`api_key`, SMTP password, webhook URLs) are redacted from
 python -m unittest discover -s tests -v
 ```
 
-139 tests, standard library only, no network. The offline provider is
+182 tests, standard library only, no network. The offline provider is
 deterministic, so results are stable run to run.
 
 ---
@@ -579,7 +716,9 @@ pokeflip/
   digest.py       the report, in JSON / Markdown / HTML
   notify.py       delivery channels
   scheduler.py    the periodic jobs
-  api.py          REST API and dashboard host
+  actions.py      one-tap action tokens from notifications
+  bot.py          Telegram command worker
+  api.py          REST API, action endpoint, dashboard host
   cli.py          command line
   web/            dashboard (vanilla JS, no build step)
 ```
@@ -608,3 +747,7 @@ somewhere.
   move; it cannot tell you why.
 - **Bulk estimates by card count assume a rarity mix.** They are for screening
   a listing, not for placing a bid.
+- **Tap-to-act means exposing the server.** Set `server.api_token`, terminate
+  TLS in front of it, and treat your ntfy topic as a secret. The action links
+  themselves are single-use and expiring, but the server behind them holds your
+  whole portfolio.

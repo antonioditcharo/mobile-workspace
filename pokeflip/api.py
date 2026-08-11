@@ -10,15 +10,17 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import actions as actions_mod
 from . import alerts as alerts_mod
 from . import backtest as backtest_mod
 from . import bulk as bulk_mod
@@ -32,6 +34,39 @@ from .providers import ProviderError
 
 log = logging.getLogger("pokeflip.api")
 WEB_DIR = Path(__file__).with_name("web")
+
+
+def _action_page(heading: str, message: str, ok: bool) -> str:
+    """A confirmation you can read one-handed, with no assets to load."""
+    import html
+
+    tone = "#0a7d3f" if ok else "#b4232a"
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pokeflip</title>
+<style>
+ :root {{ color-scheme: light dark; }}
+ body {{ margin:0; min-height:100vh; display:flex; align-items:center;
+   justify-content:center; background:#f6f7f9; color:#16181d; padding:24px;
+   font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
+ .card {{ background:#fff; border:1px solid #e3e6eb; border-radius:14px;
+   padding:28px 24px; max-width:420px; width:100%; text-align:center;
+   box-shadow:0 1px 3px rgba(16,20,28,.07); }}
+ h1 {{ font-size:20px; margin:0 0 10px; color:{tone}; }}
+ p {{ margin:0; color:#52514e; }}
+ .mark {{ font-size:34px; line-height:1; margin-bottom:12px; }}
+ @media (prefers-color-scheme: dark) {{
+   body {{ background:#0f1115; color:#e7e9ee; }}
+   .card {{ background:#171a20; border-color:#262b33; box-shadow:none; }}
+   p {{ color:#99a1af; }}
+ }}
+</style></head>
+<body><div class="card">
+ <div class="mark">{"&#10003;" if ok else "&#9888;"}</div>
+ <h1>{html.escape(heading)}</h1>
+ <p>{html.escape(message)}</p>
+</div></body></html>"""
 
 
 # --- request bodies -----------------------------------------------------
@@ -157,13 +192,40 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
         finally:
             sched.shutdown()
 
-    app = FastAPI(title="pokeflip", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="pokeflip", version="1.1.0", lifespan=lifespan)
     app.state.db = db
     app.state.config = config
     app.state.scheduler = sched
 
     if WEB_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+    @app.middleware("http")
+    async def require_token(request: Request, call_next):
+        """Gate the whole app behind a bearer token when one is configured.
+
+        Only meaningful once the server is exposed, which tap-to-act
+        notifications require. Action links are exempt because the single-use
+        token in the URL is itself the authorisation - a phone following a
+        notification button has no way to send a header.
+        """
+        token = config.server.api_token
+        path = request.url.path
+        exempt = (
+            path.startswith("/api/act/")
+            or path in {"/api/health", "/docs", "/openapi.json", "/redoc"}
+            or path.startswith("/static/")
+        )
+        if token and not exempt:
+            supplied = request.headers.get("authorization", "")
+            if supplied.lower().startswith("bearer "):
+                supplied = supplied[7:]
+            else:
+                supplied = request.query_params.get("token", "")
+            if not secrets.compare_digest(supplied, token):
+                return JSONResponse(status_code=401,
+                                    content={"detail": "missing or invalid API token"})
+        return await call_next(request)
 
     # --- pages ----------------------------------------------------------
 
@@ -173,6 +235,42 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
         if not index.is_file():
             return HTMLResponse("<h1>pokeflip</h1><p>Dashboard assets missing.</p>")
         return FileResponse(index)
+
+    # --- one-tap actions from notifications ------------------------------
+
+    def _run_action(token: str, as_html: bool) -> Any:
+        try:
+            result = actions_mod.execute(db, config, token)
+        except actions_mod.ActionError as exc:
+            if as_html:
+                return HTMLResponse(_action_page("Could not do that", str(exc), False),
+                                    status_code=410)
+            raise HTTPException(410, str(exc)) from exc
+        except ValueError as exc:
+            if as_html:
+                return HTMLResponse(_action_page("Could not do that", str(exc), False),
+                                    status_code=400)
+            raise HTTPException(400, str(exc)) from exc
+
+        if not as_html:
+            return result
+        payload = result.get("result") or {}
+        message = payload.get("message") or result.get("label", "Done")
+        heading = ("Already done" if result["status"] == "already_done"
+                   else result.get("label", "Done"))
+        return HTMLResponse(_action_page(heading, message, True))
+
+    @app.post("/api/act/{token}")
+    def act(token: str) -> Any:
+        # ntfy and friends POST from the phone; answer in JSON.
+        return _run_action(token, as_html=False)
+
+    @app.get("/api/act/{token}", response_class=HTMLResponse)
+    def act_via_link(token: str) -> Any:
+        """Following the button in a browser, which is what Telegram does."""
+        if not config.server.allow_get_actions:
+            raise HTTPException(405, "GET actions are disabled; use POST")
+        return _run_action(token, as_html=True)
 
     # --- meta -----------------------------------------------------------
 
@@ -192,6 +290,24 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
             "source": config.provider.preferred_source,
             "scheduler_running": sched.running,
             "counts": dict(counts) if counts else {},
+            # What is actually wired up for unattended running. Checking this
+            # beats discovering at 3am that nothing was ever configured.
+            "delivery": {
+                "channels": config.notify.channels,
+                "push_ready": [
+                    name for name, ready in (
+                        ("ntfy", bool(config.notify.ntfy_topic)),
+                        ("pushover", bool(config.notify.pushover_token
+                                          and config.notify.pushover_user)),
+                        ("telegram", bool(config.notify.telegram_bot_token
+                                          and config.notify.telegram_chat_id)),
+                    ) if ready and name in config.notify.channels
+                ],
+                "actionable": bool(config.notify.actionable
+                                   and config.server.public_base_url),
+                "bot_running": sched.bot.configured,
+                "authenticated": bool(config.server.api_token),
+            },
         }
 
     @app.get("/api/config")

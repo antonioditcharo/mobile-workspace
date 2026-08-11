@@ -958,6 +958,65 @@ def cmd_export(args: argparse.Namespace, db: Database, config: Config) -> int:
     return 0
 
 
+def cmd_notify(args: argparse.Namespace, db: Database, config: Config) -> int:
+    if args.notify_action == "test":
+        alert = {
+            "id": None,
+            "kind": "test",
+            "severity": args.severity,
+            "title": "pokeflip test alert",
+            "body": "If you can see this, delivery works.",
+            "payload": {},
+            "dedupe_key": "",
+        }
+        results = notify.deliver_alerts(config, [alert], db=db)
+        if not results:
+            print(_c("No channels configured, or realtime_alerts is off.", YELLOW))
+            return 1
+
+        def render() -> None:
+            for entry in results:
+                status = (_c("ok", GREEN) if entry.get("ok")
+                          else _c(f"failed: {entry.get('error')}", RED))
+                extra = ""
+                if entry.get("sent") == 0 and entry.get("note"):
+                    extra = _c(f"  ({entry['note']})", DIM)
+                print(f"  {entry['channel']:<10} {status}{extra}")
+            if not config.server.public_base_url:
+                print()
+                print(_c("  No server.public_base_url set, so notifications carry "
+                         "no action buttons.", DIM))
+        emit(args, results, render)
+        return 0 if all(r.get("ok") for r in results) else 1
+
+    if args.notify_action == "snooze":
+        if args.clear:
+            ok = alerts_mod.unsnooze(db, args.key)
+            print(f"Cleared snooze for {args.key}" if ok
+                  else f"{args.key} was not snoozed")
+            return 0 if ok else 1
+        until = alerts_mod.snooze(db, args.key, args.days)
+        print(f"Muted {args.key} until {until}")
+        return 0
+
+    rows = alerts_mod.list_snoozes(db)
+
+    def render() -> None:
+        heading("Snoozed alerts")
+        table(
+            [[r["dedupe_key"], r["until"][:16].replace("T", " ")] for r in rows],
+            ["KEY", "UNTIL"], ["l", "l"],
+        )
+    emit(args, rows, render)
+    return 0
+
+
+def cmd_bot(args: argparse.Namespace, db: Database, config: Config) -> int:
+    from .bot import run_forever
+
+    return run_forever(db, config)
+
+
 def cmd_runs(args: argparse.Namespace, db: Database, config: Config) -> int:
     rows = [dict(r) for r in db.recent_runs(args.limit)]
 
@@ -1235,6 +1294,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--year", type=int)
     p.add_argument("--output", help="write here instead of stdout")
     p.set_defaults(func=cmd_export)
+
+    p = cmd(sub, "notify", help="test delivery and manage snoozed alerts")
+    nfy = p.add_subparsers(dest="notify_action", required=True)
+    a = cmd(nfy, "test", help="send a test alert to every configured channel")
+    a.add_argument("--severity", default="urgent",
+                   choices=["info", "warn", "urgent"],
+                   help="urgent also bypasses quiet hours")
+    b = cmd(nfy, "snooze", help="stop an alert recurring")
+    b.add_argument("key", help="the alert's dedupe key, e.g. spike:sv3pt5-25:holofoil")
+    b.add_argument("--days", type=int, default=30)
+    b.add_argument("--clear", action="store_true", help="un-snooze it instead")
+    cmd(nfy, "list", help="what is currently muted")
+    p.set_defaults(func=cmd_notify, severity="urgent")
+
+    p = cmd(sub, "bot", help="run the Telegram bot in the foreground")
+    p.set_defaults(func=cmd_bot)
 
     p = cmd(sub, "runs", help="recent job history")
     p.add_argument("--limit", type=int, default=20)
