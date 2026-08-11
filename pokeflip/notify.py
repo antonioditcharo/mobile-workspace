@@ -27,8 +27,11 @@ from .digest import Digest, render_html, render_markdown
 
 log = logging.getLogger("pokeflip.notify")
 
-# Channels that end up on a phone rather than in a terminal or a file.
-PUSH_CHANNELS = {"ntfy", "pushover", "telegram"}
+# Channels that interrupt you rather than waiting in a terminal or a file.
+# They share the severity floor and quiet hours, because a notification you did
+# not ask for at 3am is worse than no notification.
+PHONE_CHANNELS = {"ntfy", "pushover", "telegram"}
+PUSH_CHANNELS = PHONE_CHANNELS | {"desktop"}
 SEVERITY_ORDER = {"info": 0, "warn": 1, "urgent": 2}
 # ntfy uses 1-5, Pushover -2..2.
 NTFY_PRIORITY = {"info": 3, "warn": 4, "urgent": 5}
@@ -112,7 +115,8 @@ def deliver_digest(config: Config, digest: Digest, paths: dict[str, str] | None 
                     "severity": "info",
                 }
                 {"ntfy": _send_ntfy, "pushover": _send_pushover,
-                 "telegram": _send_telegram}[channel](config, summary, [])
+                 "telegram": _send_telegram,
+                 "desktop": _send_desktop}[channel](config, summary, [])
                 results.append({"channel": channel, "ok": True})
             else:
                 results.append({"channel": channel, "ok": False,
@@ -154,7 +158,8 @@ def deliver_alerts(config: Config, alerts: Sequence[dict[str, Any]],
                                     "note": "nothing met the push threshold"})
                     continue
                 sender = {"ntfy": _send_ntfy, "pushover": _send_pushover,
-                          "telegram": _send_telegram}[channel]
+                          "telegram": _send_telegram,
+                          "desktop": _send_desktop}[channel]
                 sent = 0
                 for alert in pushable:
                     sender(config, alert, actions_by_alert.get(id(alert), []))
@@ -236,6 +241,25 @@ def _send_ntfy(config: Config, alert: dict[str, Any], actions: Sequence[Any]) ->
     response = httpx.post(settings.ntfy_server.rstrip("/"), json=payload,
                           headers=headers, timeout=20.0)
     response.raise_for_status()
+
+
+def _send_desktop(config: Config, alert: dict[str, Any],
+                  actions: Sequence[Any]) -> None:
+    """A native notification on the machine this is running on."""
+    from . import desknotify
+
+    # A toast cannot carry buttons, so the first action goes in as a link. At a
+    # desk the dashboard is one click away regardless.
+    link = actions[0].url if actions else ""
+    try:
+        desknotify.notify(
+            title=alert.get("title", "pokeflip"),
+            body=alert.get("body") or "",
+            severity=alert.get("severity", "info"),
+            link=link,
+        )
+    except desknotify.NotifierUnavailable as exc:
+        raise DeliveryError(str(exc)) from exc
 
 
 def _send_pushover(config: Config, alert: dict[str, Any],

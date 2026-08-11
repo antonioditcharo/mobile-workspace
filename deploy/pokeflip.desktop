@@ -1,0 +1,21 @@
+[Desktop Entry]
+# Linux launcher.
+#
+#   cp deploy/pokeflip.desktop ~/.local/share/applications/
+#   # then edit Exec= below to the full path of your pokeflip binary
+#
+# For autostart, copy it to ~/.config/autostart/ as well.
+
+Type=Application
+Name=pokeflip
+GenericName=Pokemon card price tracker
+Comment=Track prices, score buys and sells, value bulk lots
+# Change this to the absolute path if pokeflip is inside a virtualenv, e.g.
+#   Exec=/home/you/pokeflip/.venv/bin/pokeflip app
+Exec=pokeflip app
+Icon=applications-office
+Terminal=false
+Categories=Office;Finance;
+Keywords=pokemon;cards;prices;trading;
+StartupNotify=true
+StartupWMClass=pokeflip

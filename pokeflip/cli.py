@@ -1044,9 +1044,18 @@ def cmd_doctor(args: argparse.Namespace, db: Database, config: Config) -> int:
 
 
 def cmd_setup(args: argparse.Namespace, db: Database, config: Config) -> int:
+    from . import paths as path_utils
     from .setup import wizard
 
-    path = Path(args.path)
+    if args.path:
+        path = Path(args.path)
+    else:
+        # Same resolution the rest of the app uses, so setup writes where
+        # everything else will look.
+        path, source = path_utils.resolve_config_path()
+        if source == "user directory":
+            config.database = path_utils.default_database_for(path, source)
+            config.notify.report_dir = str(path_utils.user_data_dir() / "reports")
     if path.exists() and not args.force:
         print(f"{path} already exists; pass --force to overwrite it")
         return 1
@@ -1330,6 +1339,47 @@ def cmd_run(args: argparse.Namespace, db: Database, config: Config) -> int:
     return 0
 
 
+def cmd_app(args: argparse.Namespace, db: Database, config: Config) -> int:
+    from .desktop import run_app
+
+    return run_app(config, start_scheduler=not args.no_scheduler,
+                   force_browser=args.browser)
+
+
+def cmd_where(args: argparse.Namespace, db: Database, config: Config) -> int:
+    """Where this install keeps its files - the first thing you want to know
+    when the app and the terminal disagree about your portfolio."""
+    from . import paths
+
+    config_path, source = paths.resolve_config_path(args.config)
+    info = {
+        "config": str(config_path),
+        "config_exists": config_path.is_file(),
+        "config_source": source,
+        "database": str(Path(config.database).resolve()),
+        "database_exists": Path(config.database).is_file(),
+        "reports": str(Path(config.notify.report_dir).resolve()),
+        "user_config_dir": str(paths.user_config_dir()),
+        "user_data_dir": str(paths.user_data_dir()),
+        "platform": sys.platform,
+    }
+
+    def render() -> None:
+        heading("Files")
+        print(f"  Config       {info['config']}")
+        print(_c(f"               ({info['config_source']}"
+                 f"{'' if info['config_exists'] else ', does not exist yet'})", DIM))
+        print(f"  Database     {info['database']}")
+        if not info["database_exists"]:
+            print(_c("               (not created yet)", DIM))
+        print(f"  Reports      {info['reports']}")
+        print()
+        print(_c(f"  Per-user config dir: {info['user_config_dir']}", DIM))
+        print(_c(f"  Per-user data dir:   {info['user_data_dir']}", DIM))
+    emit(args, info, render)
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace, db: Database, config: Config) -> int:
     import uvicorn
 
@@ -1574,7 +1624,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_export)
 
     p = cmd(sub, "setup", help="answer a few questions and write config.json")
-    p.add_argument("--path", default="config.json")
+    p.add_argument("--path", help="write somewhere other than the default")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_setup)
 
@@ -1620,6 +1670,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = cmd(sub, "run", help="run the scheduler in the foreground")
     p.set_defaults(func=cmd_run)
 
+    p = cmd(sub, "app", help="open the desktop app window")
+    p.add_argument("--browser", action="store_true",
+                   help="use your normal browser instead of a native window")
+    p.add_argument("--no-scheduler", action="store_true")
+    p.set_defaults(func=cmd_app)
+
+    p = cmd(sub, "where", help="show which config and database this install uses")
+    p.set_defaults(func=cmd_where)
+
     p = cmd(sub, "serve", help="dashboard, API and scheduler")
     p.add_argument("--host")
     p.add_argument("--port", type=int)
@@ -1633,13 +1692,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_config(explicit: str | None = None) -> Config:
+    """Load config from wherever this install keeps it.
+
+    A project-local ``config.json`` wins, so working inside a directory behaves
+    as it always has. Otherwise the per-user location is used, which is what
+    makes a double-clicked app find the same database the terminal does - and
+    its relative paths are anchored to the user data directory rather than to
+    whatever directory the app happened to launch from.
+    """
+    from . import paths
+
+    config_path, source = paths.resolve_config_path(explicit)
+    config = Config.load(config_path)
+
+    if source == "user directory":
+        base = paths.user_data_dir()
+        if not Path(config.database).is_absolute():
+            config.database = str(base / Path(config.database).name)
+        if not Path(config.notify.report_dir).is_absolute():
+            config.notify.report_dir = str(base / config.notify.report_dir)
+    return config
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    config = Config.load(args.config)
+    config = load_config(args.config)
     if args.db:
         config.database = args.db
     db = Database(config.database)
@@ -1653,6 +1735,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
+
+
+def main_app(argv: Sequence[str] | None = None) -> int:
+    """Entry point for the windowed launcher.
+
+    Registered as a GUI script so Windows opens it without a console window
+    sitting behind the app.
+    """
+    return main(["app", *(argv or [])])
 
 
 if __name__ == "__main__":

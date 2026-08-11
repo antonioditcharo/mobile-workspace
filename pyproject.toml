@@ -15,8 +15,22 @@ dependencies = [
     "jinja2>=3.1",
 ]
 
+[project.optional-dependencies]
+# A native app window. Without it `pokeflip app` falls back to your browser,
+# so this is genuinely optional. pywebview drives the webview the OS already
+# has - WebView2 on Windows, WebKit on macOS, GTK or Qt on Linux - and pulls
+# the right backend for the platform it is installed on.
+desktop = [
+    "pywebview>=5.0",
+    "pywebview[qt]>=5.0; sys_platform == 'linux'",
+]
+
 [project.scripts]
 pokeflip = "pokeflip.cli:main"
+
+[project.gui-scripts]
+# Launching this on Windows opens no console window behind the app.
+pokeflip-app = "pokeflip.cli:main_app"
 
 [tool.setuptools.packages.find]
 include = ["pokeflip*"]

@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import logging
 import sys
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -24,6 +25,7 @@ from pokeflip import (  # noqa: E402
     providers, signals,
 )
 from pokeflip import alerts as alerts_mod  # noqa: E402
+from pokeflip import desknotify, desktop, paths  # noqa: E402
 from pokeflip import setup as pfsetup  # noqa: E402
 from pokeflip.alerts import add_watch, evaluate_alerts, store_alerts  # noqa: E402
 from pokeflip.analytics import (  # noqa: E402
@@ -2100,6 +2102,257 @@ class DoctorProviderTests(TempDbCase):
         self.config.provider.catalog_name = "fixture"
         checks = {c.name: c for c in pfsetup.diagnose(self.db, self.config)}
         self.assertEqual(checks["catalog contents"].status, pfsetup.PASS)
+
+
+# --- desktop app --------------------------------------------------------
+
+class PathResolutionTests(unittest.TestCase):
+    """Where files live. Getting this wrong means the app window and the
+    terminal end up on two different databases."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self._saved = {k: os.environ.get(k) for k in
+                       ("POKEFLIP_CONFIG", "XDG_CONFIG_HOME", "XDG_DATA_HOME")}
+        os.environ.pop("POKEFLIP_CONFIG", None)
+        os.environ["XDG_CONFIG_HOME"] = str(self.root / "cfg")
+        os.environ["XDG_DATA_HOME"] = str(self.root / "dat")
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self._tmp.cleanup()
+
+    def test_an_explicit_path_wins(self):
+        path, source = paths.resolve_config_path("/tmp/somewhere.json")
+        self.assertEqual(path, Path("/tmp/somewhere.json"))
+        self.assertEqual(source, "explicit")
+
+    def test_the_environment_beats_the_default(self):
+        os.environ["POKEFLIP_CONFIG"] = "/tmp/from-env.json"
+        path, source = paths.resolve_config_path()
+        self.assertEqual(path, Path("/tmp/from-env.json"))
+        self.assertEqual(source, "environment")
+
+    def test_a_project_local_config_is_preferred(self):
+        project = self.root / "project"
+        project.mkdir()
+        (project / "config.json").write_text("{}")
+        path, source = paths.resolve_config_path(cwd=project)
+        self.assertEqual(path, project / "config.json")
+        self.assertEqual(source, "working directory")
+
+    def test_without_one_it_falls_back_to_the_user_directory(self):
+        empty = self.root / "empty"
+        empty.mkdir()
+        path, source = paths.resolve_config_path(cwd=empty)
+        self.assertEqual(source, "user directory")
+        self.assertTrue(str(path).startswith(str(self.root / "cfg")))
+
+    def test_a_user_config_anchors_data_outside_the_working_directory(self):
+        # An app launched from an icon has no meaningful cwd to write beside.
+        path, source = paths.resolve_config_path(cwd=self.root / "nope")
+        database = paths.default_database_for(path, source)
+        self.assertTrue(Path(database).is_absolute())
+        self.assertIn("dat", database)
+
+    def test_a_project_config_keeps_its_data_beside_it(self):
+        database = paths.default_database_for(Path("config.json"),
+                                              "working directory")
+        self.assertFalse(Path(database).is_absolute())
+
+    def test_loading_anchors_relative_paths_for_a_user_config(self):
+        from pokeflip.cli import load_config
+
+        config = load_config()
+        self.assertTrue(Path(config.database).is_absolute())
+        self.assertTrue(Path(config.notify.report_dir).is_absolute())
+
+    def test_loading_leaves_a_project_config_relative(self):
+        from pokeflip.cli import load_config
+
+        project = self.root / "proj"
+        project.mkdir()
+        (project / "config.json").write_text('{"database": "data/pokeflip.db"}')
+        previous = Path.cwd()
+        os.chdir(project)
+        try:
+            config = load_config()
+        finally:
+            os.chdir(previous)
+        self.assertEqual(config.database, "data/pokeflip.db")
+
+
+class DesktopServerTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=20, include_portfolio=False)
+
+    def test_a_free_port_is_actually_free(self):
+        port = desktop.free_port()
+        self.assertGreater(port, 1024)
+        self.assertNotEqual(port, desktop.free_port())
+
+    def test_the_server_starts_serves_and_stops(self):
+        import httpx as _httpx
+
+        with desktop.running_server(self.config) as server:
+            health = _httpx.get(f"{server.url}/api/health", timeout=5).json()
+            self.assertEqual(health["status"], "ok")
+            page = _httpx.get(f"{server.url}/", timeout=5)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("pokeflip", page.text)
+        # Once stopped, the port stops answering.
+        with self.assertRaises(_httpx.HTTPError):
+            _httpx.get(f"{server.url}/api/health", timeout=2)
+
+    def test_it_binds_only_to_loopback(self):
+        server = desktop.ServerThread(self.config)
+        self.assertEqual(server.host, "127.0.0.1")
+
+    def test_the_window_url_carries_the_api_token(self):
+        # The window is a browser and needs the same credential as anything
+        # else, or a secured install would open to a 401.
+        server = desktop.ServerThread(self.config)
+        self.config.server.api_token = ""
+        self.assertNotIn("token=", desktop._window_url(server, self.config))
+        self.config.server.api_token = "abc"
+        self.assertIn("token=abc", desktop._window_url(server, self.config))
+
+    def test_waiting_gives_up_rather_than_hanging(self):
+        self.assertFalse(
+            desktop.wait_for_server("http://127.0.0.1:1", timeout=0.5))
+
+
+class DesktopNotifyTests(unittest.TestCase):
+    def setUp(self):
+        self.calls: list[dict[str, Any]] = []
+
+        def fake_run(command, input=None, text=None, timeout=None, check=None,
+                     capture_output=None):
+            self.calls.append({"command": list(command), "stdin": input})
+
+            class _Done:
+                returncode = 0
+            return _Done()
+
+        self._saved_run = desknotify.subprocess.run
+        desknotify.subprocess.run = fake_run
+        self._saved_platform = desknotify.sys.platform
+        self._saved_which = desknotify.shutil.which
+
+    def tearDown(self):
+        desknotify.subprocess.run = self._saved_run
+        desknotify.sys.platform = self._saved_platform
+        desknotify.shutil.which = self._saved_which
+
+    def pretend(self, platform: str, tools: Sequence[str] = ()):
+        desknotify.sys.platform = platform
+        desknotify.shutil.which = lambda name: name if name in tools else None
+
+    def test_linux_uses_notify_send_with_urgency(self):
+        self.pretend("linux", ["notify-send"])
+        desknotify.notify("Strong buy", "cheap", "urgent")
+        command = self.calls[0]["command"]
+        self.assertEqual(command[0], "notify-send")
+        self.assertIn("--urgency=critical", command)
+        # Urgent alerts should stay on screen until dismissed.
+        self.assertIn("--expire-time=0", command)
+        self.assertIn("Strong buy", command)
+
+    def test_linux_lower_severities_time_out(self):
+        self.pretend("linux", ["notify-send"])
+        desknotify.notify("Heads up", "body", "info")
+        self.assertIn("--expire-time=12000", self.calls[0]["command"])
+
+    def test_macos_uses_osascript(self):
+        self.pretend("darwin", ["osascript"])
+        desknotify.notify("Sell now", "target hit", "urgent")
+        command = self.calls[0]["command"]
+        self.assertEqual(command[0], "osascript")
+        self.assertIn("display notification", command[2])
+        self.assertIn("sound name", command[2])   # urgent gets a sound
+
+    def test_windows_drives_powershell_over_stdin(self):
+        self.pretend("win32", ["powershell"])
+        desknotify.notify("Sell now", "target hit", "warn")
+        call = self.calls[0]
+        self.assertEqual(call["command"][0], "powershell")
+        self.assertIn("NotifyIcon", call["stdin"])
+        self.assertIn("Warning", call["stdin"])
+
+    def test_a_missing_backend_is_reported_not_swallowed(self):
+        self.pretend("linux", [])
+        self.assertFalse(desknotify.available())
+        with self.assertRaises(desknotify.NotifierUnavailable):
+            desknotify.notify("x")
+
+    def test_quotes_in_a_card_name_cannot_break_out_of_applescript(self):
+        self.pretend("darwin", ["osascript"])
+        desknotify.notify('Charizard "ex"', 'it\'s up 20%', "info")
+        script = self.calls[0]["command"][2]
+        self.assertIn('\\"ex\\"', script)
+
+    def test_quotes_cannot_break_out_of_powershell(self):
+        self.pretend("win32", ["powershell"])
+        desknotify.notify("It's here", "don't panic", "info")
+        stdin = self.calls[0]["stdin"]
+        self.assertIn("It''s here", stdin)
+
+    def test_newlines_are_flattened_so_toasts_stay_readable(self):
+        self.pretend("darwin", ["osascript"])
+        desknotify.notify("Title", "line one\nline two", "info")
+        self.assertNotIn("\n", self.calls[0]["command"][2].split("with title")[0])
+
+    def test_an_action_link_rides_along_in_the_body(self):
+        self.pretend("linux", ["notify-send"])
+        desknotify.notify("Buy", "cheap", "warn", link="https://x/api/act/tok")
+        self.assertIn("https://x/api/act/tok", self.calls[0]["command"][-1])
+
+    def test_long_bodies_are_truncated(self):
+        self.pretend("linux", ["notify-send"])
+        desknotify.notify("T", "x" * 5000, "info")
+        self.assertLessEqual(len(self.calls[0]["command"][-1]),
+                             desknotify.MAX_BODY + 1)
+
+
+class DesktopChannelTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        self.config.notify.channels = ["desktop"]
+        self.sent: list[dict[str, Any]] = []
+
+    def deliver(self, alerts):
+        from pokeflip import desknotify as dn
+
+        original = dn.notify
+        dn.notify = lambda **kw: self.sent.append(kw)
+        try:
+            return notify.deliver_alerts(self.config, alerts, db=self.db)
+        finally:
+            dn.notify = original
+
+    def test_desktop_is_treated_as_a_push_channel(self):
+        self.assertIn("desktop", notify.PUSH_CHANNELS)
+        self.assertNotIn("desktop", notify.PHONE_CHANNELS)
+
+    def test_alerts_reach_the_desktop_notifier(self):
+        results = self.deliver([
+            {"severity": "urgent", "title": "Strong buy", "body": "cheap",
+             "kind": "strong_buy", "dedupe_key": "k"},
+        ])
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0]["title"], "Strong buy")
+        self.assertTrue(results[0]["ok"])
+
+    def test_the_severity_floor_applies_to_the_desktop_too(self):
+        self.config.notify.push_min_severity = "urgent"
+        self.deliver([{"severity": "info", "title": "meh", "dedupe_key": "k"}])
+        self.assertEqual(self.sent, [])
 
 
 if __name__ == "__main__":

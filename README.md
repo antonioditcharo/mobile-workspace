@@ -526,7 +526,7 @@ silent: `pokeflip runs`.
 ### Delivery
 
 Set `notify.channels` to any of `console`, `file`, `webhook`, `slack`,
-`discord`, `email`, `ntfy`, `pushover`, `telegram`. **The default is `console`
+`discord`, `email`, `ntfy`, `pushover`, `telegram`, `desktop`. **The default is `console`
 and `file` only** — a fresh install never posts anywhere until you tell it
 where.
 
@@ -628,6 +628,77 @@ Tap-to-act buttons do *not* depend on the bot running; they are plain links.
 
 ---
 
+## On a PC
+
+```bash
+pip install 'pokeflip[desktop]'
+pokeflip app
+```
+
+`app` starts the server on a private loopback port, waits for it to answer, and
+opens the dashboard in a **native window**. It is the same dashboard the browser
+gets — there is no second UI to keep in step — but it launches from an icon,
+keeps the scheduler running behind it, and shuts everything down when you close
+the window.
+
+The window needs `pywebview`, which drives the webview your OS already has
+(WebView2 on Windows, WebKit on macOS, GTK/Qt on Linux). **Without it the app
+still works** — it opens your normal browser and says so, rather than failing at
+the one moment you wanted a window. `pokeflip app --browser` forces that path.
+
+### Double-clicking it
+
+| Platform | Launcher | Autostart |
+|---|---|---|
+| Windows | `deploy\pokeflip.bat` | shortcut in `shell:startup` |
+| macOS | `deploy/pokeflip.command` (`chmod +x` first) | System Settings → Login Items |
+| Linux | `deploy/pokeflip.desktop` → `~/.local/share/applications/` | copy to `~/.config/autostart/` |
+
+Installing also gives you a `pokeflip-app` entry point registered as a GUI
+script, so on Windows it opens with no console window behind it.
+
+### Desktop notifications
+
+Add `desktop` to `notify.channels` and alerts appear in the corner of your
+screen — the PC counterpart of phone push, subject to the same severity floor
+and quiet hours.
+
+No extra dependencies: each platform is driven through tooling it already ships
+with — `notify-send` on Linux, `osascript` on macOS, and PowerShell driving
+`NotifyIcon` on Windows. A toast cannot carry buttons the way ntfy can, so an
+actionable alert includes its link as text; at a desk the dashboard is one click
+away anyway.
+
+```bash
+pokeflip notify test     # says exactly which backend it found, or what is missing
+```
+
+### Where your files live
+
+A desktop app launched from an icon has no meaningful working directory, so
+config and data resolve like this:
+
+1. `--config` / `POKEFLIP_CONFIG`
+2. a `config.json` in the current directory — so `cd myproject && pokeflip scan`
+   behaves as it always has
+3. the per-user location for your platform
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Config | `%APPDATA%\pokeflip` | `~/Library/Application Support/pokeflip` | `~/.config/pokeflip` |
+| Data | `%LOCALAPPDATA%\pokeflip` | `~/Library/Application Support/pokeflip` | `~/.local/share/pokeflip` |
+
+When the config comes from the per-user location, relative paths inside it are
+anchored to the per-user data directory rather than to wherever the app happened
+to launch from. That is what stops the app window and the terminal quietly
+ending up on two different databases.
+
+```bash
+pokeflip where     # which config and database this install is actually using
+```
+
+---
+
 ## Running it unattended
 
 ### Docker
@@ -705,6 +776,8 @@ pokeflip export [--year Y] [--output F]   tax-ready CSV
 pokeflip notify test|snooze|list  check delivery, mute an alert
 pokeflip bot                      Telegram bot in the foreground
 pokeflip runs                     recent job history
+pokeflip app [--browser]          desktop app window
+pokeflip where                    which config and database this install uses
 pokeflip run                      scheduler in the foreground
 pokeflip serve                    dashboard, API and scheduler
 pokeflip config                   show resolved configuration
@@ -853,7 +926,7 @@ Secrets (`api_key`, SMTP password, webhook URLs) are redacted from
 python -m unittest discover -s tests -v
 ```
 
-239 tests, standard library only, no network. The offline provider is
+265 tests, standard library only, no network. The offline provider is
 deterministic, so results are stable run to run.
 
 ---
@@ -881,6 +954,9 @@ pokeflip/
   bot.py          Telegram command worker
   api.py          REST API, action endpoint, dashboard host
   setup.py        setup wizard and the doctor checks
+  paths.py        where config and data live per platform
+  desktop.py      the native app window
+  desknotify.py   native OS notifications
   cli.py          command line
   web/            dashboard (vanilla JS, no build step)
 ```
