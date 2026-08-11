@@ -190,16 +190,35 @@ export async function prepareImage(blob, maxEdge = 512) {
  */
 export const PASSES = [
   { field: 'subject', question: 'In a few words, what is the main subject of this photo?', tokens: 20 },
-  { field: 'appearance', question: "Describe the main subject's appearance in a few words.", tokens: 28 },
-  { field: 'clothing', question: 'What is the subject wearing? Answer in a few words.', tokens: 24 },
+  {
+    field: 'appearance',
+    // "Only what you can clearly see" is doing real work: the open-ended version
+    // invented a beauty mark on a face that actually had a nose stud.
+    question:
+      "Describe only what you can clearly see of the subject's hair and face, in a few words.",
+    tokens: 28,
+  },
+  {
+    field: 'clothing',
+    question: 'What visible clothing is the subject wearing? If none is visible, say none.',
+    tokens: 24,
+  },
   { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 20 },
   { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 20 },
+  {
+    field: 'placement',
+    // Drives scene inference — decides whether era presets may mention camera
+    // flash, walls and indoor furniture. Cheap and high-leverage.
+    question: 'Was this photo taken indoors or outdoors? Answer with one word.',
+    tokens: 8,
+  },
   { field: 'colors', question: 'List the two or three most dominant colors.', tokens: 18 },
   { field: 'lighting', question: 'Describe the lighting in a few words.', tokens: 20 },
   {
     field: 'shotType',
+    // Phrased as a closed set; answers outside it are discarded by the compiler.
     question:
-      'Is this a close-up, waist-up shot, full-body shot, or wide shot? Answer with just one.',
+      'How is this framed? Answer with exactly one of: close-up shot, waist-up shot, full-body shot, wide shot.',
     tokens: 12,
   },
 ];

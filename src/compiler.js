@@ -18,6 +18,16 @@ import {
   NL_JOINERS,
   QUALITY_TAGS,
   BASE_NEGATIVE,
+  OUTDOOR_HINTS,
+  INDOOR_HINTS,
+  DAYLIGHT_HINTS,
+  CLOSE_FRAMING_HINTS,
+  WAIST_UP_HINTS,
+  FULL_BODY_HINTS,
+  SHOT_TYPES,
+  LIGHTING_NOUNS,
+  SETTING_PREPOSITIONS,
+  DEFAULT_SETTING_PREPOSITION,
 } from './vocab.js';
 
 import {
@@ -29,13 +39,20 @@ import {
   ASPECT_RATIOS,
 } from './eras.js';
 
-/** Categories the vision stage fills in, in the order it asks about them. */
+/**
+ * Categories the vision stage fills in, in the order it asks about them.
+ *
+ * `placement` is asked but never emitted as a prompt tag — it only drives scene
+ * inference, which decides whether era presets may talk about camera flash,
+ * walls and indoor furniture.
+ */
 export const OBSERVATION_FIELDS = [
   'subject',
   'appearance',
   'clothing',
   'action',
   'setting',
+  'placement',
   'colors',
   'lighting',
   'shotType',
@@ -136,6 +153,63 @@ export function fieldToTags(raw) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Scene inference
+ * ------------------------------------------------------------------ */
+
+/**
+ * Work out where the photo was taken and how tightly it is framed, so era
+ * presets can be applied honestly.
+ *
+ * This exists because the presets previously asserted an indoor flash snapshot
+ * unconditionally, which put "hard shadow on the wall behind the subject" on a
+ * photo taken at the beach, and "chunky sneakers" on a head-and-shoulders crop.
+ *
+ * Returns `null` for anything genuinely unknown rather than guessing, so
+ * callers can choose their own default.
+ */
+export function inferScene(observation = {}) {
+  const text = [
+    observation.setting,
+    observation.placement,
+    observation.lighting,
+    observation.action,
+    observation.subject,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const framingText = [observation.shotType, observation.subject].filter(Boolean).join(' ');
+
+  let outdoor = null;
+  if (OUTDOOR_HINTS.test(text)) outdoor = true;
+  else if (INDOOR_HINTS.test(text)) outdoor = false;
+
+  const daylight = DAYLIGHT_HINTS.test(text) ? true : null;
+
+  // Most specific framing wins: a "close-up" claim beats a "wide" one, because
+  // the tight crop is what constrains which garments can be visible.
+  let framing = null;
+  if (CLOSE_FRAMING_HINTS.test(framingText)) framing = 'close';
+  else if (WAIST_UP_HINTS.test(framingText)) framing = 'waistUp';
+  else if (FULL_BODY_HINTS.test(framingText)) framing = 'full';
+
+  return { outdoor, daylight, framing };
+}
+
+/**
+ * Should era presets describe this as a flash-lit photo?
+ *
+ * Flash is the era archetype, so it stays the default when nothing is known —
+ * but daylight or an outdoor setting rules it out.
+ */
+export function isFlashScene(scene = {}, format = {}) {
+  if (format.forceFlash) return true;
+  if (scene.daylight === true) return false;
+  if (scene.outdoor === true) return false;
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
  * Aspect ratio
  * ------------------------------------------------------------------ */
 
@@ -177,7 +251,13 @@ function phraseStock(stock) {
 /**
  * Build the medium, look and artifact tag groups contributed by an era preset.
  */
-export function eraContribution(eraId, formatId, intensity = DEFAULT_INTENSITY, variant = 0) {
+export function eraContribution(
+  eraId,
+  formatId,
+  intensity = DEFAULT_INTENSITY,
+  variant = 0,
+  scene = {},
+) {
   const era = ERAS[eraId] || ERAS[DEFAULT_ERA];
   const formatKey = formatId && era.formats[formatId] ? formatId : era.defaultFormat;
   const format = era.formats[formatKey] || { camera: [], stock: [], artifacts: [] };
@@ -187,19 +267,66 @@ export function eraContribution(eraId, formatId, intensity = DEFAULT_INTENSITY, 
   const stock = phraseStock(pick(format.stock, variant));
   const camera = pick(format.camera, variant);
 
+  // Lighting character depends on the scene; medium texture depends on the
+  // format. Ordered most-characteristic-first, since intensity truncates.
+  const flash = isFlashScene(scene, format);
+  const look = [
+    ...(flash ? era.flashLook || [] : era.daylightLook || []),
+    ...(format.look || []),
+    ...(era.look || []),
+  ];
+
   return {
     era,
     format,
     formatKey,
     framing,
+    flash,
     medium: [framing, stock, camera].filter(Boolean),
-    look: (era.look || []).slice(0, level.look),
+    look: dedupeTags(look).slice(0, level.look),
     artifacts: (format.artifacts || []).slice(0, level.artifacts),
     aspect: format.aspect || era.aspect,
     cfg: format.cfg || era.cfg,
     steps: format.steps || era.steps,
     negativeExclude: [...(era.negativeExclude || []), ...(format.negativeExclude || [])],
   };
+}
+
+/**
+ * Choose era styling for the subject that the photo could actually show.
+ *
+ * Three rules, each from a real failure:
+ *  - Indoor decor (popcorn ceiling, CRT television) must not be added to an
+ *    outdoor photo.
+ *  - Garments below the crop (jeans, sneakers) must not be added to a
+ *    head-and-shoulders shot.
+ *  - If the model already described the clothing, only a generic era marker is
+ *    added, so the prompt doesn't ask for a coral top *and* a windbreaker.
+ */
+export function periodSubjectTags(era, scene = {}, { hasObservedClothing = false } = {}) {
+  const period = era.subjectPeriod;
+  if (!period || Array.isArray(period)) return { appearance: [], clothing: [], setting: [] };
+
+  const framing = scene.framing;
+  const appearance = [...(period.hair || [])];
+  const clothing = [...(period.marker || [])];
+
+  if (!hasObservedClothing) {
+    // Visible from the waist up, so safe unless the crop is tighter than that.
+    if (framing !== 'close') clothing.push(...(period.wardrobeTop || []));
+    // Needs legs and feet in frame — and only when framing is actually known to
+    // be wide. When it's unknown, stay quiet rather than claiming trousers and
+    // shoes that may be outside the crop.
+    if (framing === 'full') clothing.push(...(period.wardrobeFull || []));
+  }
+
+  const setting = [];
+  if (framing !== 'close') {
+    if (scene.outdoor === true) setting.push(...(period.decorOutdoor || []));
+    else if (scene.outdoor === false) setting.push(...(period.decorIndoor || []));
+  }
+
+  return { appearance, clothing, setting };
 }
 
 /* ------------------------------------------------------------------ *
@@ -255,13 +382,52 @@ function renderTagStyle(groups, { emphasis }) {
   return flat.join(', ');
 }
 
-function applyJoiner(category, tags) {
-  const joiner = NL_JOINERS[category] || { lead: '', skipIf: [] };
+/**
+ * Pick the preposition and article for a setting phrase. "in ocean" reads as
+ * being in the water; "at the ocean" is what a caption means.
+ */
+export function settingPhrase(tags) {
   const phrase = tags.join(', ');
+  if (!phrase) return '';
+  // Respect a preposition the model supplied itself.
+  if (/^(in|on|at|inside|outside|near|by|beside|under)\b/i.test(phrase)) return phrase;
+
+  for (const [pattern, lead] of SETTING_PREPOSITIONS) {
+    if (pattern.test(phrase)) return `${lead} ${phrase}`;
+  }
+  return `${DEFAULT_SETTING_PREPOSITION} ${phrase}`;
+}
+
+/**
+ * Turn a bare lighting adjective into a noun phrase, so "lit by sunny" becomes
+ * "lit by sunlight".
+ */
+export function lightingNoun(tag) {
+  const text = String(tag || '').trim();
+  if (!text) return text;
+  const single = text.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(LIGHTING_NOUNS, single)) {
+    return LIGHTING_NOUNS[single];
+  }
+  // "sunny day" / "bright" + noun already reads fine; only bare adjectives are
+  // a problem, and those are single words.
+  return text;
+}
+
+/** Join a short list as prose: "a, b and c". */
+function proseList(items) {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+function applyJoiner(category, tags) {
+  if (category === 'setting') return settingPhrase(tags);
+
+  const joiner = NL_JOINERS[category] || { lead: '', skipIf: [] };
+  const values = category === 'lighting' ? tags.map(lightingNoun) : tags;
+  const phrase = category === 'colors' ? proseList(values) : values.join(', ');
   if (!joiner.lead) return phrase;
-  const opensWith = joiner.skipIf.some((word) =>
-    new RegExp(`^${word}\\b`, 'i').test(phrase),
-  );
+  const opensWith = joiner.skipIf.some((word) => new RegExp(`^${word}\\b`, 'i').test(phrase));
   return opensWith ? phrase : `${joiner.lead}${phrase}`;
 }
 
@@ -338,7 +504,8 @@ export function compile(observation = {}, options = {}) {
     source = null,
   } = options;
 
-  const contribution = eraContribution(eraId, formatId, intensity, variant);
+  const scene = inferScene(observation);
+  const contribution = eraContribution(eraId, formatId, intensity, variant, scene);
   const era = contribution.era;
 
   // Observed fields.
@@ -347,13 +514,25 @@ export function compile(observation = {}, options = {}) {
     groups[field] = fieldToTags(observation[field]);
   }
 
+  // `placement` only informs scene inference; it is never a prompt tag.
+  delete groups.placement;
+
+  // A small model invents shot types ("wide shot" for a tight selfie). It can't
+  // be made accurate, but it can be kept to real values.
+  groups.shotType = groups.shotType.filter((tag) => SHOT_TYPES.includes(tag));
+
   // Era contributions.
   groups.medium = [...(groups.medium || []), ...contribution.medium];
   groups.lighting = [...(groups.lighting || []), ...contribution.look];
   groups.artifacts = [...(groups.artifacts || []), ...contribution.artifacts];
 
-  if (periodSubject && era.subjectPeriod?.length) {
-    groups.appearance = [...groups.appearance, ...era.subjectPeriod];
+  if (periodSubject) {
+    const period = periodSubjectTags(era, scene, {
+      hasObservedClothing: groups.clothing.length > 0,
+    });
+    groups.appearance = [...groups.appearance, ...period.appearance];
+    groups.clothing = [...groups.clothing, ...period.clothing];
+    groups.setting = [...groups.setting, ...period.setting];
   }
 
   if (!era.suppressQualityTags) {
@@ -400,6 +579,8 @@ export function compile(observation = {}, options = {}) {
     intensity,
     style,
     groups,
+    scene,
+    flash: contribution.flash,
     suppressedQualityTags: Boolean(era.suppressQualityTags),
   };
 }

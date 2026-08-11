@@ -184,7 +184,9 @@ test('passes give short prompts with tight token budgets', () => {
     // Some passes are questions, others imperatives ("Describe the ...") —
     // what matters is that each is one short instruction with a small budget.
     assert.match(pass.question, /[.?]$/, `${pass.field} should be one complete instruction`);
-    assert.ok(pass.question.length < 100, `${pass.field} instruction is too long`);
+    // Roomy enough for a pass that enumerates its valid answers, which is how
+    // the shot-type pass is kept to a closed set.
+    assert.ok(pass.question.length < 140, `${pass.field} instruction is too long`);
     assert.ok(pass.tokens > 0 && pass.tokens <= 32, `${pass.field} token budget looks wrong`);
   }
 });

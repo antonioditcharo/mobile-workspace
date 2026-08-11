@@ -158,7 +158,7 @@ async function main() {
     check('four era options render', s.eras.length === 4, s.eras.join('|'));
     check('1990s is the default era', s.pressedEra === '1990s', String(s.pressedEra));
     check('formats render for the era', s.formats.length === 3, s.formats.join('|'));
-    check('one input per observation field', s.fieldCount === 8, String(s.fieldCount));
+    check('one input per observation field', s.fieldCount === 9, String(s.fieldCount));
     check('an era-only prompt compiles with no image', s.prompt.length > 40, s.prompt);
     check('negative prompt is populated', s.negative.length > 60);
     check('1990s CFG/steps/aspect shown', s.cfg === '5.5' && s.steps === '28' && s.aspect === '3:2',
@@ -213,13 +213,37 @@ async function main() {
 
     await page.check('#period-subject');
     s = await readState(page);
-    check('period-subject adds era styling', /baggy jeans/i.test(s.prompt), s.prompt);
+    // The observed shirt suppresses specific era garments, so the generic era
+    // marker is what should appear. The indoor kitchen setting does allow decor.
+    check('period-subject adds era styling', /1990s clothing/i.test(s.prompt), s.prompt);
+    check('period-subject respects observed clothing', !/windbreaker/i.test(s.prompt), s.prompt);
     await page.uncheck('#period-subject');
 
     await page.uncheck('#emphasis');
     s = await readState(page);
     check('emphasis toggle removes weighting', !s.prompt.includes('(man:1.2)'));
     await page.check('#emphasis');
+
+    /* -------------------------------------------------- scene awareness */
+    console.log('\nScene awareness');
+    await page.fill('#field-setting', 'a beach by the ocean');
+    await page.fill('#field-placement', 'outdoors');
+    await page.fill('#field-lighting', 'sunny');
+    await page.fill('#field-shotType', 'close-up shot');
+    s = await readState(page);
+    check('outdoor photo drops the camera flash', !/on-camera flash/i.test(s.prompt), s.prompt);
+    check('outdoor photo drops the wall shadow', !/shadow on the wall/i.test(s.prompt), s.prompt);
+    await page.check('#period-subject');
+    s = await readState(page);
+    check('outdoor photo drops indoor decor', !/popcorn ceiling|beige carpet/i.test(s.prompt), s.prompt);
+    check('close-up drops out-of-frame garments', !/sneakers|baggy jeans/i.test(s.prompt), s.prompt);
+    await page.uncheck('#period-subject');
+
+    // Restore the indoor observation for the remaining checks.
+    await page.fill('#field-setting', 'a kitchen');
+    await page.fill('#field-placement', '');
+    await page.fill('#field-lighting', 'harsh flash');
+    await page.fill('#field-shotType', '');
 
     /* -------------------------------------------------- natural language */
     console.log('\nPrompt style');

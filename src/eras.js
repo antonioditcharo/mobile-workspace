@@ -98,22 +98,20 @@ export const ERAS = {
     snapshotFraming: ['amateur snapshot', 'vernacular family photograph', 'candid snapshot'],
     look: [
       'warm amber color cast',
-      'visible film grain',
       'corner vignetting',
       'green-tinted shadows',
-      'halation around highlights',
-      'soft lens character',
       'low contrast in the shadows',
     ],
-    subjectPeriod: [
-      '1980s clothing',
-      'feathered hair',
-      'high-waisted jeans',
-      'shoulder pads',
-      'wood-paneled wall',
-      'floral wallpaper',
-      'CRT television in the background',
-    ],
+    flashLook: ['direct on-camera flash', 'hard shadow on the wall behind the subject', 'red-eye'],
+    daylightLook: ['halation around highlights', 'lens flare'],
+    subjectPeriod: {
+      hair: ['feathered hair', 'permed hair'],
+      marker: ['1980s clothing'],
+      wardrobeTop: ['shoulder pads', 'oversized knit sweater'],
+      wardrobeFull: ['high-waisted jeans', 'white leather sneakers'],
+      decorIndoor: ['wood-paneled wall', 'floral wallpaper', 'CRT television in the background'],
+      decorOutdoor: ['1980s station wagon in the background'],
+    },
     negative: ['modern clothing', 'modern interior', 'smartphone', 'flat screen television'],
     // The white print border and orange date stamp are wanted, so the base
     // negative must stop rejecting borders, frames and text.
@@ -124,6 +122,7 @@ export const ERAS = {
         label: '35mm print',
         camera: ['manual focus 35mm SLR', 'Canon AE-1', 'Nikon FM2'],
         stock: ['Kodachrome 64', 'Kodacolor VR 400', 'Ektachrome'],
+        look: ['visible film grain', 'soft lens character'],
         artifacts: [
           'white-bordered matte lab print',
           'orange dot-matrix date stamp',
@@ -137,6 +136,7 @@ export const ERAS = {
         camera: ['Polaroid SX-70', 'Polaroid 600'],
         stock: ['instant film'],
         aspect: '1:1',
+        look: ['milky low contrast', 'soft lens character'],
         artifacts: [
           'square instant film frame with wide white bottom border',
           'milky low contrast',
@@ -153,6 +153,9 @@ export const ERAS = {
         label: 'Night flash snapshot',
         camera: ['compact 35mm camera with built-in flash'],
         stock: ['Kodacolor VR 400'],
+        look: ['visible film grain'],
+        // A night flash shot is flash-lit by definition, whatever the scene.
+        forceFlash: true,
         artifacts: [
           'harsh direct flash',
           'background falling off to black',
@@ -173,24 +176,32 @@ export const ERAS = {
     steps: 28,
     aspect: '3:2',
     snapshotFraming: ['amateur snapshot', 'candid family photograph', 'vernacular snapshot'],
-    look: [
+    // Universal to the era, true regardless of scene or format.
+    look: ['warm color cast', 'slight overexposure'],
+    // Only when the photo really is a flash snapshot — never outdoors in daylight,
+    // where "hard shadow on the wall" describes a wall that isn't there.
+    flashLook: [
       'direct on-camera flash',
       'hard shadow on the wall behind the subject',
-      'visible film grain',
-      'punchy consumer film saturation',
-      'slight overexposure',
-      'warm color cast',
       'flat frontal lighting',
+      'red-eye',
     ],
-    subjectPeriod: [
-      '1990s clothing',
-      'baggy jeans',
-      'windbreaker jacket',
-      'chunky sneakers',
-      'popcorn ceiling',
-      'beige carpet',
-      'boxy CRT television',
-    ],
+    // Used instead when the scene is daylit.
+    // Describes the photograph, never the subject's behaviour: an earlier
+    // version asserted "squinting into the sun" on a subject smiling with open
+    // eyes, and over-specified "midday" for a sunset.
+    daylightLook: ['slightly blown highlights', 'strong daylight contrast'],
+    subjectPeriod: {
+      hair: ['1990s hairstyle'],
+      // Safe at any framing — a generic marker rather than specific garments.
+      marker: ['1990s clothing'],
+      // Visible from the waist up.
+      wardrobeTop: ['windbreaker jacket', 'graphic t-shirt'],
+      // Needs the legs and feet in frame.
+      wardrobeFull: ['baggy jeans', 'chunky sneakers'],
+      decorIndoor: ['popcorn ceiling', 'beige carpet', 'boxy CRT television'],
+      decorOutdoor: ['1990s parked cars in the background'],
+    },
     negative: ['modern clothing', 'modern interior', 'smartphone', 'flat screen television'],
     negativeExclude: ['border', 'frame', 'text', 'caption'],
     defaultFormat: '35mm print',
@@ -199,6 +210,9 @@ export const ERAS = {
         label: '35mm print',
         camera: ['compact point-and-shoot', 'Canon Sure Shot', 'Olympus Stylus'],
         stock: ['Kodak Gold 200', 'Fujicolor Superia 400', 'Konica Centuria'],
+        // Texture belongs to the medium, not the era: film grain on a VHS still
+        // is a contradiction.
+        look: ['visible film grain', 'punchy consumer film saturation'],
         artifacts: [
           '4x6 glossy drugstore print',
           'orange dot-matrix date stamp',
@@ -210,10 +224,10 @@ export const ERAS = {
         label: 'Disposable camera',
         camera: ['Kodak FunSaver disposable camera'],
         stock: ['ISO 800 consumer film'],
+        look: ['heavy film grain', 'punchy consumer film saturation'],
         artifacts: [
           'harsh unmodulated flash',
           'red-eye',
-          'heavy film grain',
           'soft plastic lens distortion',
           'light leak streak',
           'crooked handheld framing',
@@ -225,6 +239,8 @@ export const ERAS = {
         camera: ['consumer camcorder'],
         stock: ['VHS tape'],
         aspect: '4:3',
+        // Video, not film — no grain, no film saturation.
+        look: ['soft video image', 'washed-out video color', 'analogue video noise'],
         artifacts: [
           'interlaced video still with visible scanlines',
           'tracking distortion',
@@ -248,23 +264,22 @@ export const ERAS = {
     steps: 26,
     aspect: '4:3',
     snapshotFraming: ['amateur digital snapshot', 'candid party snapshot', 'vernacular snapshot'],
-    look: [
+    look: ['limited dynamic range', 'digital noise in the shadows', 'small sensor look'],
+    flashLook: [
       'harsh built-in flash',
       'background falling off underexposed',
-      'limited dynamic range',
-      'digital noise in the shadows',
-      'cyan-green fluorescent color cast',
       'flat frontal lighting',
-      'small sensor look',
+      'cyan-green fluorescent color cast',
     ],
-    subjectPeriod: [
-      'early 2000s clothing',
-      'low-rise jeans',
-      'frosted hair tips',
-      'velour tracksuit',
-      'beige desktop computer',
-      'silver electronics',
-    ],
+    daylightLook: ['blown-out sky', 'washed-out daylight color', 'heavy sensor noise in shadows'],
+    subjectPeriod: {
+      hair: ['frosted hair tips', 'flat-ironed hair'],
+      marker: ['early 2000s clothing'],
+      wardrobeTop: ['velour tracksuit top', 'spaghetti-strap top'],
+      wardrobeFull: ['low-rise jeans', 'chunky flip-flops'],
+      decorIndoor: ['beige desktop computer', 'silver electronics'],
+      decorOutdoor: ['early 2000s parked cars in the background'],
+    },
     negative: ['modern clothing', 'modern interior', 'smartphone'],
     // Compression, softness and the burnt-in timestamp are the whole point of
     // this era, so they cannot also be negated.
@@ -275,6 +290,7 @@ export const ERAS = {
         label: 'Digital compact (3MP)',
         camera: ['3 megapixel Sony Cyber-shot', 'Canon PowerShot A-series', 'Nikon Coolpix'],
         stock: ['early digital sensor'],
+        look: ['oversharpened digital texture', 'low megapixel softness'],
         artifacts: [
           'visible JPEG compression blocks',
           'yellow digital timestamp in the corner',
@@ -288,6 +304,7 @@ export const ERAS = {
         label: 'VGA cameraphone',
         camera: ['early 2000s VGA cameraphone'],
         stock: ['640x480 phone sensor'],
+        look: ['smeared low-resolution detail', 'muddy desaturated color'],
         artifacts: [
           'extreme JPEG compression',
           'smeared low-resolution detail',
@@ -301,6 +318,7 @@ export const ERAS = {
         label: '35mm print (still common)',
         camera: ['compact point-and-shoot'],
         stock: ['Kodak Max 400', 'Fujicolor Superia 400'],
+        look: ['visible film grain'],
         artifacts: [
           '4x6 glossy lab print',
           'orange dot-matrix date stamp',
@@ -327,7 +345,9 @@ export const ERAS = {
     aspect: 'source',
     snapshotFraming: [],
     look: [],
-    subjectPeriod: [],
+    flashLook: [],
+    daylightLook: [],
+    subjectPeriod: {},
     negative: [],
     negativeExclude: [],
     defaultFormat: 'plain',

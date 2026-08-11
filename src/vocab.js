@@ -118,6 +118,12 @@ export const SYNONYMS = {
   'a close up view': 'close-up shot',
   'full body': 'full-body shot',
   'full length': 'full-body shot',
+  'waist up': 'waist-up shot',
+  'waist-up': 'waist-up shot',
+  wide: 'wide shot',
+  // A selfie is close framing by definition; treat it as the constraint it is.
+  selfie: 'close-up shot',
+  'selfie shot': 'close-up shot',
   'head and shoulders': 'portrait framing',
   'upper body': 'waist-up shot',
   'from above': 'high angle shot',
@@ -160,6 +166,94 @@ export const SYNONYMS = {
   beach: 'beach',
   park: 'public park',
 };
+
+/* ------------------------------------------------------------------ *
+ * Scene inference
+ *
+ * Era presets used to apply indoor-flash-snapshot assumptions to every photo,
+ * which produced "hard shadow on the wall behind the subject" for a picture
+ * taken on a beach. These tables let the compiler notice where the photo was
+ * taken and how tightly it is framed, and gate era tags accordingly.
+ * ------------------------------------------------------------------ */
+
+/** Settings and lighting that place a photo outdoors. */
+export const OUTDOOR_HINTS =
+  /\b(outdoor|outside|beach|ocean|sea|shore|coast|sand|lake|river|pool|sky|cloud|sunset|sunrise|street|road|sidewalk|park|garden|yard|field|meadow|forest|woods|mountain|hill|trail|desert|snow|city|rooftop|balcony|patio|stadium|parking lot)\b/i;
+
+/** Settings that place a photo indoors. */
+export const INDOOR_HINTS =
+  /\b(indoor|inside|interior|room|kitchen|bedroom|bathroom|living room|hallway|basement|attic|office|classroom|restaurant|bar|club|store|shop|church|garage|studio|wall|ceiling|couch|sofa|bed|desk|table)\b/i;
+
+/** Lighting that rules out a flash snapshot. */
+export const DAYLIGHT_HINTS =
+  /\b(sun|sunny|sunlight|sunlit|daylight|daytime|natural light|golden hour|overcast|cloudy|bright|window light|dusk|dawn|sunset|sunrise)\b/i;
+
+/** Framing tight enough that legs and feet cannot be in shot. */
+export const CLOSE_FRAMING_HINTS =
+  /\b(close-?up|closeup|portrait|headshot|head and shoulders|face|selfie|bust)\b/i;
+
+/** Framing that shows the upper body but not the legs. */
+export const WAIST_UP_HINTS = /\b(waist-?up|upper body|half body|chest-?up|torso)\b/i;
+
+/** Framing wide enough to show the whole subject. */
+export const FULL_BODY_HINTS = /\b(full-?body|full-?length|wide|whole body|environmental)\b/i;
+
+/**
+ * Valid answers for the shot-type pass. A small model will happily answer
+ * "wide shot" for a tight selfie; it cannot be stopped from being wrong, but it
+ * can be stopped from inventing values outside this set.
+ */
+export const SHOT_TYPES = [
+  'close-up shot',
+  'portrait framing',
+  'waist-up shot',
+  'full-body shot',
+  'wide shot',
+  'wide-angle shot',
+  'high angle shot',
+  'low angle shot',
+  'eye-level shot',
+  'selfie',
+];
+
+/**
+ * Bare adjectives the lighting pass returns. "lit by sunny" is not English, so
+ * these are mapped to noun phrases before the natural-language joiner runs.
+ */
+export const LIGHTING_NOUNS = {
+  sunny: 'sunlight',
+  sunlit: 'sunlight',
+  bright: 'bright light',
+  dark: 'dim light',
+  dim: 'dim light',
+  cloudy: 'overcast light',
+  overcast: 'overcast light',
+  golden: 'golden hour light',
+  warm: 'warm light',
+  cool: 'cool light',
+  harsh: 'harsh light',
+  soft: 'soft light',
+  natural: 'natural light',
+  artificial: 'artificial light',
+  fluorescent: 'fluorescent light',
+  indoor: 'indoor light',
+  outdoor: 'daylight',
+};
+
+/**
+ * Preposition and article for a setting phrase in natural-language mode.
+ * Without this the compiler emitted "in ocean", which reads as being in the
+ * water rather than beside it. First match wins.
+ */
+export const SETTING_PREPOSITIONS = [
+  [/\b(ocean|sea|beach|shore|coast|lake|river|pool)\b/i, 'at the'],
+  [/\b(street|road|sidewalk|bridge|trail|path|rooftop|balcony)\b/i, 'on a'],
+  [/\b(mountain|hill|field|meadow|desert)\b/i, 'in an open'],
+  [/\b(sunset|sunrise|dusk|dawn|golden hour)\b/i, 'at'],
+];
+
+/** Fallback preposition for settings that match nothing above. */
+export const DEFAULT_SETTING_PREPOSITION = 'in a';
 
 /**
  * Words ignored when testing two phrases for near-duplication, so that
@@ -225,8 +319,9 @@ export const NL_JOINERS = {
   appearance: { lead: '', skipIf: [] },
   clothing: { lead: 'wearing ', skipIf: ['wearing', 'dressed', 'in a', 'in an'] },
   action: { lead: '', skipIf: [] },
-  setting: { lead: 'in ', skipIf: ['in', 'on', 'at', 'inside', 'outside', 'near', 'by'] },
-  colors: { lead: '', skipIf: [] },
+  // The setting preposition is chosen per phrase — see SETTING_PREPOSITIONS.
+  setting: { lead: '', skipIf: [] },
+  colors: { lead: 'in shades of ', skipIf: ['in shades'] },
   lighting: { lead: 'lit by ', skipIf: ['lit', 'under', 'backlighting', 'in', 'with'] },
   composition: { lead: '', skipIf: [] },
   medium: { lead: '', skipIf: [] },

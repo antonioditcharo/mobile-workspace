@@ -32,6 +32,7 @@ const FIELD_LABELS = {
   clothing: 'Clothing',
   action: 'Action',
   setting: 'Setting',
+  placement: 'Indoor/outdoor',
   colors: 'Colors',
   lighting: 'Lighting',
   shotType: 'Shot type',

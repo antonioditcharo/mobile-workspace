@@ -78,6 +78,24 @@ JPEG blocks; an 80s print *should* have a white border and a date stamp; a VHS s
 low-resolution. The base negative list rejects all of those, so era presets subtract from
 it (`negativeExclude`), and a test asserts no era ever negates an artifact it asks for.
 
+**Era tags must match the actual photo.** Presets originally asserted an indoor flash
+snapshot on film for every image, which put "hard shadow on the wall behind the subject" on
+a beach photo, indoor furniture on an outdoor one, sneakers on a head-and-shoulders crop,
+and film grain on a VHS still. So the compiler now infers scene and framing
+(`inferScene`) and gates accordingly:
+
+| Condition | Effect |
+|---|---|
+| Outdoors or daylit | No flash, no wall shadow, no red-eye; daylight look instead |
+| Outdoors | Indoor decor suppressed |
+| Close-up / waist-up | Garments outside the crop suppressed |
+| Framing unknown | Treated conservatively — no full-body garments claimed |
+| Clothing already observed | Only a generic era marker added, so it can't contradict |
+| Video format | Film grain and film saturation suppressed |
+
+Look tags describe the **photograph**, never the subject's behaviour — an earlier version
+emitted "squinting into the sun" for someone smiling with their eyes open.
+
 ---
 
 ## Layout

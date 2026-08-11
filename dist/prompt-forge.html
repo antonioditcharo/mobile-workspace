@@ -608,6 +608,12 @@ const SYNONYMS = {
   'a close up view': 'close-up shot',
   'full body': 'full-body shot',
   'full length': 'full-body shot',
+  'waist up': 'waist-up shot',
+  'waist-up': 'waist-up shot',
+  wide: 'wide shot',
+  // A selfie is close framing by definition; treat it as the constraint it is.
+  selfie: 'close-up shot',
+  'selfie shot': 'close-up shot',
   'head and shoulders': 'portrait framing',
   'upper body': 'waist-up shot',
   'from above': 'high angle shot',
@@ -650,6 +656,94 @@ const SYNONYMS = {
   beach: 'beach',
   park: 'public park',
 };
+
+/* ------------------------------------------------------------------ *
+ * Scene inference
+ *
+ * Era presets used to apply indoor-flash-snapshot assumptions to every photo,
+ * which produced "hard shadow on the wall behind the subject" for a picture
+ * taken on a beach. These tables let the compiler notice where the photo was
+ * taken and how tightly it is framed, and gate era tags accordingly.
+ * ------------------------------------------------------------------ */
+
+/** Settings and lighting that place a photo outdoors. */
+const OUTDOOR_HINTS =
+  /\b(outdoor|outside|beach|ocean|sea|shore|coast|sand|lake|river|pool|sky|cloud|sunset|sunrise|street|road|sidewalk|park|garden|yard|field|meadow|forest|woods|mountain|hill|trail|desert|snow|city|rooftop|balcony|patio|stadium|parking lot)\b/i;
+
+/** Settings that place a photo indoors. */
+const INDOOR_HINTS =
+  /\b(indoor|inside|interior|room|kitchen|bedroom|bathroom|living room|hallway|basement|attic|office|classroom|restaurant|bar|club|store|shop|church|garage|studio|wall|ceiling|couch|sofa|bed|desk|table)\b/i;
+
+/** Lighting that rules out a flash snapshot. */
+const DAYLIGHT_HINTS =
+  /\b(sun|sunny|sunlight|sunlit|daylight|daytime|natural light|golden hour|overcast|cloudy|bright|window light|dusk|dawn|sunset|sunrise)\b/i;
+
+/** Framing tight enough that legs and feet cannot be in shot. */
+const CLOSE_FRAMING_HINTS =
+  /\b(close-?up|closeup|portrait|headshot|head and shoulders|face|selfie|bust)\b/i;
+
+/** Framing that shows the upper body but not the legs. */
+const WAIST_UP_HINTS = /\b(waist-?up|upper body|half body|chest-?up|torso)\b/i;
+
+/** Framing wide enough to show the whole subject. */
+const FULL_BODY_HINTS = /\b(full-?body|full-?length|wide|whole body|environmental)\b/i;
+
+/**
+ * Valid answers for the shot-type pass. A small model will happily answer
+ * "wide shot" for a tight selfie; it cannot be stopped from being wrong, but it
+ * can be stopped from inventing values outside this set.
+ */
+const SHOT_TYPES = [
+  'close-up shot',
+  'portrait framing',
+  'waist-up shot',
+  'full-body shot',
+  'wide shot',
+  'wide-angle shot',
+  'high angle shot',
+  'low angle shot',
+  'eye-level shot',
+  'selfie',
+];
+
+/**
+ * Bare adjectives the lighting pass returns. "lit by sunny" is not English, so
+ * these are mapped to noun phrases before the natural-language joiner runs.
+ */
+const LIGHTING_NOUNS = {
+  sunny: 'sunlight',
+  sunlit: 'sunlight',
+  bright: 'bright light',
+  dark: 'dim light',
+  dim: 'dim light',
+  cloudy: 'overcast light',
+  overcast: 'overcast light',
+  golden: 'golden hour light',
+  warm: 'warm light',
+  cool: 'cool light',
+  harsh: 'harsh light',
+  soft: 'soft light',
+  natural: 'natural light',
+  artificial: 'artificial light',
+  fluorescent: 'fluorescent light',
+  indoor: 'indoor light',
+  outdoor: 'daylight',
+};
+
+/**
+ * Preposition and article for a setting phrase in natural-language mode.
+ * Without this the compiler emitted "in ocean", which reads as being in the
+ * water rather than beside it. First match wins.
+ */
+const SETTING_PREPOSITIONS = [
+  [/\b(ocean|sea|beach|shore|coast|lake|river|pool)\b/i, 'at the'],
+  [/\b(street|road|sidewalk|bridge|trail|path|rooftop|balcony)\b/i, 'on a'],
+  [/\b(mountain|hill|field|meadow|desert)\b/i, 'in an open'],
+  [/\b(sunset|sunrise|dusk|dawn|golden hour)\b/i, 'at'],
+];
+
+/** Fallback preposition for settings that match nothing above. */
+const DEFAULT_SETTING_PREPOSITION = 'in a';
 
 /**
  * Words ignored when testing two phrases for near-duplication, so that
@@ -715,8 +809,9 @@ const NL_JOINERS = {
   appearance: { lead: '', skipIf: [] },
   clothing: { lead: 'wearing ', skipIf: ['wearing', 'dressed', 'in a', 'in an'] },
   action: { lead: '', skipIf: [] },
-  setting: { lead: 'in ', skipIf: ['in', 'on', 'at', 'inside', 'outside', 'near', 'by'] },
-  colors: { lead: '', skipIf: [] },
+  // The setting preposition is chosen per phrase — see SETTING_PREPOSITIONS.
+  setting: { lead: '', skipIf: [] },
+  colors: { lead: 'in shades of ', skipIf: ['in shades'] },
   lighting: { lead: 'lit by ', skipIf: ['lit', 'under', 'backlighting', 'in', 'with'] },
   composition: { lead: '', skipIf: [] },
   medium: { lead: '', skipIf: [] },
@@ -867,22 +962,20 @@ const ERAS = {
     snapshotFraming: ['amateur snapshot', 'vernacular family photograph', 'candid snapshot'],
     look: [
       'warm amber color cast',
-      'visible film grain',
       'corner vignetting',
       'green-tinted shadows',
-      'halation around highlights',
-      'soft lens character',
       'low contrast in the shadows',
     ],
-    subjectPeriod: [
-      '1980s clothing',
-      'feathered hair',
-      'high-waisted jeans',
-      'shoulder pads',
-      'wood-paneled wall',
-      'floral wallpaper',
-      'CRT television in the background',
-    ],
+    flashLook: ['direct on-camera flash', 'hard shadow on the wall behind the subject', 'red-eye'],
+    daylightLook: ['halation around highlights', 'lens flare'],
+    subjectPeriod: {
+      hair: ['feathered hair', 'permed hair'],
+      marker: ['1980s clothing'],
+      wardrobeTop: ['shoulder pads', 'oversized knit sweater'],
+      wardrobeFull: ['high-waisted jeans', 'white leather sneakers'],
+      decorIndoor: ['wood-paneled wall', 'floral wallpaper', 'CRT television in the background'],
+      decorOutdoor: ['1980s station wagon in the background'],
+    },
     negative: ['modern clothing', 'modern interior', 'smartphone', 'flat screen television'],
     // The white print border and orange date stamp are wanted, so the base
     // negative must stop rejecting borders, frames and text.
@@ -893,6 +986,7 @@ const ERAS = {
         label: '35mm print',
         camera: ['manual focus 35mm SLR', 'Canon AE-1', 'Nikon FM2'],
         stock: ['Kodachrome 64', 'Kodacolor VR 400', 'Ektachrome'],
+        look: ['visible film grain', 'soft lens character'],
         artifacts: [
           'white-bordered matte lab print',
           'orange dot-matrix date stamp',
@@ -906,6 +1000,7 @@ const ERAS = {
         camera: ['Polaroid SX-70', 'Polaroid 600'],
         stock: ['instant film'],
         aspect: '1:1',
+        look: ['milky low contrast', 'soft lens character'],
         artifacts: [
           'square instant film frame with wide white bottom border',
           'milky low contrast',
@@ -922,6 +1017,9 @@ const ERAS = {
         label: 'Night flash snapshot',
         camera: ['compact 35mm camera with built-in flash'],
         stock: ['Kodacolor VR 400'],
+        look: ['visible film grain'],
+        // A night flash shot is flash-lit by definition, whatever the scene.
+        forceFlash: true,
         artifacts: [
           'harsh direct flash',
           'background falling off to black',
@@ -942,24 +1040,32 @@ const ERAS = {
     steps: 28,
     aspect: '3:2',
     snapshotFraming: ['amateur snapshot', 'candid family photograph', 'vernacular snapshot'],
-    look: [
+    // Universal to the era, true regardless of scene or format.
+    look: ['warm color cast', 'slight overexposure'],
+    // Only when the photo really is a flash snapshot — never outdoors in daylight,
+    // where "hard shadow on the wall" describes a wall that isn't there.
+    flashLook: [
       'direct on-camera flash',
       'hard shadow on the wall behind the subject',
-      'visible film grain',
-      'punchy consumer film saturation',
-      'slight overexposure',
-      'warm color cast',
       'flat frontal lighting',
+      'red-eye',
     ],
-    subjectPeriod: [
-      '1990s clothing',
-      'baggy jeans',
-      'windbreaker jacket',
-      'chunky sneakers',
-      'popcorn ceiling',
-      'beige carpet',
-      'boxy CRT television',
-    ],
+    // Used instead when the scene is daylit.
+    // Describes the photograph, never the subject's behaviour: an earlier
+    // version asserted "squinting into the sun" on a subject smiling with open
+    // eyes, and over-specified "midday" for a sunset.
+    daylightLook: ['slightly blown highlights', 'strong daylight contrast'],
+    subjectPeriod: {
+      hair: ['1990s hairstyle'],
+      // Safe at any framing — a generic marker rather than specific garments.
+      marker: ['1990s clothing'],
+      // Visible from the waist up.
+      wardrobeTop: ['windbreaker jacket', 'graphic t-shirt'],
+      // Needs the legs and feet in frame.
+      wardrobeFull: ['baggy jeans', 'chunky sneakers'],
+      decorIndoor: ['popcorn ceiling', 'beige carpet', 'boxy CRT television'],
+      decorOutdoor: ['1990s parked cars in the background'],
+    },
     negative: ['modern clothing', 'modern interior', 'smartphone', 'flat screen television'],
     negativeExclude: ['border', 'frame', 'text', 'caption'],
     defaultFormat: '35mm print',
@@ -968,6 +1074,9 @@ const ERAS = {
         label: '35mm print',
         camera: ['compact point-and-shoot', 'Canon Sure Shot', 'Olympus Stylus'],
         stock: ['Kodak Gold 200', 'Fujicolor Superia 400', 'Konica Centuria'],
+        // Texture belongs to the medium, not the era: film grain on a VHS still
+        // is a contradiction.
+        look: ['visible film grain', 'punchy consumer film saturation'],
         artifacts: [
           '4x6 glossy drugstore print',
           'orange dot-matrix date stamp',
@@ -979,10 +1088,10 @@ const ERAS = {
         label: 'Disposable camera',
         camera: ['Kodak FunSaver disposable camera'],
         stock: ['ISO 800 consumer film'],
+        look: ['heavy film grain', 'punchy consumer film saturation'],
         artifacts: [
           'harsh unmodulated flash',
           'red-eye',
-          'heavy film grain',
           'soft plastic lens distortion',
           'light leak streak',
           'crooked handheld framing',
@@ -994,6 +1103,8 @@ const ERAS = {
         camera: ['consumer camcorder'],
         stock: ['VHS tape'],
         aspect: '4:3',
+        // Video, not film — no grain, no film saturation.
+        look: ['soft video image', 'washed-out video color', 'analogue video noise'],
         artifacts: [
           'interlaced video still with visible scanlines',
           'tracking distortion',
@@ -1017,23 +1128,22 @@ const ERAS = {
     steps: 26,
     aspect: '4:3',
     snapshotFraming: ['amateur digital snapshot', 'candid party snapshot', 'vernacular snapshot'],
-    look: [
+    look: ['limited dynamic range', 'digital noise in the shadows', 'small sensor look'],
+    flashLook: [
       'harsh built-in flash',
       'background falling off underexposed',
-      'limited dynamic range',
-      'digital noise in the shadows',
-      'cyan-green fluorescent color cast',
       'flat frontal lighting',
-      'small sensor look',
+      'cyan-green fluorescent color cast',
     ],
-    subjectPeriod: [
-      'early 2000s clothing',
-      'low-rise jeans',
-      'frosted hair tips',
-      'velour tracksuit',
-      'beige desktop computer',
-      'silver electronics',
-    ],
+    daylightLook: ['blown-out sky', 'washed-out daylight color', 'heavy sensor noise in shadows'],
+    subjectPeriod: {
+      hair: ['frosted hair tips', 'flat-ironed hair'],
+      marker: ['early 2000s clothing'],
+      wardrobeTop: ['velour tracksuit top', 'spaghetti-strap top'],
+      wardrobeFull: ['low-rise jeans', 'chunky flip-flops'],
+      decorIndoor: ['beige desktop computer', 'silver electronics'],
+      decorOutdoor: ['early 2000s parked cars in the background'],
+    },
     negative: ['modern clothing', 'modern interior', 'smartphone'],
     // Compression, softness and the burnt-in timestamp are the whole point of
     // this era, so they cannot also be negated.
@@ -1044,6 +1154,7 @@ const ERAS = {
         label: 'Digital compact (3MP)',
         camera: ['3 megapixel Sony Cyber-shot', 'Canon PowerShot A-series', 'Nikon Coolpix'],
         stock: ['early digital sensor'],
+        look: ['oversharpened digital texture', 'low megapixel softness'],
         artifacts: [
           'visible JPEG compression blocks',
           'yellow digital timestamp in the corner',
@@ -1057,6 +1168,7 @@ const ERAS = {
         label: 'VGA cameraphone',
         camera: ['early 2000s VGA cameraphone'],
         stock: ['640x480 phone sensor'],
+        look: ['smeared low-resolution detail', 'muddy desaturated color'],
         artifacts: [
           'extreme JPEG compression',
           'smeared low-resolution detail',
@@ -1070,6 +1182,7 @@ const ERAS = {
         label: '35mm print (still common)',
         camera: ['compact point-and-shoot'],
         stock: ['Kodak Max 400', 'Fujicolor Superia 400'],
+        look: ['visible film grain'],
         artifacts: [
           '4x6 glossy lab print',
           'orange dot-matrix date stamp',
@@ -1096,7 +1209,9 @@ const ERAS = {
     aspect: 'source',
     snapshotFraming: [],
     look: [],
-    subjectPeriod: [],
+    flashLook: [],
+    daylightLook: [],
+    subjectPeriod: {},
     negative: [],
     negativeExclude: [],
     defaultFormat: 'plain',
@@ -1135,13 +1250,20 @@ const ASPECT_RATIOS = [
 
 
 
-/** Categories the vision stage fills in, in the order it asks about them. */
+/**
+ * Categories the vision stage fills in, in the order it asks about them.
+ *
+ * `placement` is asked but never emitted as a prompt tag — it only drives scene
+ * inference, which decides whether era presets may talk about camera flash,
+ * walls and indoor furniture.
+ */
 const OBSERVATION_FIELDS = [
   'subject',
   'appearance',
   'clothing',
   'action',
   'setting',
+  'placement',
   'colors',
   'lighting',
   'shotType',
@@ -1242,6 +1364,63 @@ function fieldToTags(raw) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Scene inference
+ * ------------------------------------------------------------------ */
+
+/**
+ * Work out where the photo was taken and how tightly it is framed, so era
+ * presets can be applied honestly.
+ *
+ * This exists because the presets previously asserted an indoor flash snapshot
+ * unconditionally, which put "hard shadow on the wall behind the subject" on a
+ * photo taken at the beach, and "chunky sneakers" on a head-and-shoulders crop.
+ *
+ * Returns `null` for anything genuinely unknown rather than guessing, so
+ * callers can choose their own default.
+ */
+function inferScene(observation = {}) {
+  const text = [
+    observation.setting,
+    observation.placement,
+    observation.lighting,
+    observation.action,
+    observation.subject,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const framingText = [observation.shotType, observation.subject].filter(Boolean).join(' ');
+
+  let outdoor = null;
+  if (OUTDOOR_HINTS.test(text)) outdoor = true;
+  else if (INDOOR_HINTS.test(text)) outdoor = false;
+
+  const daylight = DAYLIGHT_HINTS.test(text) ? true : null;
+
+  // Most specific framing wins: a "close-up" claim beats a "wide" one, because
+  // the tight crop is what constrains which garments can be visible.
+  let framing = null;
+  if (CLOSE_FRAMING_HINTS.test(framingText)) framing = 'close';
+  else if (WAIST_UP_HINTS.test(framingText)) framing = 'waistUp';
+  else if (FULL_BODY_HINTS.test(framingText)) framing = 'full';
+
+  return { outdoor, daylight, framing };
+}
+
+/**
+ * Should era presets describe this as a flash-lit photo?
+ *
+ * Flash is the era archetype, so it stays the default when nothing is known —
+ * but daylight or an outdoor setting rules it out.
+ */
+function isFlashScene(scene = {}, format = {}) {
+  if (format.forceFlash) return true;
+  if (scene.daylight === true) return false;
+  if (scene.outdoor === true) return false;
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
  * Aspect ratio
  * ------------------------------------------------------------------ */
 
@@ -1283,7 +1462,13 @@ function phraseStock(stock) {
 /**
  * Build the medium, look and artifact tag groups contributed by an era preset.
  */
-function eraContribution(eraId, formatId, intensity = DEFAULT_INTENSITY, variant = 0) {
+function eraContribution(
+  eraId,
+  formatId,
+  intensity = DEFAULT_INTENSITY,
+  variant = 0,
+  scene = {},
+) {
   const era = ERAS[eraId] || ERAS[DEFAULT_ERA];
   const formatKey = formatId && era.formats[formatId] ? formatId : era.defaultFormat;
   const format = era.formats[formatKey] || { camera: [], stock: [], artifacts: [] };
@@ -1293,19 +1478,66 @@ function eraContribution(eraId, formatId, intensity = DEFAULT_INTENSITY, variant
   const stock = phraseStock(pick(format.stock, variant));
   const camera = pick(format.camera, variant);
 
+  // Lighting character depends on the scene; medium texture depends on the
+  // format. Ordered most-characteristic-first, since intensity truncates.
+  const flash = isFlashScene(scene, format);
+  const look = [
+    ...(flash ? era.flashLook || [] : era.daylightLook || []),
+    ...(format.look || []),
+    ...(era.look || []),
+  ];
+
   return {
     era,
     format,
     formatKey,
     framing,
+    flash,
     medium: [framing, stock, camera].filter(Boolean),
-    look: (era.look || []).slice(0, level.look),
+    look: dedupeTags(look).slice(0, level.look),
     artifacts: (format.artifacts || []).slice(0, level.artifacts),
     aspect: format.aspect || era.aspect,
     cfg: format.cfg || era.cfg,
     steps: format.steps || era.steps,
     negativeExclude: [...(era.negativeExclude || []), ...(format.negativeExclude || [])],
   };
+}
+
+/**
+ * Choose era styling for the subject that the photo could actually show.
+ *
+ * Three rules, each from a real failure:
+ *  - Indoor decor (popcorn ceiling, CRT television) must not be added to an
+ *    outdoor photo.
+ *  - Garments below the crop (jeans, sneakers) must not be added to a
+ *    head-and-shoulders shot.
+ *  - If the model already described the clothing, only a generic era marker is
+ *    added, so the prompt doesn't ask for a coral top *and* a windbreaker.
+ */
+function periodSubjectTags(era, scene = {}, { hasObservedClothing = false } = {}) {
+  const period = era.subjectPeriod;
+  if (!period || Array.isArray(period)) return { appearance: [], clothing: [], setting: [] };
+
+  const framing = scene.framing;
+  const appearance = [...(period.hair || [])];
+  const clothing = [...(period.marker || [])];
+
+  if (!hasObservedClothing) {
+    // Visible from the waist up, so safe unless the crop is tighter than that.
+    if (framing !== 'close') clothing.push(...(period.wardrobeTop || []));
+    // Needs legs and feet in frame — and only when framing is actually known to
+    // be wide. When it's unknown, stay quiet rather than claiming trousers and
+    // shoes that may be outside the crop.
+    if (framing === 'full') clothing.push(...(period.wardrobeFull || []));
+  }
+
+  const setting = [];
+  if (framing !== 'close') {
+    if (scene.outdoor === true) setting.push(...(period.decorOutdoor || []));
+    else if (scene.outdoor === false) setting.push(...(period.decorIndoor || []));
+  }
+
+  return { appearance, clothing, setting };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1361,13 +1593,52 @@ function renderTagStyle(groups, { emphasis }) {
   return flat.join(', ');
 }
 
-function applyJoiner(category, tags) {
-  const joiner = NL_JOINERS[category] || { lead: '', skipIf: [] };
+/**
+ * Pick the preposition and article for a setting phrase. "in ocean" reads as
+ * being in the water; "at the ocean" is what a caption means.
+ */
+function settingPhrase(tags) {
   const phrase = tags.join(', ');
+  if (!phrase) return '';
+  // Respect a preposition the model supplied itself.
+  if (/^(in|on|at|inside|outside|near|by|beside|under)\b/i.test(phrase)) return phrase;
+
+  for (const [pattern, lead] of SETTING_PREPOSITIONS) {
+    if (pattern.test(phrase)) return `${lead} ${phrase}`;
+  }
+  return `${DEFAULT_SETTING_PREPOSITION} ${phrase}`;
+}
+
+/**
+ * Turn a bare lighting adjective into a noun phrase, so "lit by sunny" becomes
+ * "lit by sunlight".
+ */
+function lightingNoun(tag) {
+  const text = String(tag || '').trim();
+  if (!text) return text;
+  const single = text.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(LIGHTING_NOUNS, single)) {
+    return LIGHTING_NOUNS[single];
+  }
+  // "sunny day" / "bright" + noun already reads fine; only bare adjectives are
+  // a problem, and those are single words.
+  return text;
+}
+
+/** Join a short list as prose: "a, b and c". */
+function proseList(items) {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+function applyJoiner(category, tags) {
+  if (category === 'setting') return settingPhrase(tags);
+
+  const joiner = NL_JOINERS[category] || { lead: '', skipIf: [] };
+  const values = category === 'lighting' ? tags.map(lightingNoun) : tags;
+  const phrase = category === 'colors' ? proseList(values) : values.join(', ');
   if (!joiner.lead) return phrase;
-  const opensWith = joiner.skipIf.some((word) =>
-    new RegExp(`^${word}\\b`, 'i').test(phrase),
-  );
+  const opensWith = joiner.skipIf.some((word) => new RegExp(`^${word}\\b`, 'i').test(phrase));
   return opensWith ? phrase : `${joiner.lead}${phrase}`;
 }
 
@@ -1444,7 +1715,8 @@ function compile(observation = {}, options = {}) {
     source = null,
   } = options;
 
-  const contribution = eraContribution(eraId, formatId, intensity, variant);
+  const scene = inferScene(observation);
+  const contribution = eraContribution(eraId, formatId, intensity, variant, scene);
   const era = contribution.era;
 
   // Observed fields.
@@ -1453,13 +1725,25 @@ function compile(observation = {}, options = {}) {
     groups[field] = fieldToTags(observation[field]);
   }
 
+  // `placement` only informs scene inference; it is never a prompt tag.
+  delete groups.placement;
+
+  // A small model invents shot types ("wide shot" for a tight selfie). It can't
+  // be made accurate, but it can be kept to real values.
+  groups.shotType = groups.shotType.filter((tag) => SHOT_TYPES.includes(tag));
+
   // Era contributions.
   groups.medium = [...(groups.medium || []), ...contribution.medium];
   groups.lighting = [...(groups.lighting || []), ...contribution.look];
   groups.artifacts = [...(groups.artifacts || []), ...contribution.artifacts];
 
-  if (periodSubject && era.subjectPeriod?.length) {
-    groups.appearance = [...groups.appearance, ...era.subjectPeriod];
+  if (periodSubject) {
+    const period = periodSubjectTags(era, scene, {
+      hasObservedClothing: groups.clothing.length > 0,
+    });
+    groups.appearance = [...groups.appearance, ...period.appearance];
+    groups.clothing = [...groups.clothing, ...period.clothing];
+    groups.setting = [...groups.setting, ...period.setting];
   }
 
   if (!era.suppressQualityTags) {
@@ -1506,6 +1790,8 @@ function compile(observation = {}, options = {}) {
     intensity,
     style,
     groups,
+    scene,
+    flash: contribution.flash,
     suppressedQualityTags: Boolean(era.suppressQualityTags),
   };
 }
@@ -1719,16 +2005,35 @@ async function prepareImage(blob, maxEdge = 512) {
  */
 const PASSES = [
   { field: 'subject', question: 'In a few words, what is the main subject of this photo?', tokens: 20 },
-  { field: 'appearance', question: "Describe the main subject's appearance in a few words.", tokens: 28 },
-  { field: 'clothing', question: 'What is the subject wearing? Answer in a few words.', tokens: 24 },
+  {
+    field: 'appearance',
+    // "Only what you can clearly see" is doing real work: the open-ended version
+    // invented a beauty mark on a face that actually had a nose stud.
+    question:
+      "Describe only what you can clearly see of the subject's hair and face, in a few words.",
+    tokens: 28,
+  },
+  {
+    field: 'clothing',
+    question: 'What visible clothing is the subject wearing? If none is visible, say none.',
+    tokens: 24,
+  },
   { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 20 },
   { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 20 },
+  {
+    field: 'placement',
+    // Drives scene inference — decides whether era presets may mention camera
+    // flash, walls and indoor furniture. Cheap and high-leverage.
+    question: 'Was this photo taken indoors or outdoors? Answer with one word.',
+    tokens: 8,
+  },
   { field: 'colors', question: 'List the two or three most dominant colors.', tokens: 18 },
   { field: 'lighting', question: 'Describe the lighting in a few words.', tokens: 20 },
   {
     field: 'shotType',
+    // Phrased as a closed set; answers outside it are discarded by the compiler.
     question:
-      'Is this a close-up, waist-up shot, full-body shot, or wide shot? Answer with just one.',
+      'How is this framed? Answer with exactly one of: close-up shot, waist-up shot, full-body shot, wide shot.',
     tokens: 12,
   },
 ];
@@ -1934,6 +2239,7 @@ const FIELD_LABELS = {
   clothing: 'Clothing',
   action: 'Action',
   setting: 'Setting',
+  placement: 'Indoor/outdoor',
   colors: 'Colors',
   lighting: 'Lighting',
   shotType: 'Shot type',

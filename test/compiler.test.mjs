@@ -12,6 +12,10 @@ import {
   compile,
   settingsBlock,
   withArticle,
+  inferScene,
+  isFlashScene,
+  settingPhrase,
+  lightingNoun,
 } from '../src/compiler.js';
 
 import { ERAS, ERA_IDS, REALISM_NEGATIVE, INTENSITY_LEVELS } from '../src/eras.js';
@@ -316,10 +320,189 @@ test('subject appears once even if several fields mention it', () => {
 });
 
 test('periodSubject adds era styling only when enabled', () => {
-  const off = compile(OBSERVATION, { era: '1990s', periodSubject: false });
-  const on = compile(OBSERVATION, { era: '1990s', periodSubject: true });
-  assert.equal(off.prompt.includes('baggy jeans'), false);
-  assert.ok(on.prompt.includes('baggy jeans'));
+  const bare = { subject: 'a man', setting: 'a kitchen', shotType: 'full-body shot' };
+  const off = compile(bare, { era: '1990s', periodSubject: false });
+  const on = compile(bare, { era: '1990s', periodSubject: true });
+  assert.equal(off.prompt.includes('1990s clothing'), false);
+  assert.ok(on.prompt.includes('1990s clothing'), on.prompt);
+  assert.ok(on.prompt.includes('baggy jeans'), on.prompt);
+});
+
+/* ------------------------------------------------------------------ *
+ * Scene awareness
+ *
+ * Each of these is a bug found on a real photo: a beach selfie that came back
+ * with camera flash, a shadow on a nonexistent wall, indoor furniture, and
+ * sneakers that could not be in frame.
+ * ------------------------------------------------------------------ */
+
+const BEACH_SELFIE = {
+  subject: 'a woman',
+  appearance: 'brown hair, nose stud',
+  clothing: 'a coral top',
+  action: 'smiling at the camera',
+  setting: 'a beach by the ocean',
+  placement: 'outdoors',
+  colors: 'teal, warm pink',
+  lighting: 'sunny',
+  shotType: 'close-up shot',
+};
+
+test('inferScene reads placement, daylight and framing', () => {
+  const scene = inferScene(BEACH_SELFIE);
+  assert.equal(scene.outdoor, true);
+  assert.equal(scene.daylight, true);
+  assert.equal(scene.framing, 'close');
+
+  const indoor = inferScene({ setting: 'a domestic kitchen', placement: 'indoors' });
+  assert.equal(indoor.outdoor, false);
+
+  const unknown = inferScene({});
+  assert.deepEqual(unknown, { outdoor: null, daylight: null, framing: null });
+});
+
+test('flash is assumed by default but ruled out by daylight or outdoors', () => {
+  assert.equal(isFlashScene({}), true, 'flash is the era archetype when unknown');
+  assert.equal(isFlashScene({ daylight: true }), false);
+  assert.equal(isFlashScene({ outdoor: true }), false);
+  // A night flash snapshot is flash-lit by definition.
+  assert.equal(isFlashScene({ outdoor: true }, { forceFlash: true }), true);
+});
+
+test('an outdoor daylit photo gets no flash and no wall', () => {
+  const result = compile(BEACH_SELFIE, { era: '1990s', intensity: 'heavy' });
+  assert.equal(result.flash, false);
+  assert.equal(/on-camera flash|built-in flash/i.test(result.prompt), false, result.prompt);
+  assert.equal(/shadow on the wall/i.test(result.prompt), false, result.prompt);
+  assert.equal(/red-eye/i.test(result.prompt), false, result.prompt);
+});
+
+test('an indoor photo still gets the flash-snapshot look', () => {
+  const result = compile(
+    { subject: 'a man', setting: 'a living room interior', placement: 'indoors' },
+    { era: '1990s', intensity: 'heavy' },
+  );
+  assert.equal(result.flash, true);
+  assert.ok(/on-camera flash/i.test(result.prompt), result.prompt);
+});
+
+test('indoor decor is never added to an outdoor photo', () => {
+  const result = compile(
+    { ...BEACH_SELFIE, shotType: 'full-body shot' },
+    { era: '1990s', periodSubject: true, intensity: 'heavy' },
+  );
+  for (const indoor of ['popcorn ceiling', 'beige carpet', 'CRT television']) {
+    assert.equal(
+      result.prompt.toLowerCase().includes(indoor.toLowerCase()),
+      false,
+      `leaked indoor decor "${indoor}": ${result.prompt}`,
+    );
+  }
+});
+
+test('garments outside the crop are not claimed', () => {
+  const closeUp = compile(
+    { ...BEACH_SELFIE, clothing: '' },
+    { era: '1990s', periodSubject: true, intensity: 'heavy' },
+  );
+  for (const garment of ['baggy jeans', 'chunky sneakers', 'windbreaker']) {
+    assert.equal(
+      closeUp.prompt.includes(garment),
+      false,
+      `close-up should not claim "${garment}": ${closeUp.prompt}`,
+    );
+  }
+  // Unknown framing is treated conservatively too.
+  const unknown = compile(
+    { subject: 'a man', setting: 'a kitchen' },
+    { era: '1990s', periodSubject: true, intensity: 'heavy' },
+  );
+  assert.equal(unknown.prompt.includes('chunky sneakers'), false, unknown.prompt);
+});
+
+test('observed clothing is not contradicted by era wardrobe', () => {
+  const result = compile(
+    { ...BEACH_SELFIE, shotType: 'full-body shot' },
+    { era: '1990s', periodSubject: true, intensity: 'heavy' },
+  );
+  assert.ok(result.prompt.includes('coral top'), result.prompt);
+  assert.equal(result.prompt.includes('windbreaker'), false, result.prompt);
+  assert.equal(result.prompt.includes('baggy jeans'), false, result.prompt);
+  // The generic era marker is still safe to add.
+  assert.ok(result.prompt.includes('1990s clothing'), result.prompt);
+});
+
+test('film texture is never applied to a video format', () => {
+  const vhs = compile(BEACH_SELFIE, {
+    era: '1990s',
+    format: 'vhs still',
+    intensity: 'heavy',
+  });
+  assert.equal(/film grain|film saturation/i.test(vhs.prompt), false, vhs.prompt);
+  assert.ok(/video/i.test(vhs.prompt), vhs.prompt);
+
+  const film = compile(BEACH_SELFIE, { era: '1990s', format: '35mm print', intensity: 'heavy' });
+  assert.ok(/film grain/i.test(film.prompt), film.prompt);
+  assert.equal(/scanlines|camcorder/i.test(film.prompt), false, film.prompt);
+});
+
+test('era look never asserts what the subject is doing', () => {
+  // "squinting into the sun" was emitted for a subject smiling with open eyes.
+  for (const id of ERA_IDS) {
+    const era = ERAS[id];
+    for (const tag of [...(era.daylightLook || []), ...(era.look || [])]) {
+      assert.equal(
+        /squint|smil|pos(e|ing)|look(ing)? at/i.test(tag),
+        false,
+        `${id} look tag asserts subject behaviour: "${tag}"`,
+      );
+    }
+  }
+});
+
+test('invalid shot-type answers are discarded', () => {
+  const bogus = compile(
+    { subject: 'a man', shotType: 'a photograph of someone standing near a wall' },
+    { era: '1990s' },
+  );
+  assert.equal(bogus.groups.shotType.length, 0, JSON.stringify(bogus.groups.shotType));
+
+  const valid = compile({ subject: 'a man', shotType: 'close-up' }, { era: '1990s' });
+  assert.deepEqual(valid.groups.shotType, ['close-up shot']);
+});
+
+test('placement informs the scene but is never emitted as a tag', () => {
+  const result = compile(BEACH_SELFIE, { era: '1990s' });
+  assert.equal(result.prompt.includes('outdoors'), false, result.prompt);
+  assert.equal(result.groups.placement, undefined);
+});
+
+/* ------------------------------------------------------------------ *
+ * Natural-language grammar
+ * ------------------------------------------------------------------ */
+
+test('settings get a sensible preposition instead of "in ocean"', () => {
+  assert.equal(settingPhrase(['ocean']), 'at the ocean');
+  assert.equal(settingPhrase(['beach by the ocean']), 'at the beach by the ocean');
+  assert.equal(settingPhrase(['domestic kitchen']), 'in a domestic kitchen');
+  assert.equal(settingPhrase(['city street']), 'on a city street');
+  // A preposition the model supplied is respected.
+  assert.equal(settingPhrase(['in a park']), 'in a park');
+});
+
+test('bare lighting adjectives become noun phrases', () => {
+  assert.equal(lightingNoun('sunny'), 'sunlight');
+  assert.equal(lightingNoun('cloudy'), 'overcast light');
+  assert.equal(lightingNoun('harsh flash'), 'harsh flash');
+});
+
+test('natural style reads correctly for the beach selfie', () => {
+  const result = compile(BEACH_SELFIE, { era: '1990s', style: 'natural', format: '35mm print' });
+  assert.ok(result.prompt.includes('at the beach'), result.prompt);
+  assert.equal(result.prompt.includes('in ocean'), false, result.prompt);
+  assert.ok(result.prompt.includes('lit by sunlight'), result.prompt);
+  assert.equal(result.prompt.includes('lit by sunny'), false, result.prompt);
+  assert.ok(result.prompt.includes('in shades of teal and warm pink'), result.prompt);
 });
 
 test('empty observations still produce a usable era-only prompt', () => {
