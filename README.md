@@ -53,7 +53,7 @@ doesn't need the model.
 | **Tag style / Natural language** | Comma tags suit anime and booru-trained models; natural language suits photoreal models. |
 | **Weight the subject** | Wraps the main subject as `(subject:1.2)`. Tag style only. |
 | **Reroll film** | Rotates through that era's film stocks and camera bodies. |
-| **Content** | Safe (default) adds nudity to the negative prompt. Suggestive and Explicit permit it and add anatomy support. |
+| **Content** | Safe (default). Suggestive and Explicit permit nudity and add anatomy support. |
 | **Extra prompt terms** | Free text appended near the subject — write whatever you want added. |
 
 ### Body position
@@ -75,6 +75,37 @@ but silently deleted good content from a larger one.
 If a pass does hit its ceiling, the dangling fragment is trimmed back to the last clean
 boundary rather than shown, and the field is named in the status line so a field that clips
 every time is visible. The cap is `MAX_ANSWER_CHARS` in `src/compiler.js`.
+
+### No negative prompt
+
+**Off by default**, because many Perchance generators have no negative prompt field — in
+which case emitting one is dead weight, and worse, every realism rejection the era presets
+relied on was silently doing nothing.
+
+So those constraints are now stated **positively** in the prompt, the one field the
+generator does read:
+
+| Instead of negating | It asks for |
+|---|---|
+| airbrushed, smooth skin, poreless | `visible skin texture` |
+| colour grading, oversaturated, instagram filter | `unedited color` |
+| shallow depth of field, creamy bokeh | `deep focus` |
+| glamour, fashion model, beauty shot | `plain ordinary features` |
+
+The skin and features terms are gated on the subject being a person — an earlier version
+asked a mountain range for visible skin texture.
+
+Turn **Include a negative prompt** back on in Settings if you switch to a generator that
+supports one; the substitutes are withdrawn automatically so the constraint isn't stated
+twice. Note that removing the negative frees **no** tokens for the prompt: each is encoded
+separately with its own 75-token context.
+
+### History reproducibility
+
+**Load** on a past forge restores the whole recipe — era, format, intensity, prompt style,
+content level, variant, extra terms and the negative-prompt setting — not just what the
+model saw. It also tells you whether the prompt came back *exactly*, since presets may have
+changed since it was saved.
 
 ### Token budget
 

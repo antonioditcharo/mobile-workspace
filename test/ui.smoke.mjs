@@ -114,6 +114,7 @@ async function readState(page) {
     promptCount: document.getElementById('prompt-count').textContent,
     negativeCount: document.getElementById('negative-count').textContent,
     trimmedNote: document.getElementById('trimmed-note').textContent,
+    negativeHidden: document.getElementById('negative-block').style.display === 'none',
     eras: [...document.querySelectorAll('#era-seg button')].map((b) => b.textContent),
     formats: [...document.querySelectorAll('#format-seg button')].map((b) => b.textContent),
     pressedEra: document
@@ -173,7 +174,9 @@ async function main() {
       `${s.fieldCount} inputs vs ${OBSERVATION_FIELD_COUNT} fields`,
     );
     check('an era-only prompt compiles with no image', s.prompt.length > 40, s.prompt);
-    check('negative prompt is populated', s.negative.length > 60);
+    check('no negative prompt by default', s.negative.length === 0, s.negative);
+    check('the negative block is hidden when unused', s.negativeHidden, 'block still visible');
+    check('realism is stated positively instead', /unedited color|deep focus/.test(s.prompt), s.prompt);
     check('1990s Perchance settings shown', s.cfg === '5.5' && s.resolution === '768x512',
       `${s.cfg}/${s.resolution}`);
     check('art style is the neutral one', s.style === 'none', s.style);
@@ -221,12 +224,21 @@ async function main() {
     /* -------------------------------------------------- intensity */
     console.log('\nIntensity & toggles');
     await segButton(page, 'era-seg', '1990s').click();
+    // Compared with the observation cleared, so the token budget is not the
+    // binding constraint — at the ceiling both intensities converge by design.
+    const savedSubject = await page.inputValue('#field-subject');
+    await page.fill('#field-subject', '');
+    await page.fill('#field-clothing', '');
+    await page.fill('#field-setting', '');
     await segButton(page, 'intensity-seg', 'Subtle').click();
     const subtle = (await readState(page)).prompt;
     await segButton(page, 'intensity-seg', 'Heavy').click();
     const heavy = (await readState(page)).prompt;
     check('heavy emits a longer prompt than subtle', heavy.length > subtle.length,
       `${subtle.length} vs ${heavy.length}`);
+    await page.fill('#field-subject', savedSubject || 'a man');
+    await page.fill('#field-clothing', 'a plaid shirt');
+    await page.fill('#field-setting', 'a kitchen');
 
     await page.check('#period-subject');
     s = await readState(page);
@@ -276,19 +288,20 @@ async function main() {
     await page.fill('#field-subject', 'a woman');
     await page.fill('#field-apparentAge', 'adult');
     s = await readState(page);
-    check('safe is the default', /nsfw|nude/i.test(s.negative), s.negative.slice(0, 80));
+    check('safe is the default', /Safe/i.test(await page.textContent('#content-hint') || ''),
+      await page.textContent('#content-hint') || '');
 
     await segButton(page, 'content-seg', 'Explicit').click();
     let hint = await page.textContent('#content-hint');
     check('adult level blocked without affirmation', /confirm/i.test(hint || ''), hint || '');
     s = await readState(page);
-    check('blocked level still negates nudity', /\bnude\b/i.test(s.negative), s.negative.slice(0, 80));
+    // The hint explains the block; what matters is that the level did not apply.
+    check('blocked level adds no anatomy support', !/anatomically correct/i.test(s.prompt), s.prompt);
 
     await page.check('#adult-confirmed');
     s = await readState(page);
     hint = await page.textContent('#content-hint');
     check('affirmation enables the level', !/confirm/i.test(hint || ''), hint || '');
-    check('nudity negatives lifted', !/\bnude\b/i.test(s.negative), s.negative.slice(0, 100));
     check('anatomy support added', /anatomically correct/i.test(s.prompt), s.prompt);
     check('era framing kept for adult content', /boudoir|private/i.test(s.prompt), s.prompt);
     check('era realism still applies', !/masterpiece|\b8k\b/i.test(s.prompt), s.prompt);
@@ -298,7 +311,6 @@ async function main() {
     s = await readState(page);
     hint = await page.textContent('#content-hint');
     check('minor subject blocks adult content', /disabled/i.test(hint || ''), hint || '');
-    check('blocked output falls back to safe', /\bnude\b/i.test(s.negative), s.negative.slice(0, 80));
     check('no anatomy tags when blocked', !/anatomically correct/i.test(s.prompt), s.prompt);
 
     await page.fill('#field-subject', 'a woman');
@@ -350,7 +362,7 @@ async function main() {
     check('prompt fits CLIP context', budgetState.prompt <= 75, String(budgetState.prompt));
     check('negative fits CLIP context', budgetState.negative <= 75, String(budgetState.negative));
     check('the era apparatus survived the budget', /Kodak|point-and-shoot/.test(s.prompt), s.prompt);
-    check('nudity negatives survived the budget', /\bnude\b/.test(s.negative), s.negative.slice(0, 90));
+
 
     // Force a very long observation and confirm it is trimmed rather than overflowing.
     await page.fill('#field-appearance',
@@ -392,7 +404,8 @@ async function main() {
     check('copy-everything includes the Perchance checklist', /Guidance scale:/.test(clipAll), clipAll.slice(0, 80));
     check('copy-everything names the resolution', /Resolution: \d{3,4}x\d{3,4}/.test(clipAll), clipAll);
     check('copy-everything warns about the art style', /Art style: none/.test(clipAll), clipAll);
-    check('copy-everything includes the negative prompt', /Negative prompt:/.test(clipAll));
+    check('copy-everything omits the unused negative prompt',
+      !/Negative prompt:/.test(clipAll), clipAll.slice(0, 120));
 
     await page.click('details >> nth=0'); // open "Recent forges"
     await page.waitForTimeout(100);
@@ -522,6 +535,62 @@ async function main() {
       () => !document.getElementById('resume-bar').classList.contains('show'),
     );
     check('a day-old checkpoint is not offered', staleDropped);
+
+    /* -------------------------------------------------- negative prompt toggle */
+    console.log('\nNegative prompt toggle');
+    await page.click('#settings-btn');
+    await page.waitForTimeout(100);
+    await page.check('#use-negative');
+    s = await readState(page);
+    check('enabling it produces a negative prompt', s.negative.length > 40, s.negative.slice(0, 60));
+    check('the negative block becomes visible', !s.negativeHidden);
+    check('it fits the budget too', /^\d+\/75 tokens$/.test(s.negativeCount), s.negativeCount);
+    check('positive substitutes are withdrawn', !/unedited color/.test(s.prompt), s.prompt);
+    await page.uncheck('#use-negative');
+    s = await readState(page);
+    check('disabling it restores the positive substitutes', /unedited color/.test(s.prompt), s.prompt);
+
+    /* -------------------------------------------------- history reproducibility */
+    console.log('\nHistory reproducibility');
+    // Build a distinctive recipe, save it, then change everything and restore.
+    await segButton(page, 'era-seg', '1980s').click();
+    await segButton(page, 'format-seg', 'Instant').click();
+    await segButton(page, 'intensity-seg', 'Heavy').click();
+    await segButton(page, 'style-seg', 'Natural language').click();
+    await page.fill('#field-subject', 'a cyclist');
+    const savedPrompt = await page.inputValue('#prompt');
+    await page.click('#copy-all'); // saving to history happens on copy-everything
+    await page.waitForTimeout(150);
+
+    // Now change the recipe completely.
+    await segButton(page, 'era-seg', 'Early 2000s').click();
+    await segButton(page, 'intensity-seg', 'Subtle').click();
+    await segButton(page, 'style-seg', 'Tag style').click();
+    await page.fill('#field-subject', 'a dog');
+    const changed = await page.inputValue('#prompt');
+    check('the recipe really changed', changed !== savedPrompt);
+
+    const details = page.locator('details').first();
+    if (!(await details.evaluate((d) => d.open))) await details.click();
+    await page.waitForTimeout(100);
+    await page.locator('.history-item button', { hasText: 'Load' }).first().click();
+    await page.waitForTimeout(200);
+
+    const restored = await page.evaluate(() => ({
+      prompt: document.getElementById('prompt').value,
+      era: document.querySelector('#era-seg button[aria-pressed="true"]')?.textContent,
+      intensity: document.querySelector('#intensity-seg button[aria-pressed="true"]')?.textContent,
+      style: document.querySelector('#style-seg button[aria-pressed="true"]')?.textContent,
+      format: document.querySelector('#format-seg button[aria-pressed="true"]')?.textContent,
+      status: document.getElementById('status').textContent,
+    }));
+    check('history restores the era', restored.era === '1980s', String(restored.era));
+    check('history restores the format', /Instant/.test(restored.format || ''), String(restored.format));
+    check('history restores the intensity', restored.intensity === 'Heavy', String(restored.intensity));
+    check('history restores the prompt style', /Natural/.test(restored.style || ''), String(restored.style));
+    check('history reproduces the prompt exactly', restored.prompt === savedPrompt,
+      `got: ${restored.prompt.slice(0, 70)}`);
+    check('the restore is reported as exact', /exactly/i.test(restored.status), restored.status);
 
     /* -------------------------------------------------- standalone bundle */
     console.log('\nStandalone single-file build');

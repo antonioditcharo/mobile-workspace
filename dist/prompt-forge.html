@@ -509,7 +509,7 @@
         <button id="copy-prompt" style="width: 100%; margin-top: 6px">Copy prompt</button>
       </div>
 
-      <div class="out">
+      <div class="out" id="negative-block">
         <h3>Negative prompt <span class="count" id="negative-count"></span></h3>
         <textarea id="negative" spellcheck="false" aria-label="Negative prompt"></textarea>
         <button id="copy-negative" style="width: 100%; margin-top: 6px">
@@ -553,6 +553,16 @@
         <button id="notify-btn" style="width: 100%; margin-top: 8px">
           Notify me when a read finishes
         </button>
+        <label class="toggle" style="margin-top: 6px">
+          <input type="checkbox" id="use-negative" />
+          <span>
+            Include a negative prompt
+            <small>
+              Off by default — many Perchance generators have no such field. With it off,
+              those constraints are stated positively in the prompt instead.
+            </small>
+          </span>
+        </label>
         <p class="hint">
           The model runs entirely in this browser. No account, no API key, no rate limit, no
           content filter, and your photo is never uploaded. The first run downloads the model
@@ -928,6 +938,40 @@ const NSFW_NEGATIVE = [
   'unnatural proportions',
 ];
 
+/**
+ * Positive substitutes for the negative prompt.
+ *
+ * Some Perchance generators accept no negative prompt at all, which means every
+ * realism rejection the era presets rely on — airbrushed, smooth skin, hdr,
+ * masterpiece, cinematic lighting — silently does nothing. The constraint has to
+ * be stated positively instead, in the one field the generator does read.
+ *
+ * Each entry below is the affirmative form of a block that would otherwise be
+ * negated. Kept deliberately short: with no negative prompt the positive one is
+ * the only budget there is.
+ */
+const POSITIVE_REALISM = [
+  // replaces: color grading, teal and orange, oversaturated, instagram filter
+  'unedited color',
+  // replaces: shallow depth of field, creamy bokeh
+  'deep focus',
+];
+
+/**
+ * Person-specific. Gated because skin and features are meaningless for a photo of
+ * a mountain — an earlier version asked a landscape for visible skin texture.
+ */
+const POSITIVE_REALISM_PERSON = [
+  // replaces: airbrushed, smooth skin, poreless, retouched
+  'visible skin texture',
+  // replaces: glamour, fashion model, supermodel, beauty shot, symmetrical face
+  'plain ordinary features',
+];
+
+/** Subjects that are people, so person-only tags can be gated on it. */
+const PERSON_HINTS =
+  /\b(person|people|man|men|woman|women|girl|boy|child|children|couple|group|face|portrait|selfie|figure|someone|guy|lady)\b/i;
+
 /** Keeps unintended nudity out of ordinary prompts. */
 const SFW_NEGATIVE = [
   'nsfw',
@@ -1065,6 +1109,9 @@ const CATEGORY_ORDER = [
   'setting',
   'colors',
   'lighting',
+  // Positive realism substitutes, used when the generator accepts no negative
+  // prompt. Sits with the photographic description rather than the subject.
+  'realism',
   // Era look is kept separate from observed lighting so budget trimming cannot
   // sacrifice the period character to save an observed detail.
   'eraLook',
@@ -1094,6 +1141,7 @@ const NL_JOINERS = {
   colors: { lead: 'in shades of ', skipIf: ['in shades'] },
   lighting: { lead: 'lit by ', skipIf: ['lit', 'under', 'backlighting', 'in', 'with'] },
   eraLook: { lead: '', skipIf: [] },
+  realism: { lead: '', skipIf: [] },
   composition: { lead: '', skipIf: [] },
   medium: { lead: '', skipIf: [] },
   artifacts: { lead: '', skipIf: [] },
@@ -1790,6 +1838,9 @@ const DROP_ORDER = {
   // knowing what the subject is wearing.
   eraLook: 28,
   artifacts: 25,
+  // Positive realism substitutes. When there is no negative prompt these are the
+  // only thing rejecting the AI look, so they outrank ordinary observed detail.
+  realism: 24,
   setting: 20,
   clothing: 18,
   // Pose is expensive in tokens but it is a headline feature; it outranks
@@ -1813,6 +1864,7 @@ const KEEP_AT_LEAST = {
   // never empties.
   artifacts: 1,
   eraLook: 2,
+  realism: 2,
   appearance: 1,
   setting: 1,
   pose: 1,
@@ -1827,11 +1879,14 @@ const KEEP_AT_LEAST = {
  *
  * Returns `null` when nothing further may be dropped.
  */
-function pickDroppable(groups) {
+function pickDroppable(groups, { respectFloors = true } = {}) {
   const candidates = Object.keys(groups)
     .filter((category) => !PROTECTED_CATEGORIES.has(category))
     .filter((category) => Array.isArray(groups[category]) && groups[category].length > 0)
-    .filter((category) => groups[category].length > (KEEP_AT_LEAST[category] || 0))
+    .filter(
+      (category) =>
+        !respectFloors || groups[category].length > (KEEP_AT_LEAST[category] || 0),
+    )
     .filter((category) => DROP_ORDER[category] !== undefined);
 
   if (!candidates.length) return null;
@@ -1858,13 +1913,22 @@ function fitGroupsToBudget(groups, render, budget = TOKEN_BUDGET) {
   let text = render(working);
   let guard = 0;
 
-  while (estimateTokens(text) > budget && guard < 200) {
-    guard += 1;
-    const victim = pickDroppable(working);
-    if (!victim) break;
-    dropped.push(working[victim.category][victim.index]);
-    working[victim.category].splice(victim.index, 1);
-    text = render(working);
+  // Two passes. The first respects the per-category floors, which keep a category
+  // thinned rather than erased. If that still cannot fit — the floors plus the
+  // protected tags can exceed the context on their own — the floors are relaxed,
+  // because they are a preference and the budget is not: going over means the
+  // image model silently discards the tail, which is strictly worse than losing a
+  // tag here.
+  for (const respectFloors of [true, false]) {
+    while (estimateTokens(text) > budget && guard < 400) {
+      guard += 1;
+      const victim = pickDroppable(working, { respectFloors });
+      if (!victim) break;
+      dropped.push(working[victim.category][victim.index]);
+      working[victim.category].splice(victim.index, 1);
+      text = render(working);
+    }
+    if (estimateTokens(text) <= budget) break;
   }
 
   return { groups: working, text, dropped, tokens: estimateTokens(text) };
@@ -2348,11 +2412,18 @@ function eraContribution(
   // token budget, which trims from the end. The medium's own texture (film grain,
   // video noise) is the period signature, so it leads — an earlier order put the
   // scene lighting first and let "visible film grain" be trimmed off a 35mm print.
-  const look = [
-    ...(format.look || []),
-    ...(flash ? era.flashLook || [] : era.daylightLook || []),
-    ...(era.look || []),
-  ];
+  // Interleaved, not concatenated. Both the medium's texture (film grain) and the
+  // scene's lighting character (direct on-camera flash) are period signatures, and
+  // whichever list came first would monopolise the survivors when trimming floors
+  // the category at two entries. Alternating guarantees one of each.
+  const texture = format.look || [];
+  const conditional = flash ? era.flashLook || [] : era.daylightLook || [];
+  const look = [];
+  for (let i = 0; i < Math.max(texture.length, conditional.length); i += 1) {
+    if (texture[i]) look.push(texture[i]);
+    if (conditional[i]) look.push(conditional[i]);
+  }
+  look.push(...(era.look || []));
 
   return {
     era,
@@ -2653,6 +2724,10 @@ function compile(observation = {}, options = {}) {
     adultConfirmed = false,
     extra = '',
     budget = TOKEN_BUDGET,
+    // Off by default: the Perchance generator in use accepts no negative prompt,
+    // so emitting one would be dead weight. When disabled, the realism
+    // constraints it carried are stated positively instead — see below.
+    useNegative = false,
   } = options;
 
   const scene = inferScene(observation);
@@ -2702,6 +2777,18 @@ function compile(observation = {}, options = {}) {
     groups.extra = fieldToTags(extra);
   }
 
+  // With no negative prompt there is nothing rejecting the AI look, so say the
+  // same things affirmatively in the only field the generator reads.
+  if (!useNegative && era.suppressQualityTags) {
+    const isPerson = PERSON_HINTS.test(
+      `${observation.subject || ''} ${observation.appearance || ''}`,
+    );
+    groups.realism = [
+      ...POSITIVE_REALISM,
+      ...(isPerson ? POSITIVE_REALISM_PERSON : []),
+    ];
+  }
+
   if (!era.suppressQualityTags) {
     groups.quality = [...QUALITY_TAGS];
   }
@@ -2737,14 +2824,18 @@ function compile(observation = {}, options = {}) {
 
   const positiveTags = [...CATEGORY_ORDER, 'quality'].flatMap((c) => groups[c] || []);
 
-  const rawNegative = buildNegative(era, contribution, positiveTags, decision.config);
+  const rawNegative = useNegative
+    ? buildNegative(era, contribution, positiveTags, decision.config)
+    : [];
   // Era and content terms are request-specific, so they outrank leftover
   // boilerplate when the negative prompt has to be trimmed.
-  const negativeFit = prioritiseNegative(
-    rawNegative,
-    { content: decision.config.negative || [], era: era.negative || [] },
-    budget,
-  );
+  const negativeFit = useNegative
+    ? prioritiseNegative(
+        rawNegative,
+        { content: decision.config.negative || [], era: era.negative || [] },
+        budget,
+      )
+    : { kept: [], dropped: [], tokens: 0 };
   const negative = negativeFit.kept;
 
   const aspect =
@@ -2777,6 +2868,7 @@ function compile(observation = {}, options = {}) {
       // True when even the protected tags exceed the context on their own.
       promptOverBudget: fitted.tokens > budget,
     },
+    useNegative,
     content: decision.level,
     contentRequested: content,
     contentBlocked: decision.blocked,
@@ -2798,8 +2890,9 @@ function settingsBlock(result) {
   return [
     `Prompt: ${result.prompt}`,
     '',
-    `Negative prompt: ${result.negative}`,
-    '',
+    // Omitted entirely when the generator has no such field, rather than pasted
+    // in as something to puzzle over.
+    ...(result.useNegative ? [`Negative prompt: ${result.negative}`, ''] : []),
     '--- Perchance settings ---',
     `Art style: ${p.style}   <- important: any other style adds 8k/HDR/masterpiece and breaks the era look`,
     `Guidance scale: ${p.guidanceScale}   (this era works in ${lo}-${hi}; Perchance accepts ${p.guidanceRange[0]}-${p.guidanceRange[1]})`,
@@ -3604,6 +3697,7 @@ const state = {
   emphasis: true,
   variant: 0,
   content: DEFAULT_CONTENT,
+  useNegative: false,
   adultConfirmed: false,
   extra: '',
   observation: {},
@@ -3655,6 +3749,8 @@ const el = {
   styleHint: $('style-hint'),
   cfgHint: $('cfg-hint'),
   trimmedNote: $('trimmed-note'),
+  negativeBlock: $('negative-block'),
+  useNegative: $('use-negative'),
   copyPrompt: $('copy-prompt'),
   copyNegative: $('copy-negative'),
   copyAll: $('copy-all'),
@@ -3848,6 +3944,7 @@ function recompile() {
     content: state.content,
     adultConfirmed: state.adultConfirmed,
     extra: state.extra,
+    useNegative: state.useNegative,
   });
   lastResult = result;
 
@@ -3862,6 +3959,8 @@ function recompile() {
   };
   badge(el.promptCount, b.promptTokens);
   badge(el.negativeCount, b.negativeTokens);
+  el.negativeBlock.style.display = result.useNegative ? '' : 'none';
+  el.copyNegative.style.display = result.useNegative ? '' : 'none';
 
   const trimmed = [];
   if (b.droppedFromPrompt.length) {
@@ -4206,6 +4305,7 @@ function savePrefs() {
         periodSubject: state.periodSubject,
         emphasis: state.emphasis,
         content: state.content,
+        useNegative: state.useNegative,
         modelOverride: state.modelOverride,
       }),
     );
@@ -4224,6 +4324,7 @@ function loadPrefs() {
     state.periodSubject = Boolean(saved.periodSubject);
     state.emphasis = saved.emphasis !== false;
     if (saved.content && CONTENT_LEVELS[saved.content]) state.content = saved.content;
+    state.useNegative = saved.useNegative === true;
     if (saved.modelOverride && MODELS[saved.modelOverride]) {
       state.modelOverride = saved.modelOverride;
     }
@@ -4249,7 +4350,22 @@ function saveHistory(result) {
       format: result.formatLabel,
       prompt: result.prompt,
       negative: result.negative,
-      observation: state.observation,
+      observation: { ...state.observation },
+      // The full recipe. Without this, "Load" restored what the model saw but not
+      // the settings that shaped it, so a result you liked could not be rebuilt.
+      recipe: {
+        era: state.era,
+        format: state.format,
+        intensity: state.intensity,
+        style: state.style,
+        periodSubject: state.periodSubject,
+        emphasis: state.emphasis,
+        variant: state.variant,
+        content: state.content,
+        adultConfirmed: state.adultConfirmed,
+        extra: state.extra,
+        useNegative: state.useNegative,
+      },
     });
     localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
     renderHistory();
@@ -4280,9 +4396,43 @@ function renderHistory() {
     restore.textContent = 'Load';
     restore.addEventListener('click', () => {
       state.observation = { ...(entry.observation || {}) };
+
+      // Restore the settings too, so the prompt can actually be reproduced.
+      const recipe = entry.recipe || {};
+      if (recipe.era && ERAS[recipe.era]) state.era = recipe.era;
+      if (recipe.format !== undefined) state.format = recipe.format;
+      if (recipe.intensity && INTENSITY_LEVELS[recipe.intensity]) {
+        state.intensity = recipe.intensity;
+      }
+      if (recipe.style === 'tags' || recipe.style === 'natural') state.style = recipe.style;
+      if (recipe.content && CONTENT_LEVELS[recipe.content]) state.content = recipe.content;
+      if (typeof recipe.variant === 'number') state.variant = recipe.variant;
+      state.periodSubject = Boolean(recipe.periodSubject);
+      state.emphasis = recipe.emphasis !== false;
+      state.adultConfirmed = Boolean(recipe.adultConfirmed);
+      state.useNegative = Boolean(recipe.useNegative);
+      state.extra = recipe.extra || '';
+
+      // Push all of it back into the controls.
+      el.periodSubject.checked = state.periodSubject;
+      el.emphasis.checked = state.emphasis;
+      el.useNegative.checked = state.useNegative;
+      el.extraTerms.value = state.extra;
+      renderEraControls();
+      renderIntensity();
+      renderStyle();
+      renderContent();
       fillFields();
-      recompile();
-      setStatus(`Loaded forge ${index + 1} from history.`, 'ok');
+
+      const result = recompile();
+      const faithful = !entry.recipe || result.prompt === entry.prompt;
+      setStatus(
+        faithful
+          ? `Restored forge ${index + 1} exactly.`
+          : `Restored forge ${index + 1}, but the prompt differs — presets have changed since it was saved.`,
+        faithful ? 'ok' : 'err',
+      );
+      savePrefs();
     });
 
     const copy = document.createElement('button');
@@ -4327,6 +4477,12 @@ function wire() {
   });
   el.emphasis.addEventListener('change', () => {
     state.emphasis = el.emphasis.checked;
+    recompile();
+    savePrefs();
+  });
+
+  el.useNegative.addEventListener('change', () => {
+    state.useNegative = el.useNegative.checked;
     recompile();
     savePrefs();
   });
@@ -4442,6 +4598,7 @@ function boot() {
   loadPrefs();
   el.periodSubject.checked = state.periodSubject;
   el.emphasis.checked = state.emphasis;
+  el.useNegative.checked = state.useNegative;
 
   renderEraControls();
   renderIntensity();

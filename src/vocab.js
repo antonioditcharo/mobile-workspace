@@ -361,6 +361,40 @@ export const NSFW_NEGATIVE = [
   'unnatural proportions',
 ];
 
+/**
+ * Positive substitutes for the negative prompt.
+ *
+ * Some Perchance generators accept no negative prompt at all, which means every
+ * realism rejection the era presets rely on — airbrushed, smooth skin, hdr,
+ * masterpiece, cinematic lighting — silently does nothing. The constraint has to
+ * be stated positively instead, in the one field the generator does read.
+ *
+ * Each entry below is the affirmative form of a block that would otherwise be
+ * negated. Kept deliberately short: with no negative prompt the positive one is
+ * the only budget there is.
+ */
+export const POSITIVE_REALISM = [
+  // replaces: color grading, teal and orange, oversaturated, instagram filter
+  'unedited color',
+  // replaces: shallow depth of field, creamy bokeh
+  'deep focus',
+];
+
+/**
+ * Person-specific. Gated because skin and features are meaningless for a photo of
+ * a mountain — an earlier version asked a landscape for visible skin texture.
+ */
+export const POSITIVE_REALISM_PERSON = [
+  // replaces: airbrushed, smooth skin, poreless, retouched
+  'visible skin texture',
+  // replaces: glamour, fashion model, supermodel, beauty shot, symmetrical face
+  'plain ordinary features',
+];
+
+/** Subjects that are people, so person-only tags can be gated on it. */
+export const PERSON_HINTS =
+  /\b(person|people|man|men|woman|women|girl|boy|child|children|couple|group|face|portrait|selfie|figure|someone|guy|lady)\b/i;
+
 /** Keeps unintended nudity out of ordinary prompts. */
 export const SFW_NEGATIVE = [
   'nsfw',
@@ -498,6 +532,9 @@ export const CATEGORY_ORDER = [
   'setting',
   'colors',
   'lighting',
+  // Positive realism substitutes, used when the generator accepts no negative
+  // prompt. Sits with the photographic description rather than the subject.
+  'realism',
   // Era look is kept separate from observed lighting so budget trimming cannot
   // sacrifice the period character to save an observed detail.
   'eraLook',
@@ -527,6 +564,7 @@ export const NL_JOINERS = {
   colors: { lead: 'in shades of ', skipIf: ['in shades'] },
   lighting: { lead: 'lit by ', skipIf: ['lit', 'under', 'backlighting', 'in', 'with'] },
   eraLook: { lead: '', skipIf: [] },
+  realism: { lead: '', skipIf: [] },
   composition: { lead: '', skipIf: [] },
   medium: { lead: '', skipIf: [] },
   artifacts: { lead: '', skipIf: [] },

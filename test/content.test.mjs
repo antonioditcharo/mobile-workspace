@@ -66,7 +66,7 @@ test('natural style phrases gaze readably', () => {
  * ------------------------------------------------------------------ */
 
 test('safe is the default and negates nudity', () => {
-  const result = compile(ADULT, { era: '1990s' });
+  const result = compile(ADULT, { era: '1990s', useNegative: true });
   assert.equal(result.content, 'sfw');
   for (const term of SFW_NEGATIVE) {
     assert.ok(result.negativeList.includes(term), `safe should negate "${term}"`);
@@ -89,7 +89,7 @@ test('adult levels need the affirmation', () => {
 });
 
 test('enabling an adult level lifts the nudity negatives and adds anatomy support', () => {
-  const result = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true, budget: 400 });
+  const result = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true, budget: 400, useNegative: true });
   for (const term of SFW_NEGATIVE) {
     assert.equal(result.negativeList.includes(term), false, `"${term}" should not be negated`);
   }
@@ -111,7 +111,7 @@ test('adult levels keep the era framing rather than a modern studio look', () =>
 });
 
 test('era realism still applies at adult levels', () => {
-  const result = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true });
+  const result = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true, useNegative: true });
   assert.equal(/masterpiece|\b8k\b|ultra detailed/i.test(result.prompt), false, result.prompt);
   assert.ok(result.negativeList.includes('digital art'));
   assert.ok(/film grain|Kodak/i.test(result.prompt), result.prompt);
@@ -175,7 +175,7 @@ test('the block cannot be defeated by editing the age field alone', () => {
 test('blocked adult content falls back to safe, not to nothing', () => {
   const result = compile(
     { ...ADULT, subject: 'a child' },
-    { era: '1990s', content: 'explicit', adultConfirmed: true },
+    { era: '1990s', content: 'explicit', adultConfirmed: true, useNegative: true },
   );
   assert.equal(result.content, 'sfw');
   assert.ok(result.prompt.length > 20, 'should still produce a usable safe prompt');

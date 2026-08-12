@@ -111,6 +111,9 @@ export const DROP_ORDER = {
   // knowing what the subject is wearing.
   eraLook: 28,
   artifacts: 25,
+  // Positive realism substitutes. When there is no negative prompt these are the
+  // only thing rejecting the AI look, so they outrank ordinary observed detail.
+  realism: 24,
   setting: 20,
   clothing: 18,
   // Pose is expensive in tokens but it is a headline feature; it outranks
@@ -134,6 +137,7 @@ export const KEEP_AT_LEAST = {
   // never empties.
   artifacts: 1,
   eraLook: 2,
+  realism: 2,
   appearance: 1,
   setting: 1,
   pose: 1,
@@ -148,11 +152,14 @@ export const KEEP_AT_LEAST = {
  *
  * Returns `null` when nothing further may be dropped.
  */
-export function pickDroppable(groups) {
+export function pickDroppable(groups, { respectFloors = true } = {}) {
   const candidates = Object.keys(groups)
     .filter((category) => !PROTECTED_CATEGORIES.has(category))
     .filter((category) => Array.isArray(groups[category]) && groups[category].length > 0)
-    .filter((category) => groups[category].length > (KEEP_AT_LEAST[category] || 0))
+    .filter(
+      (category) =>
+        !respectFloors || groups[category].length > (KEEP_AT_LEAST[category] || 0),
+    )
     .filter((category) => DROP_ORDER[category] !== undefined);
 
   if (!candidates.length) return null;
@@ -179,13 +186,22 @@ export function fitGroupsToBudget(groups, render, budget = TOKEN_BUDGET) {
   let text = render(working);
   let guard = 0;
 
-  while (estimateTokens(text) > budget && guard < 200) {
-    guard += 1;
-    const victim = pickDroppable(working);
-    if (!victim) break;
-    dropped.push(working[victim.category][victim.index]);
-    working[victim.category].splice(victim.index, 1);
-    text = render(working);
+  // Two passes. The first respects the per-category floors, which keep a category
+  // thinned rather than erased. If that still cannot fit — the floors plus the
+  // protected tags can exceed the context on their own — the floors are relaxed,
+  // because they are a preference and the budget is not: going over means the
+  // image model silently discards the tail, which is strictly worse than losing a
+  // tag here.
+  for (const respectFloors of [true, false]) {
+    while (estimateTokens(text) > budget && guard < 400) {
+      guard += 1;
+      const victim = pickDroppable(working, { respectFloors });
+      if (!victim) break;
+      dropped.push(working[victim.category][victim.index]);
+      working[victim.category].splice(victim.index, 1);
+      text = render(working);
+    }
+    if (estimateTokens(text) <= budget) break;
   }
 
   return { groups: working, text, dropped, tokens: estimateTokens(text) };

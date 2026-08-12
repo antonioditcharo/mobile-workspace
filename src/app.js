@@ -59,6 +59,7 @@ const state = {
   emphasis: true,
   variant: 0,
   content: DEFAULT_CONTENT,
+  useNegative: false,
   adultConfirmed: false,
   extra: '',
   observation: {},
@@ -110,6 +111,8 @@ const el = {
   styleHint: $('style-hint'),
   cfgHint: $('cfg-hint'),
   trimmedNote: $('trimmed-note'),
+  negativeBlock: $('negative-block'),
+  useNegative: $('use-negative'),
   copyPrompt: $('copy-prompt'),
   copyNegative: $('copy-negative'),
   copyAll: $('copy-all'),
@@ -303,6 +306,7 @@ function recompile() {
     content: state.content,
     adultConfirmed: state.adultConfirmed,
     extra: state.extra,
+    useNegative: state.useNegative,
   });
   lastResult = result;
 
@@ -317,6 +321,8 @@ function recompile() {
   };
   badge(el.promptCount, b.promptTokens);
   badge(el.negativeCount, b.negativeTokens);
+  el.negativeBlock.style.display = result.useNegative ? '' : 'none';
+  el.copyNegative.style.display = result.useNegative ? '' : 'none';
 
   const trimmed = [];
   if (b.droppedFromPrompt.length) {
@@ -661,6 +667,7 @@ function savePrefs() {
         periodSubject: state.periodSubject,
         emphasis: state.emphasis,
         content: state.content,
+        useNegative: state.useNegative,
         modelOverride: state.modelOverride,
       }),
     );
@@ -679,6 +686,7 @@ function loadPrefs() {
     state.periodSubject = Boolean(saved.periodSubject);
     state.emphasis = saved.emphasis !== false;
     if (saved.content && CONTENT_LEVELS[saved.content]) state.content = saved.content;
+    state.useNegative = saved.useNegative === true;
     if (saved.modelOverride && MODELS[saved.modelOverride]) {
       state.modelOverride = saved.modelOverride;
     }
@@ -704,7 +712,22 @@ function saveHistory(result) {
       format: result.formatLabel,
       prompt: result.prompt,
       negative: result.negative,
-      observation: state.observation,
+      observation: { ...state.observation },
+      // The full recipe. Without this, "Load" restored what the model saw but not
+      // the settings that shaped it, so a result you liked could not be rebuilt.
+      recipe: {
+        era: state.era,
+        format: state.format,
+        intensity: state.intensity,
+        style: state.style,
+        periodSubject: state.periodSubject,
+        emphasis: state.emphasis,
+        variant: state.variant,
+        content: state.content,
+        adultConfirmed: state.adultConfirmed,
+        extra: state.extra,
+        useNegative: state.useNegative,
+      },
     });
     localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
     renderHistory();
@@ -735,9 +758,43 @@ function renderHistory() {
     restore.textContent = 'Load';
     restore.addEventListener('click', () => {
       state.observation = { ...(entry.observation || {}) };
+
+      // Restore the settings too, so the prompt can actually be reproduced.
+      const recipe = entry.recipe || {};
+      if (recipe.era && ERAS[recipe.era]) state.era = recipe.era;
+      if (recipe.format !== undefined) state.format = recipe.format;
+      if (recipe.intensity && INTENSITY_LEVELS[recipe.intensity]) {
+        state.intensity = recipe.intensity;
+      }
+      if (recipe.style === 'tags' || recipe.style === 'natural') state.style = recipe.style;
+      if (recipe.content && CONTENT_LEVELS[recipe.content]) state.content = recipe.content;
+      if (typeof recipe.variant === 'number') state.variant = recipe.variant;
+      state.periodSubject = Boolean(recipe.periodSubject);
+      state.emphasis = recipe.emphasis !== false;
+      state.adultConfirmed = Boolean(recipe.adultConfirmed);
+      state.useNegative = Boolean(recipe.useNegative);
+      state.extra = recipe.extra || '';
+
+      // Push all of it back into the controls.
+      el.periodSubject.checked = state.periodSubject;
+      el.emphasis.checked = state.emphasis;
+      el.useNegative.checked = state.useNegative;
+      el.extraTerms.value = state.extra;
+      renderEraControls();
+      renderIntensity();
+      renderStyle();
+      renderContent();
       fillFields();
-      recompile();
-      setStatus(`Loaded forge ${index + 1} from history.`, 'ok');
+
+      const result = recompile();
+      const faithful = !entry.recipe || result.prompt === entry.prompt;
+      setStatus(
+        faithful
+          ? `Restored forge ${index + 1} exactly.`
+          : `Restored forge ${index + 1}, but the prompt differs — presets have changed since it was saved.`,
+        faithful ? 'ok' : 'err',
+      );
+      savePrefs();
     });
 
     const copy = document.createElement('button');
@@ -782,6 +839,12 @@ function wire() {
   });
   el.emphasis.addEventListener('change', () => {
     state.emphasis = el.emphasis.checked;
+    recompile();
+    savePrefs();
+  });
+
+  el.useNegative.addEventListener('change', () => {
+    state.useNegative = el.useNegative.checked;
     recompile();
     savePrefs();
   });
@@ -897,6 +960,7 @@ function boot() {
   loadPrefs();
   el.periodSubject.checked = state.periodSubject;
   el.emphasis.checked = state.emphasis;
+  el.useNegative.checked = state.useNegative;
 
   renderEraControls();
   renderIntensity();

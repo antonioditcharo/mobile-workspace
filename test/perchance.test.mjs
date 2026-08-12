@@ -132,7 +132,7 @@ test('the style warning names the risk concretely', () => {
  * ------------------------------------------------------------------ */
 
 test('the settings block is a Perchance field checklist', () => {
-  const block = settingsBlock(compile({ subject: 'a man' }, { era: '1990s' }));
+  const block = settingsBlock(compile({ subject: 'a man' }, { era: '1990s', useNegative: true }));
   for (const label of [
     'Prompt:',
     'Negative prompt:',

@@ -36,6 +36,9 @@ import {
   NON_ADULT_ANSWERS,
   NSFW_QUALITY_TAGS,
   PRONOUN_PREFIXES,
+  POSITIVE_REALISM,
+  POSITIVE_REALISM_PERSON,
+  PERSON_HINTS,
 } from './vocab.js';
 
 import {
@@ -416,11 +419,18 @@ export function eraContribution(
   // token budget, which trims from the end. The medium's own texture (film grain,
   // video noise) is the period signature, so it leads — an earlier order put the
   // scene lighting first and let "visible film grain" be trimmed off a 35mm print.
-  const look = [
-    ...(format.look || []),
-    ...(flash ? era.flashLook || [] : era.daylightLook || []),
-    ...(era.look || []),
-  ];
+  // Interleaved, not concatenated. Both the medium's texture (film grain) and the
+  // scene's lighting character (direct on-camera flash) are period signatures, and
+  // whichever list came first would monopolise the survivors when trimming floors
+  // the category at two entries. Alternating guarantees one of each.
+  const texture = format.look || [];
+  const conditional = flash ? era.flashLook || [] : era.daylightLook || [];
+  const look = [];
+  for (let i = 0; i < Math.max(texture.length, conditional.length); i += 1) {
+    if (texture[i]) look.push(texture[i]);
+    if (conditional[i]) look.push(conditional[i]);
+  }
+  look.push(...(era.look || []));
 
   return {
     era,
@@ -721,6 +731,10 @@ export function compile(observation = {}, options = {}) {
     adultConfirmed = false,
     extra = '',
     budget = TOKEN_BUDGET,
+    // Off by default: the Perchance generator in use accepts no negative prompt,
+    // so emitting one would be dead weight. When disabled, the realism
+    // constraints it carried are stated positively instead — see below.
+    useNegative = false,
   } = options;
 
   const scene = inferScene(observation);
@@ -770,6 +784,18 @@ export function compile(observation = {}, options = {}) {
     groups.extra = fieldToTags(extra);
   }
 
+  // With no negative prompt there is nothing rejecting the AI look, so say the
+  // same things affirmatively in the only field the generator reads.
+  if (!useNegative && era.suppressQualityTags) {
+    const isPerson = PERSON_HINTS.test(
+      `${observation.subject || ''} ${observation.appearance || ''}`,
+    );
+    groups.realism = [
+      ...POSITIVE_REALISM,
+      ...(isPerson ? POSITIVE_REALISM_PERSON : []),
+    ];
+  }
+
   if (!era.suppressQualityTags) {
     groups.quality = [...QUALITY_TAGS];
   }
@@ -805,14 +831,18 @@ export function compile(observation = {}, options = {}) {
 
   const positiveTags = [...CATEGORY_ORDER, 'quality'].flatMap((c) => groups[c] || []);
 
-  const rawNegative = buildNegative(era, contribution, positiveTags, decision.config);
+  const rawNegative = useNegative
+    ? buildNegative(era, contribution, positiveTags, decision.config)
+    : [];
   // Era and content terms are request-specific, so they outrank leftover
   // boilerplate when the negative prompt has to be trimmed.
-  const negativeFit = prioritiseNegative(
-    rawNegative,
-    { content: decision.config.negative || [], era: era.negative || [] },
-    budget,
-  );
+  const negativeFit = useNegative
+    ? prioritiseNegative(
+        rawNegative,
+        { content: decision.config.negative || [], era: era.negative || [] },
+        budget,
+      )
+    : { kept: [], dropped: [], tokens: 0 };
   const negative = negativeFit.kept;
 
   const aspect =
@@ -845,6 +875,7 @@ export function compile(observation = {}, options = {}) {
       // True when even the protected tags exceed the context on their own.
       promptOverBudget: fitted.tokens > budget,
     },
+    useNegative,
     content: decision.level,
     contentRequested: content,
     contentBlocked: decision.blocked,
@@ -866,8 +897,9 @@ export function settingsBlock(result) {
   return [
     `Prompt: ${result.prompt}`,
     '',
-    `Negative prompt: ${result.negative}`,
-    '',
+    // Omitted entirely when the generator has no such field, rather than pasted
+    // in as something to puzzle over.
+    ...(result.useNegative ? [`Negative prompt: ${result.negative}`, ''] : []),
     '--- Perchance settings ---',
     `Art style: ${p.style}   <- important: any other style adds 8k/HDR/masterpiece and breaks the era look`,
     `Guidance scale: ${p.guidanceScale}   (this era works in ${lo}-${hi}; Perchance accepts ${p.guidanceRange[0]}-${p.guidanceRange[1]})`,

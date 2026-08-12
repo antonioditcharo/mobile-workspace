@@ -277,6 +277,7 @@ test('content negatives survive at every level', () => {
       era: '1990s',
       content: level,
       adultConfirmed: true,
+      useNegative: true,
       intensity: 'heavy',
     });
     for (const term of CONTENT_LEVELS[r.content].negative) {
@@ -289,14 +290,14 @@ test('content negatives survive at every level', () => {
 });
 
 test('the anti-AI-look core survives in the negative prompt', () => {
-  const r = compile(VERBOSE, { era: '1990s', intensity: 'heavy' });
+  const r = compile(VERBOSE, { era: '1990s', intensity: 'heavy', useNegative: true });
   for (const term of ['digital art', 'airbrushed', 'smooth skin', 'masterpiece']) {
     assert.ok(r.negativeList.includes(term), `lost core negative "${term}"`);
   }
 });
 
 test('what was trimmed is reported rather than silently dropped', () => {
-  const r = compile(VERBOSE, { era: '1990s', intensity: 'heavy' });
+  const r = compile(VERBOSE, { era: '1990s', intensity: 'heavy', useNegative: true });
   assert.ok(Array.isArray(r.budget.droppedFromPrompt));
   assert.ok(Array.isArray(r.budget.droppedFromNegative));
   assert.ok(

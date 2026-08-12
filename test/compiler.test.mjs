@@ -189,7 +189,7 @@ test('period era prompts contain no quality boilerplate', () => {
 
 test('period era negatives include the realism block', () => {
   for (const id of PERIOD_ERAS) {
-    const result = compile({ subject: 'a man' }, { era: id });
+    const result = compile({ subject: 'a man' }, { era: id, useNegative: true });
     // Spot-check the most important rejections rather than all of them, since
     // conflict-subtraction may legitimately drop a few per era.
     for (const term of ['digital art', 'cgi', 'airbrushed', 'modern smartphone photo']) {
@@ -222,7 +222,7 @@ test('no era negates an artifact it positively requests', () => {
       for (const intensity of Object.keys(INTENSITY_LEVELS)) {
         const result = compile(
           { subject: 'a man' },
-          { era: id, format, intensity, periodSubject: true },
+          { era: id, format, intensity, periodSubject: true, useNegative: true },
         );
         const positive = result.prompt.toLowerCase();
         for (const { positive: probe, forbidden } of CONFLICTS) {
@@ -243,7 +243,7 @@ test('no era negates an artifact it positively requests', () => {
 test('positive tags never appear verbatim in the negative prompt', () => {
   for (const id of ERA_IDS) {
     for (const format of Object.keys(ERAS[id].formats)) {
-      const result = compile({ subject: 'a man' }, { era: id, format, intensity: 'heavy' });
+      const result = compile({ subject: 'a man', useNegative: true }, { era: id, format, intensity: 'heavy' });
       const negatives = result.negativeList.map((t) => t.toLowerCase());
       const positives = Object.values(result.groups)
         .flat()
@@ -260,7 +260,7 @@ test('positive tags never appear verbatim in the negative prompt', () => {
 });
 
 test('the no-era escape hatch keeps quality tags and skips the realism block', () => {
-  const result = compile({ subject: 'a man' }, { era: 'none' });
+  const result = compile({ subject: 'a man', useNegative: true }, { era: 'none' });
   assert.ok(result.prompt.includes('masterpiece'));
   assert.equal(result.suppressedQualityTags, false);
   for (const term of REALISM_NEGATIVE) {
@@ -573,7 +573,7 @@ test('natural style reads correctly for the beach selfie', () => {
 });
 
 test('empty observations still produce a usable era-only prompt', () => {
-  const result = compile({}, { era: '1980s' });
+  const result = compile({}, { era: '1980s', useNegative: true });
   assert.ok(result.prompt.length > 20, result.prompt);
   assert.ok(result.negative.length > 20);
 });
@@ -587,7 +587,7 @@ test('compile reports recommended generation settings', () => {
 });
 
 test('settingsBlock renders a pasteable summary', () => {
-  const block = settingsBlock(compile(OBSERVATION, { era: '1990s' }));
+  const block = settingsBlock(compile(OBSERVATION, { era: '1990s', useNegative: true }));
   // Field names match Perchance's actual controls — see test/perchance.test.mjs.
   for (const label of ['Prompt:', 'Negative prompt:', 'Guidance scale:', 'Resolution:', 'Seed:']) {
     assert.ok(block.includes(label), `missing ${label}`);
