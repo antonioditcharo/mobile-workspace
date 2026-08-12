@@ -29,6 +29,22 @@ export const FILLER_PATTERNS = [
 ];
 
 /**
+ * Pronoun subjects that open a clause once answers are allowed to run to several
+ * sentences: "she has warm brown eyes" needs to become "warm brown eyes".
+ *
+ * Applied per tag rather than to the whole answer, because these only ever
+ * appear at the start of a clause. Order matters — the verb forms must be tried
+ * before the bare pronoun, or the pronoun goes and leaves the verb behind.
+ */
+export const PRONOUN_PREFIXES = [
+  /^(?:the\s+)?(?:subject|person|woman|man|girl|boy|figure)\s+(?:is|are|was|were|has|have|had|appears?|seems?|looks?)\s+/i,
+  /^(?:she|he|they|it)\s+(?:is|are|was|were|has|have|had|appears?|seems?|looks?)\s+/i,
+  /^(?:she|he|they|it)\s+/i,
+  /^(?:her|his|their|its)\s+/i,
+  /^(?:there\s+(?:is|are)\s+)/i,
+];
+
+/**
  * Answers that carry no information. A small model returns these constantly
  * when it cannot make out the detail being asked about, and emitting them
  * would poison the prompt with vague tokens.

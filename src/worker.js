@@ -39,13 +39,13 @@ self.addEventListener('message', async (event) => {
 
     if (message.type === 'observe') {
       if (!engine) throw new Error('Model is not loaded');
-      const { observation, failures } = await observe(engine, message.pixels, {
+      const { observation, failures, clipped } = await observe(engine, message.pixels, {
         startIndex: message.startIndex || 0,
         observation: message.observation || {},
         onProgress: (progress) => post('progress', { progress }),
         onPass: (pass) => post('pass', { pass }),
       });
-      post('observed', { observation, failures });
+      post('observed', { observation, failures, clipped });
       return;
     }
 

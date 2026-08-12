@@ -191,7 +191,7 @@ export function createWorkerRunner(url = new URL('./worker.js', import.meta.url)
         'observed',
         [pixels.data.buffer],
       );
-      return { observation: result.observation, failures: result.failures };
+      return { observation: result.observation, failures: result.failures, clipped: result.clipped };
     },
     terminate() {
       worker.terminate();

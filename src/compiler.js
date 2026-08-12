@@ -35,6 +35,7 @@ import {
   MINOR_TERMS,
   NON_ADULT_ANSWERS,
   NSFW_QUALITY_TAGS,
+  PRONOUN_PREFIXES,
 } from './vocab.js';
 
 import {
@@ -84,15 +85,70 @@ const CATEGORY_SYNONYMS = {
  * ------------------------------------------------------------------ */
 
 /**
+ * Ceiling on one field's description. Generous — the point is to stop a runaway
+ * answer, not to trim a good one. Truncation is repaired rather than displayed.
+ */
+export const MAX_ANSWER_CHARS = 400;
+
+/**
+ * Repair an answer that generation cut off mid-thought.
+ *
+ * When a pass hits its token cap the model stops wherever it happens to be,
+ * which surfaces as "wearing a blue shirt and a pair of jea". Rather than show
+ * the fragment, drop back to the last clean boundary.
+ *
+ * `truncated` comes from comparing generated length against the cap, so a
+ * single-clause answer is only shortened when generation really was cut off —
+ * "a woman" has no terminator either, and must survive untouched.
+ */
+export function repairTruncation(text, truncated = false) {
+  let out = String(text || '').trim();
+  if (!out) return '';
+
+  // A properly finished sentence needs no repair.
+  if (/[.!?]$/.test(out)) return out.replace(/[.!?]+$/, '');
+
+  // Prefer cutting at a clause boundary, which keeps whole descriptive units.
+  const lastBoundary = Math.max(out.lastIndexOf(','), out.lastIndexOf(';'));
+  if (lastBoundary > 0) {
+    const head = out.slice(0, lastBoundary).trim();
+    // Only worth doing if a boundary actually precedes the dangling tail.
+    if (head) return head;
+  }
+
+  // No boundary to fall back to: drop the final, probably partial, word — but
+  // only when generation is known to have been cut off.
+  if (truncated) {
+    const words = out.split(/\s+/);
+    if (words.length > 2) return words.slice(0, -1).join(' ');
+  }
+  return out;
+}
+
+/**
  * Strip the conversational scaffolding a small VLM wraps around its answers
  * and reduce the result to a bare descriptive phrase.
  */
-export function cleanAnswer(raw) {
+export function cleanAnswer(raw, { maxChars = MAX_ANSWER_CHARS } = {}) {
   if (typeof raw !== 'string') return '';
   let out = raw.replace(/\s+/g, ' ').trim();
 
-  // Models often answer in several sentences; the first carries the content.
-  out = out.split(/(?<=[.!?])\s+/)[0] || out;
+  // Keep as many whole sentences as fit.
+  //
+  // This used to keep only the first sentence, which was a reasonable defence
+  // against a 256M model rambling — but on a larger model it silently deleted
+  // good description. Now the cap is length, not sentence count, and a trailing
+  // sentence is only dropped when keeping it would blow the budget.
+  const sentences = out.split(/(?<=[.!?])\s+/);
+  if (sentences.length > 1) {
+    let kept = '';
+    for (const sentence of sentences) {
+      if (kept && (kept + ' ' + sentence).length > maxChars) break;
+      kept = kept ? `${kept} ${sentence}` : sentence;
+    }
+    out = kept || sentences[0];
+  }
+  if (out.length > maxChars) out = out.slice(0, maxChars);
 
   for (const pattern of FILLER_PATTERNS) {
     out = out.replace(pattern, ' ');
@@ -117,10 +173,16 @@ export function isNullAnswer(text) {
   return key.length === 0 || NULL_ANSWERS.has(key);
 }
 
-/** Split a descriptive phrase into individual tag-sized chunks. */
+/**
+ * Split a descriptive phrase into individual tag-sized chunks.
+ *
+ * Sentence terminators are boundaries too. Once answers were allowed to run to
+ * several sentences, splitting only on commas left tags like
+ * "side-swept bangs. she has warm brown eyes" — a full stop buried in a tag.
+ */
 export function toTags(phrase) {
   return String(phrase || '')
-    .split(/\s*(?:,|;|\band\b|\bwith\b(?=\s+(?:a|an|the)\b))\s*/i)
+    .split(/\s*(?:[.!?]+|,|;|\band\b|\bwith\b(?=\s+(?:a|an|the)\b))\s*/i)
     .map((t) => t.trim())
     .filter(Boolean);
 }
@@ -131,8 +193,19 @@ export function normalizeTag(tag, category = null) {
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .replace(/[.!?]+$/, '')
-    .replace(/^(?:a|an|the)\s+/, '')
     .trim();
+
+  // Strip the clause subject before the article, so "she has a red coat" loses
+  // both "she has" and "a".
+  for (const pattern of PRONOUN_PREFIXES) {
+    const stripped = out.replace(pattern, '');
+    if (stripped !== out) {
+      out = stripped.trim();
+      break;
+    }
+  }
+
+  out = out.replace(/^(?:a|an|the)\s+/, '').trim();
 
   // Category vocabulary wins: "camera" means "at the camera" for gaze but not
   // for a subject.

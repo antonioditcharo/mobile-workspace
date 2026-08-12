@@ -16,6 +16,9 @@ import {
   isFlashScene,
   settingPhrase,
   lightingNoun,
+  repairTruncation,
+  MAX_ANSWER_CHARS,
+  toTags,
 } from '../src/compiler.js';
 
 import { ERAS, ERA_IDS, REALISM_NEGATIVE, INTENSITY_LEVELS } from '../src/eras.js';
@@ -33,11 +36,75 @@ test('cleanAnswer strips model scaffolding', () => {
   assert.equal(cleanAnswer('  spaced   out   text  '), 'spaced out text');
 });
 
-test('cleanAnswer keeps only the first sentence', () => {
+/* ------------------------------------------------------------------ *
+ * Answer length
+ *
+ * A larger model writes longer, better descriptions. Two things used to cut them
+ * off: tight per-pass token budgets, and cleanAnswer keeping only the first
+ * sentence — a defence against a 256M model rambling that silently deleted good
+ * content from a 2.2B one.
+ * ------------------------------------------------------------------ */
+
+test('cleanAnswer keeps multiple sentences', () => {
   assert.equal(
     cleanAnswer('A woman in a blue dress. She is smiling at the camera.'),
-    'A woman in a blue dress',
+    'A woman in a blue dress. She is smiling at the camera',
   );
+});
+
+test('cleanAnswer caps runaway answers by length, not sentence count', () => {
+  const long = Array.from({ length: 40 }, (_, i) => `Sentence number ${i}.`).join(' ');
+  const out = cleanAnswer(long);
+  assert.ok(out.length <= MAX_ANSWER_CHARS, `${out.length} chars`);
+  assert.ok(out.startsWith('Sentence number 0'), out.slice(0, 40));
+  // Whole sentences only: the tail must be a complete "Sentence number N" unit,
+  // never a partial word. cleanAnswer strips the final full stop separately.
+  assert.match(out, /Sentence number \d+$/, out.slice(-40));
+  assert.ok(out.split('Sentence number').length > 5, 'should keep many sentences');
+});
+
+test('cleanAnswer respects a custom cap', () => {
+  const out = cleanAnswer('One two three. Four five six. Seven eight nine.', { maxChars: 20 });
+  assert.ok(out.length <= 20, out);
+});
+
+test('a single long sentence is not truncated mid-word by the sentence logic', () => {
+  const text = 'a woman with long brown hair wearing a red coat and holding a paper cup';
+  assert.equal(cleanAnswer(text), text);
+});
+
+test('repairTruncation trims a dangling clause back to the last boundary', () => {
+  assert.equal(
+    repairTruncation('brown hair, brown eyes, wearing a blue shi', true),
+    'brown hair, brown eyes',
+  );
+  assert.equal(repairTruncation('seated, arms crossed, head til', true), 'seated, arms crossed');
+});
+
+test('repairTruncation drops only the partial word when there is no boundary', () => {
+  assert.equal(repairTruncation('a woman with long brown ha', true), 'a woman with long brown');
+});
+
+test('repairTruncation leaves finished answers alone', () => {
+  assert.equal(repairTruncation('a woman in a red coat.', false), 'a woman in a red coat');
+  assert.equal(repairTruncation('a woman', false), 'a woman');
+  // Short answers must survive even though they have no terminator.
+  assert.equal(repairTruncation('adult', true), 'adult');
+  assert.equal(repairTruncation('outdoors', true), 'outdoors');
+});
+
+test('repairTruncation does not empty a short two-word answer', () => {
+  assert.equal(repairTruncation('close-up shot', true), 'close-up shot');
+});
+
+test('repairTruncation handles empty input', () => {
+  assert.equal(repairTruncation('', true), '');
+  assert.equal(repairTruncation(undefined, true), '');
+});
+
+test('a repaired answer still compiles to clean tags', () => {
+  const repaired = repairTruncation('brown hair, brown eyes, wearing a blue shi', true);
+  assert.deepEqual(fieldToTags(repaired, 'appearance'), ['brown hair', 'brown eyes']);
 });
 
 test('cleanAnswer strips hedging', () => {
@@ -525,4 +592,64 @@ test('settingsBlock renders a pasteable summary', () => {
   for (const label of ['Prompt:', 'Negative prompt:', 'Guidance scale:', 'Resolution:', 'Seed:']) {
     assert.ok(block.includes(label), `missing ${label}`);
   }
+});
+
+/* ------------------------------------------------------------------ *
+ * Multi-sentence answers
+ *
+ * Allowing longer descriptions created a second problem: splitting only on
+ * commas left a full stop buried inside a tag, and pronoun subjects ("she has
+ * warm brown eyes") became prompt noise.
+ * ------------------------------------------------------------------ */
+
+test('sentence boundaries split tags', () => {
+  assert.deepEqual(toTags('side-swept bangs. warm brown eyes'), [
+    'side-swept bangs',
+    'warm brown eyes',
+  ]);
+  assert.equal(
+    toTags('one. two! three?').length,
+    3,
+  );
+});
+
+test('no tag retains a sentence terminator', () => {
+  const rich =
+    'Long wavy brown hair and side-swept bangs. She has warm brown eyes. Her skin is freckled.';
+  for (const tag of fieldToTags(cleanAnswer(rich), 'appearance')) {
+    assert.equal(/[.!?]/.test(tag), false, `tag kept punctuation: "${tag}"`);
+  }
+});
+
+test('pronoun subjects are stripped from tags', () => {
+  assert.deepEqual(normalizeTag('she has warm brown eyes'), 'warm brown eyes');
+  assert.deepEqual(normalizeTag('he is wearing a red coat'), 'wearing a red coat');
+  assert.deepEqual(normalizeTag('they are standing'), 'standing');
+  assert.deepEqual(normalizeTag('the subject is seated'), 'seated');
+  assert.deepEqual(normalizeTag('her hair'), 'hair');
+});
+
+test('the pronoun strip runs before the article strip', () => {
+  assert.equal(normalizeTag('she has a red coat'), 'red coat');
+});
+
+test('a pronoun that is the whole tag does not empty it oddly', () => {
+  // Nothing useful to keep, but it must not throw or produce punctuation.
+  assert.equal(typeof normalizeTag('she'), 'string');
+});
+
+test('a rich multi-sentence answer compiles to clean separate tags', () => {
+  const rich =
+    'A young woman with long wavy brown hair and side-swept bangs. She has warm brown eyes and a small silver nose stud.';
+  const tags = fieldToTags(cleanAnswer(rich), 'appearance');
+  assert.ok(tags.includes('warm brown eyes'), JSON.stringify(tags));
+  assert.ok(tags.includes('side-swept bangs'), JSON.stringify(tags));
+  assert.ok(tags.length >= 4, JSON.stringify(tags));
+});
+
+test('a multi-sentence pose answer keeps each element separate', () => {
+  const pose = 'The subject is seated on a low wall. She is leaning back on both hands.';
+  const tags = fieldToTags(cleanAnswer(pose), 'pose');
+  assert.ok(tags.includes('seated on a low wall'), JSON.stringify(tags));
+  assert.ok(tags.includes('leaning back on both hands'), JSON.stringify(tags));
 });

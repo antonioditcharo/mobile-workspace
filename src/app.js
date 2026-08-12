@@ -470,7 +470,7 @@ async function runVision({ resume = false } = {}) {
       state.runner.setHandlers(handlers);
     }
 
-    const { observation, failures } = await state.runner.observe({
+    const { observation, failures, clipped = [] } = await state.runner.observe({
       pixels: state.pixels,
       startIndex,
       observation: carried,
@@ -489,6 +489,11 @@ async function runVision({ resume = false } = {}) {
         `Done, but ${failures.length} of ${PASSES.length} questions failed. Edit any blank field by hand.`,
         'err',
       );
+    } else if (clipped.length) {
+      // The answer was trimmed back to a clean boundary rather than left dangling,
+      // but say so — a field that clips every time wants a bigger model budget.
+      const names = clipped.map((f) => FIELD_LABELS[f] || f).join(', ');
+      setStatus(`Done. ${names} ran to the length limit and were trimmed cleanly.`, 'ok');
     } else {
       setStatus('Done. Check the fields, then copy the prompt.', 'ok');
     }

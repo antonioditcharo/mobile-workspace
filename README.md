@@ -64,6 +64,18 @@ someone simply facing the camera. Pose gets the largest token budget of any pass
 answers are normalised per category — `sitting` → `seated`, `from behind` →
 `back to the camera`, and for gaze only, `camera` → `at the camera`.
 
+### Description length
+
+Answers are allowed to be long. Per-pass token budgets are generous and scale with model
+size (the 2.2B model gets double the base), because the earlier tight budgets clipped its
+richer descriptions mid-clause. Multi-sentence answers are kept — an earlier version
+retained only the first sentence, which was a fair defence against a 256M model rambling
+but silently deleted good content from a larger one.
+
+If a pass does hit its ceiling, the dangling fragment is trimmed back to the last clean
+boundary rather than shown, and the field is named in the status line so a field that clips
+every time is visible. The cap is `MAX_ANSWER_CHARS` in `src/compiler.js`.
+
 ### Long reads and leaving the app
 
 **A web app cannot keep processing in the background on a phone.** When the OS
@@ -202,7 +214,7 @@ minute or more per image.
 ## Development
 
 ```bash
-node --test test/*.test.mjs                                # 104 unit tests
+node --test test/*.test.mjs                                # 126 unit tests
 node test/ui.smoke.mjs                                    # 74 browser checks (needs playwright)
 node build/bundle.mjs                                     # rebuild the single-file version
 python3 build/make-icons.py                               # regenerate icons

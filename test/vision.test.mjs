@@ -208,16 +208,68 @@ test('there is exactly one pass per observation field', () => {
   );
 });
 
-test('passes give short prompts with tight token budgets', () => {
+test('every pass asks one short, complete instruction', () => {
   for (const pass of PASSES) {
     // Some passes are questions, others imperatives ("Describe the ...") —
-    // what matters is that each is one short instruction with a small budget.
+    // what matters is that each is one short instruction.
     assert.match(pass.question, /[.?]$/, `${pass.field} should be one complete instruction`);
     // Roomy enough for a pass that enumerates its valid answers, which is how
     // the shot-type pass is kept to a closed set.
     assert.ok(pass.question.length < 140, `${pass.field} instruction is too long`);
-    // Pose legitimately needs more room than the terse passes — it describes
-    // posture, arms and head in one answer.
-    assert.ok(pass.tokens > 0 && pass.tokens <= 40, `${pass.field} token budget looks wrong`);
+    // Per-field budgets are asserted separately; this is just a sanity ceiling.
+    assert.ok(pass.tokens > 0 && pass.tokens <= 128, `${pass.field} token budget looks wrong`);
   }
+});
+
+/* ------------------------------------------------------------------ *
+ * Answer length budgets
+ *
+ * The 2.2B model's descriptions were being clipped mid-clause. The cause was
+ * these budgets, not the model.
+ * ------------------------------------------------------------------ */
+
+test('descriptive passes get enough room for a real description', () => {
+  const budget = (field) => PASSES.find((p) => p.field === field).tokens;
+  // Roughly: 1 token ≈ 4 characters, so 48 tokens ≈ a full clause-rich answer.
+  for (const field of ['appearance', 'clothing', 'pose', 'setting', 'lighting']) {
+    assert.ok(budget(field) >= 48, `${field} budget is only ${budget(field)}`);
+  }
+  // Pose is the most detailed answer of the set.
+  assert.ok(budget('pose') >= budget('appearance'), 'pose should have the largest budget');
+});
+
+test('closed-answer passes stay small, since a long answer there is noise', () => {
+  const budget = (field) => PASSES.find((p) => p.field === field).tokens;
+  for (const field of ['placement', 'apparentAge', 'shotType']) {
+    assert.ok(budget(field) <= 16, `${field} budget is ${budget(field)}`);
+  }
+});
+
+test('larger models are given proportionally more room', () => {
+  const scale = (key) => MODELS[key].tokenScale ?? 1;
+  assert.equal(scale('smolvlm-256m-q8'), 1);
+  assert.ok(scale('smolvlm-500m-q4f16') > scale('smolvlm-256m-q8'));
+  assert.ok(scale('smolvlm-2.2b-q4f16') > scale('smolvlm-500m-q4f16'));
+});
+
+test('every model declares a token scale', () => {
+  for (const [key, model] of Object.entries(MODELS)) {
+    assert.equal(typeof model.tokenScale, 'number', `${key} missing tokenScale`);
+    assert.ok(model.tokenScale >= 1, `${key} scale below 1`);
+  }
+});
+
+test('the scaled budget for the largest model is generous', () => {
+  const pose = PASSES.find((p) => p.field === 'pose').tokens;
+  const scaled = Math.round(pose * MODELS['smolvlm-2.2b-q4f16'].tokenScale);
+  // ~190 tokens is several hundred characters — well past where clipping was hit.
+  assert.ok(scaled >= 150, `scaled pose budget is only ${scaled}`);
+});
+
+test('truncation is detected and repaired, not shown', () => {
+  // runPass is not exported, so this pins the contract it relies on: a cap-hit
+  // answer is repaired by the compiler before it reaches the observation.
+  assert.ok(visionCode.includes('output.dims.at(-1) - promptLength'), 'expected length comparison');
+  assert.ok(visionCode.includes('repairTruncation'), 'expected repair to be applied');
+  assert.ok(/clipped/.test(visionCode), 'expected clipped fields to be reported');
 });

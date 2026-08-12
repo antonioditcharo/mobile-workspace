@@ -586,6 +586,22 @@ const FILLER_PATTERNS = [
 ];
 
 /**
+ * Pronoun subjects that open a clause once answers are allowed to run to several
+ * sentences: "she has warm brown eyes" needs to become "warm brown eyes".
+ *
+ * Applied per tag rather than to the whole answer, because these only ever
+ * appear at the start of a clause. Order matters — the verb forms must be tried
+ * before the bare pronoun, or the pronoun goes and leaves the verb behind.
+ */
+const PRONOUN_PREFIXES = [
+  /^(?:the\s+)?(?:subject|person|woman|man|girl|boy|figure)\s+(?:is|are|was|were|has|have|had|appears?|seems?|looks?)\s+/i,
+  /^(?:she|he|they|it)\s+(?:is|are|was|were|has|have|had|appears?|seems?|looks?)\s+/i,
+  /^(?:she|he|they|it)\s+/i,
+  /^(?:her|his|their|its)\s+/i,
+  /^(?:there\s+(?:is|are)\s+)/i,
+];
+
+/**
  * Answers that carry no information. A small model returns these constantly
  * when it cannot make out the detail being asked about, and emitting them
  * would poison the prompt with vague tokens.
@@ -1694,15 +1710,70 @@ const CATEGORY_SYNONYMS = {
  * ------------------------------------------------------------------ */
 
 /**
+ * Ceiling on one field's description. Generous — the point is to stop a runaway
+ * answer, not to trim a good one. Truncation is repaired rather than displayed.
+ */
+const MAX_ANSWER_CHARS = 400;
+
+/**
+ * Repair an answer that generation cut off mid-thought.
+ *
+ * When a pass hits its token cap the model stops wherever it happens to be,
+ * which surfaces as "wearing a blue shirt and a pair of jea". Rather than show
+ * the fragment, drop back to the last clean boundary.
+ *
+ * `truncated` comes from comparing generated length against the cap, so a
+ * single-clause answer is only shortened when generation really was cut off —
+ * "a woman" has no terminator either, and must survive untouched.
+ */
+function repairTruncation(text, truncated = false) {
+  let out = String(text || '').trim();
+  if (!out) return '';
+
+  // A properly finished sentence needs no repair.
+  if (/[.!?]$/.test(out)) return out.replace(/[.!?]+$/, '');
+
+  // Prefer cutting at a clause boundary, which keeps whole descriptive units.
+  const lastBoundary = Math.max(out.lastIndexOf(','), out.lastIndexOf(';'));
+  if (lastBoundary > 0) {
+    const head = out.slice(0, lastBoundary).trim();
+    // Only worth doing if a boundary actually precedes the dangling tail.
+    if (head) return head;
+  }
+
+  // No boundary to fall back to: drop the final, probably partial, word — but
+  // only when generation is known to have been cut off.
+  if (truncated) {
+    const words = out.split(/\s+/);
+    if (words.length > 2) return words.slice(0, -1).join(' ');
+  }
+  return out;
+}
+
+/**
  * Strip the conversational scaffolding a small VLM wraps around its answers
  * and reduce the result to a bare descriptive phrase.
  */
-function cleanAnswer(raw) {
+function cleanAnswer(raw, { maxChars = MAX_ANSWER_CHARS } = {}) {
   if (typeof raw !== 'string') return '';
   let out = raw.replace(/\s+/g, ' ').trim();
 
-  // Models often answer in several sentences; the first carries the content.
-  out = out.split(/(?<=[.!?])\s+/)[0] || out;
+  // Keep as many whole sentences as fit.
+  //
+  // This used to keep only the first sentence, which was a reasonable defence
+  // against a 256M model rambling — but on a larger model it silently deleted
+  // good description. Now the cap is length, not sentence count, and a trailing
+  // sentence is only dropped when keeping it would blow the budget.
+  const sentences = out.split(/(?<=[.!?])\s+/);
+  if (sentences.length > 1) {
+    let kept = '';
+    for (const sentence of sentences) {
+      if (kept && (kept + ' ' + sentence).length > maxChars) break;
+      kept = kept ? `${kept} ${sentence}` : sentence;
+    }
+    out = kept || sentences[0];
+  }
+  if (out.length > maxChars) out = out.slice(0, maxChars);
 
   for (const pattern of FILLER_PATTERNS) {
     out = out.replace(pattern, ' ');
@@ -1727,10 +1798,16 @@ function isNullAnswer(text) {
   return key.length === 0 || NULL_ANSWERS.has(key);
 }
 
-/** Split a descriptive phrase into individual tag-sized chunks. */
+/**
+ * Split a descriptive phrase into individual tag-sized chunks.
+ *
+ * Sentence terminators are boundaries too. Once answers were allowed to run to
+ * several sentences, splitting only on commas left tags like
+ * "side-swept bangs. she has warm brown eyes" — a full stop buried in a tag.
+ */
 function toTags(phrase) {
   return String(phrase || '')
-    .split(/\s*(?:,|;|\band\b|\bwith\b(?=\s+(?:a|an|the)\b))\s*/i)
+    .split(/\s*(?:[.!?]+|,|;|\band\b|\bwith\b(?=\s+(?:a|an|the)\b))\s*/i)
     .map((t) => t.trim())
     .filter(Boolean);
 }
@@ -1741,8 +1818,19 @@ function normalizeTag(tag, category = null) {
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .replace(/[.!?]+$/, '')
-    .replace(/^(?:a|an|the)\s+/, '')
     .trim();
+
+  // Strip the clause subject before the article, so "she has a red coat" loses
+  // both "she has" and "a".
+  for (const pattern of PRONOUN_PREFIXES) {
+    const stripped = out.replace(pattern, '');
+    if (stripped !== out) {
+      out = stripped.trim();
+      break;
+    }
+  }
+
+  out = out.replace(/^(?:a|an|the)\s+/, '').trim();
 
   // Category vocabulary wins: "camera" means "at the camera" for gaze but not
   // for a subject.
@@ -2391,6 +2479,7 @@ const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-256M-Instruct',
     dtype: 'q4',
     label: 'SmolVLM 256M (q4)',
+    tokenScale: 1,
     approxDownload: '~180 MB',
     note: 'Smallest. Runs on low-RAM devices.',
   },
@@ -2398,6 +2487,7 @@ const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-256M-Instruct',
     dtype: 'q8',
     label: 'SmolVLM 256M (q8)',
+    tokenScale: 1,
     approxDownload: '~280 MB',
     note: 'Small and CPU-friendly.',
   },
@@ -2405,6 +2495,7 @@ const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-500M-Instruct',
     dtype: 'q4f16',
     label: 'SmolVLM 500M (q4f16)',
+    tokenScale: 1.25,
     approxDownload: '~450 MB',
     note: 'Good captions and pose reading. Needs WebGPU.',
   },
@@ -2412,6 +2503,9 @@ const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-Instruct',
     dtype: 'q4f16',
     label: 'SmolVLM 2.2B (q4f16)',
+    // The largest model writes the richest descriptions, so it gets the most room
+    // before the cap can clip one.
+    tokenScale: 2,
     approxDownload: '~1.6 GB',
     // Never auto-selected, and flagged as unverified: the model host is not
     // reachable from the build sandbox, so this repo/dtype pairing could not be
@@ -2557,19 +2651,19 @@ async function prepareImage(blob, maxEdge = 512) {
  * compiler has to strip back out.
  */
 const PASSES = [
-  { field: 'subject', question: 'In a few words, what is the main subject of this photo?', tokens: 20 },
+  { field: 'subject', question: 'In a few words, what is the main subject of this photo?', tokens: 32 },
   {
     field: 'appearance',
     // "Only what you can clearly see" is doing real work: the open-ended version
     // invented a beauty mark on a face that actually had a nose stud.
     question:
       "Describe only what you can clearly see of the subject's hair and face, in a few words.",
-    tokens: 28,
+    tokens: 72,
   },
   {
     field: 'clothing',
     question: 'What visible clothing is the subject wearing? If none is visible, say none.',
-    tokens: 24,
+    tokens: 56,
   },
   {
     field: 'pose',
@@ -2578,36 +2672,36 @@ const PASSES = [
     // someone simply facing the camera. Asked directly, with a bigger budget.
     question:
       'Describe the body position: standing, seated, lying down, leaning, kneeling, and how the arms and head are held.',
-    tokens: 36,
+    tokens: 96,
   },
-  { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 20 },
+  { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 48 },
   {
     field: 'gaze',
     question: 'Where is the subject looking? Answer in a few words.',
-    tokens: 14,
+    tokens: 24,
   },
-  { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 20 },
+  { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 48 },
   {
     field: 'placement',
     // Drives scene inference — decides whether era presets may mention camera
     // flash, walls and indoor furniture. Cheap and high-leverage.
     question: 'Was this photo taken indoors or outdoors? Answer with one word.',
-    tokens: 8,
+    tokens: 10,
   },
-  { field: 'colors', question: 'List the two or three most dominant colors.', tokens: 18 },
-  { field: 'lighting', question: 'Describe the lighting in a few words.', tokens: 20 },
+  { field: 'colors', question: 'List the two or three most dominant colors.', tokens: 36 },
+  { field: 'lighting', question: 'Describe the lighting in a few words.', tokens: 48 },
   {
     field: 'shotType',
     // Phrased as a closed set; answers outside it are discarded by the compiler.
     question:
       'How is this framed? Answer with exactly one of: close-up shot, waist-up shot, full-body shot, wide shot.',
-    tokens: 12,
+    tokens: 16,
   },
   {
     field: 'apparentAge',
     // Feeds the adult-content safeguard in the compiler. Never emitted as a tag.
     question: 'Does the main subject appear to be an adult or a child? Answer adult or child.',
-    tokens: 8,
+    tokens: 10,
   },
 ];
 
@@ -2656,7 +2750,15 @@ async function loadVision(choice, { onProgress = () => {} } = {}) {
     progress_callback: relay,
   });
 
-  const engine = { processor, model, RawImage, id: choice.id };
+  const engine = {
+    processor,
+    model,
+    RawImage,
+    id: choice.id,
+    // A larger model writes richer answers, so it is given proportionally more
+    // room before a pass's cap can clip one mid-clause.
+    tokenScale: choice.tokenScale || 1,
+  };
   cached = { key, engine };
   return engine;
 }
@@ -2677,7 +2779,8 @@ async function unloadVision() {
  * This is the one function that touches the model's call convention, so it is
  * the only place to adjust if a future library version changes it.
  */
-async function runPass(engine, image, question, maxTokens) {
+async function runPass(engine, image, question, baseTokens) {
+  const maxTokens = Math.max(8, Math.round(baseTokens * (engine.tokenScale || 1)));
   const messages = [
     {
       role: 'user',
@@ -2704,7 +2807,17 @@ async function runPass(engine, image, question, maxTokens) {
   const promptLength = inputs.input_ids.dims.at(-1);
   const generated = output.slice(null, [promptLength, null]);
 
-  return extractText(engine.processor.batch_decode(generated, { skip_special_tokens: true }));
+  const answer = extractText(
+    engine.processor.batch_decode(generated, { skip_special_tokens: true }),
+  );
+
+  // If generation used its whole budget it stopped wherever it happened to be,
+  // rather than at a natural end. Comparing lengths detects that, so the dangling
+  // fragment can be trimmed back to a clean boundary instead of being shown.
+  const producedTokens = output.dims.at(-1) - promptLength;
+  const hitCap = producedTokens >= maxTokens;
+
+  return { text: repairTruncation(answer, hitCap), truncated: hitCap };
 }
 
 /**
@@ -2759,6 +2872,9 @@ async function observe(
   { onProgress = () => {}, onPass = () => {}, signal, startIndex = 0, observation = {} } = {},
 ) {
   const failures = [];
+  // Fields where generation used its entire budget — reported so a persistently
+  // clipped field is visible rather than quietly shortened.
+  const clipped = [];
 
   // Decode once and reuse across every pass — re-decoding per question would be
   // the single most wasteful thing this loop could do on a phone.
@@ -2769,7 +2885,9 @@ async function observe(
     const pass = PASSES[i];
     onProgress({ index: i, total: PASSES.length, field: pass.field });
     try {
-      observation[pass.field] = await runPass(engine, image, pass.question, pass.tokens);
+      const result = await runPass(engine, image, pass.question, pass.tokens);
+      observation[pass.field] = result.text;
+      if (result.truncated) clipped.push(pass.field);
       // Reported per pass so callers can checkpoint. A run interrupted by the OS
       // then costs one pass to redo rather than the whole image.
       onPass({ field: pass.field, value: observation[pass.field], index: i, total: PASSES.length });
@@ -2783,7 +2901,7 @@ async function observe(
     if (!(field in observation)) observation[field] = '';
   }
 
-  return { observation, failures };
+  return { observation, failures, clipped };
 }
 
 /** Turn a thrown error into something worth showing a user. */
@@ -2998,7 +3116,7 @@ function createWorkerRunner(url = new URL('./worker.js', import.meta.url)) {
         'observed',
         [pixels.data.buffer],
       );
-      return { observation: result.observation, failures: result.failures };
+      return { observation: result.observation, failures: result.failures, clipped: result.clipped };
     },
     terminate() {
       worker.terminate();
@@ -3518,7 +3636,7 @@ async function runVision({ resume = false } = {}) {
       state.runner.setHandlers(handlers);
     }
 
-    const { observation, failures } = await state.runner.observe({
+    const { observation, failures, clipped = [] } = await state.runner.observe({
       pixels: state.pixels,
       startIndex,
       observation: carried,
@@ -3537,6 +3655,11 @@ async function runVision({ resume = false } = {}) {
         `Done, but ${failures.length} of ${PASSES.length} questions failed. Edit any blank field by hand.`,
         'err',
       );
+    } else if (clipped.length) {
+      // The answer was trimmed back to a clean boundary rather than left dangling,
+      // but say so — a field that clips every time wants a bigger model budget.
+      const names = clipped.map((f) => FIELD_LABELS[f] || f).join(', ');
+      setStatus(`Done. ${names} ran to the length limit and were trimmed cleanly.`, 'ok');
     } else {
       setStatus('Done. Check the fields, then copy the prompt.', 'ok');
     }

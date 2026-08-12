@@ -23,7 +23,7 @@
  * mistake above stayed invisible until it hit a real device.
  */
 
-import { OBSERVATION_FIELDS } from './compiler.js';
+import { OBSERVATION_FIELDS, repairTruncation } from './compiler.js';
 
 /**
  * Pinned, and pointing at an explicit file rather than relying on the CDN to
@@ -43,6 +43,7 @@ export const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-256M-Instruct',
     dtype: 'q4',
     label: 'SmolVLM 256M (q4)',
+    tokenScale: 1,
     approxDownload: '~180 MB',
     note: 'Smallest. Runs on low-RAM devices.',
   },
@@ -50,6 +51,7 @@ export const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-256M-Instruct',
     dtype: 'q8',
     label: 'SmolVLM 256M (q8)',
+    tokenScale: 1,
     approxDownload: '~280 MB',
     note: 'Small and CPU-friendly.',
   },
@@ -57,6 +59,7 @@ export const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-500M-Instruct',
     dtype: 'q4f16',
     label: 'SmolVLM 500M (q4f16)',
+    tokenScale: 1.25,
     approxDownload: '~450 MB',
     note: 'Good captions and pose reading. Needs WebGPU.',
   },
@@ -64,6 +67,9 @@ export const MODELS = {
     id: 'HuggingFaceTB/SmolVLM-Instruct',
     dtype: 'q4f16',
     label: 'SmolVLM 2.2B (q4f16)',
+    // The largest model writes the richest descriptions, so it gets the most room
+    // before the cap can clip one.
+    tokenScale: 2,
     approxDownload: '~1.6 GB',
     // Never auto-selected, and flagged as unverified: the model host is not
     // reachable from the build sandbox, so this repo/dtype pairing could not be
@@ -209,19 +215,19 @@ export async function prepareImage(blob, maxEdge = 512) {
  * compiler has to strip back out.
  */
 export const PASSES = [
-  { field: 'subject', question: 'In a few words, what is the main subject of this photo?', tokens: 20 },
+  { field: 'subject', question: 'In a few words, what is the main subject of this photo?', tokens: 32 },
   {
     field: 'appearance',
     // "Only what you can clearly see" is doing real work: the open-ended version
     // invented a beauty mark on a face that actually had a nose stud.
     question:
       "Describe only what you can clearly see of the subject's hair and face, in a few words.",
-    tokens: 28,
+    tokens: 72,
   },
   {
     field: 'clothing',
     question: 'What visible clothing is the subject wearing? If none is visible, say none.',
-    tokens: 24,
+    tokens: 56,
   },
   {
     field: 'pose',
@@ -230,36 +236,36 @@ export const PASSES = [
     // someone simply facing the camera. Asked directly, with a bigger budget.
     question:
       'Describe the body position: standing, seated, lying down, leaning, kneeling, and how the arms and head are held.',
-    tokens: 36,
+    tokens: 96,
   },
-  { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 20 },
+  { field: 'action', question: 'What is the subject doing? Answer in a few words.', tokens: 48 },
   {
     field: 'gaze',
     question: 'Where is the subject looking? Answer in a few words.',
-    tokens: 14,
+    tokens: 24,
   },
-  { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 20 },
+  { field: 'setting', question: 'Where was this taken? Answer in a few words.', tokens: 48 },
   {
     field: 'placement',
     // Drives scene inference — decides whether era presets may mention camera
     // flash, walls and indoor furniture. Cheap and high-leverage.
     question: 'Was this photo taken indoors or outdoors? Answer with one word.',
-    tokens: 8,
+    tokens: 10,
   },
-  { field: 'colors', question: 'List the two or three most dominant colors.', tokens: 18 },
-  { field: 'lighting', question: 'Describe the lighting in a few words.', tokens: 20 },
+  { field: 'colors', question: 'List the two or three most dominant colors.', tokens: 36 },
+  { field: 'lighting', question: 'Describe the lighting in a few words.', tokens: 48 },
   {
     field: 'shotType',
     // Phrased as a closed set; answers outside it are discarded by the compiler.
     question:
       'How is this framed? Answer with exactly one of: close-up shot, waist-up shot, full-body shot, wide shot.',
-    tokens: 12,
+    tokens: 16,
   },
   {
     field: 'apparentAge',
     // Feeds the adult-content safeguard in the compiler. Never emitted as a tag.
     question: 'Does the main subject appear to be an adult or a child? Answer adult or child.',
-    tokens: 8,
+    tokens: 10,
   },
 ];
 
@@ -308,7 +314,15 @@ export async function loadVision(choice, { onProgress = () => {} } = {}) {
     progress_callback: relay,
   });
 
-  const engine = { processor, model, RawImage, id: choice.id };
+  const engine = {
+    processor,
+    model,
+    RawImage,
+    id: choice.id,
+    // A larger model writes richer answers, so it is given proportionally more
+    // room before a pass's cap can clip one mid-clause.
+    tokenScale: choice.tokenScale || 1,
+  };
   cached = { key, engine };
   return engine;
 }
@@ -329,7 +343,8 @@ export async function unloadVision() {
  * This is the one function that touches the model's call convention, so it is
  * the only place to adjust if a future library version changes it.
  */
-async function runPass(engine, image, question, maxTokens) {
+async function runPass(engine, image, question, baseTokens) {
+  const maxTokens = Math.max(8, Math.round(baseTokens * (engine.tokenScale || 1)));
   const messages = [
     {
       role: 'user',
@@ -356,7 +371,17 @@ async function runPass(engine, image, question, maxTokens) {
   const promptLength = inputs.input_ids.dims.at(-1);
   const generated = output.slice(null, [promptLength, null]);
 
-  return extractText(engine.processor.batch_decode(generated, { skip_special_tokens: true }));
+  const answer = extractText(
+    engine.processor.batch_decode(generated, { skip_special_tokens: true }),
+  );
+
+  // If generation used its whole budget it stopped wherever it happened to be,
+  // rather than at a natural end. Comparing lengths detects that, so the dangling
+  // fragment can be trimmed back to a clean boundary instead of being shown.
+  const producedTokens = output.dims.at(-1) - promptLength;
+  const hitCap = producedTokens >= maxTokens;
+
+  return { text: repairTruncation(answer, hitCap), truncated: hitCap };
 }
 
 /**
@@ -411,6 +436,9 @@ export async function observe(
   { onProgress = () => {}, onPass = () => {}, signal, startIndex = 0, observation = {} } = {},
 ) {
   const failures = [];
+  // Fields where generation used its entire budget — reported so a persistently
+  // clipped field is visible rather than quietly shortened.
+  const clipped = [];
 
   // Decode once and reuse across every pass — re-decoding per question would be
   // the single most wasteful thing this loop could do on a phone.
@@ -421,7 +449,9 @@ export async function observe(
     const pass = PASSES[i];
     onProgress({ index: i, total: PASSES.length, field: pass.field });
     try {
-      observation[pass.field] = await runPass(engine, image, pass.question, pass.tokens);
+      const result = await runPass(engine, image, pass.question, pass.tokens);
+      observation[pass.field] = result.text;
+      if (result.truncated) clipped.push(pass.field);
       // Reported per pass so callers can checkpoint. A run interrupted by the OS
       // then costs one pass to redo rather than the whole image.
       onPass({ field: pass.field, value: observation[pass.field], index: i, total: PASSES.length });
@@ -435,7 +465,7 @@ export async function observe(
     if (!(field in observation)) observation[field] = '';
   }
 
-  return { observation, failures };
+  return { observation, failures, clipped };
 }
 
 /** Turn a thrown error into something worth showing a user. */
