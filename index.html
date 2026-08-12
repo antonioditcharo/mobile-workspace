@@ -284,6 +284,20 @@
       #status.show {
         display: block;
       }
+      #resume-bar {
+        display: none;
+        margin-top: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--accent);
+        border-radius: 10px;
+      }
+      #resume-bar.show {
+        display: block;
+      }
+      #resume-bar p {
+        margin: 0 0 8px;
+        font-size: 13px;
+      }
       #status.err {
         border-color: var(--bad);
         color: var(--bad);
@@ -389,6 +403,17 @@
         Read image
       </button>
       <div id="status" role="status" aria-live="polite"></div>
+
+      <!-- Shown when a previous run was interrupted by the OS backgrounding the
+           app. Resuming costs one pass instead of the whole image. -->
+      <div id="resume-bar">
+        <p id="resume-text"></p>
+        <div class="row">
+          <button id="resume-btn">Resume</button>
+          <button id="discard-btn">Discard</button>
+        </div>
+      </div>
+      <p class="hint" id="background-note"></p>
     </section>
 
     <!-- 2. Era -->
@@ -515,6 +540,9 @@
         <p class="hint" id="model-why">Detecting device capability…</p>
         <button id="unload-btn" style="width: 100%; margin-top: 8px">
           Unload model from memory
+        </button>
+        <button id="notify-btn" style="width: 100%; margin-top: 8px">
+          Notify me when a read finishes
         </button>
         <p class="hint">
           The model runs entirely in this browser. No account, no API key, no rate limit, no

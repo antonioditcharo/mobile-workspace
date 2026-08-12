@@ -192,7 +192,11 @@ export async function prepareImage(blob, maxEdge = 512) {
   bitmap.close?.();
 
   const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-  return { dataUrl, canvas, original, width, height };
+  // Raw pixels as well: a Worker cannot receive a canvas, but this object's
+  // buffer is transferable, so inference can be moved off the main thread.
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const pixels = { data: imageData.data, width, height, channels: 4 };
+  return { dataUrl, canvas, pixels, original, width, height };
 }
 
 /* ------------------------------------------------------------------ *
@@ -388,22 +392,39 @@ export function extractText(output) {
  * A failed individual pass is left empty rather than aborting the run — seven
  * good fields still make a usable prompt.
  */
-export async function observe(engine, source, { onProgress = () => {}, signal } = {}) {
-  const observation = {};
+/**
+ * Build a RawImage from whatever the caller has.
+ *
+ * A Worker cannot be handed a canvas, so raw transferred pixels are accepted
+ * too. Everything else goes through `read`, which dispatches on type.
+ */
+export function toRawImage(engine, source) {
+  if (source && typeof source === 'object' && 'data' in source && 'width' in source) {
+    return new engine.RawImage(source.data, source.width, source.height, source.channels ?? 4);
+  }
+  return engine.RawImage.read(source);
+}
+
+export async function observe(
+  engine,
+  source,
+  { onProgress = () => {}, onPass = () => {}, signal, startIndex = 0, observation = {} } = {},
+) {
   const failures = [];
 
-  // Decode once and reuse across all eight passes — re-decoding per question
-  // would be the single most wasteful thing this loop could do on a phone.
-  // `read` dispatches on type, so a canvas (the fast path, straight from
-  // prepareImage), a Blob, or a URL all work.
-  const image = await engine.RawImage.read(source);
+  // Decode once and reuse across every pass — re-decoding per question would be
+  // the single most wasteful thing this loop could do on a phone.
+  const image = await toRawImage(engine, source);
 
-  for (let i = 0; i < PASSES.length; i++) {
+  for (let i = startIndex; i < PASSES.length; i++) {
     if (signal?.aborted) throw new DOMException('Observation cancelled', 'AbortError');
     const pass = PASSES[i];
     onProgress({ index: i, total: PASSES.length, field: pass.field });
     try {
       observation[pass.field] = await runPass(engine, image, pass.question, pass.tokens);
+      // Reported per pass so callers can checkpoint. A run interrupted by the OS
+      // then costs one pass to redo rather than the whole image.
+      onPass({ field: pass.field, value: observation[pass.field], index: i, total: PASSES.length });
     } catch (err) {
       observation[pass.field] = '';
       failures.push(`${pass.field}: ${err.message}`);

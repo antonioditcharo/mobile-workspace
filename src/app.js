@@ -17,12 +17,19 @@ import {
   detectCapabilities,
   chooseModel,
   prepareImage,
-  loadVision,
   unloadVision,
-  observe,
   describeError,
   PASSES,
 } from './vision.js';
+import {
+  createRunner,
+  saveCheckpoint,
+  loadCheckpoint,
+  clearCheckpoint,
+  acquireWakeLock,
+  releaseWakeLock,
+  wakeLockSupported,
+} from './runner.js';
 
 const HISTORY_KEY = 'promptforge.history.v1';
 const PREFS_KEY = 'promptforge.prefs.v1';
@@ -58,6 +65,9 @@ const state = {
   source: null,
   imageDataUrl: null,
   imageCanvas: null,
+  pixels: null,
+  runner: null,
+  resumeIndex: 0,
   modelOverride: null,
   caps: null,
   running: false,
@@ -110,6 +120,12 @@ const el = {
   modelWhy: $('model-why'),
   unloadBtn: $('unload-btn'),
   offlineState: $('offline-state'),
+  resumeBar: $('resume-bar'),
+  resumeText: $('resume-text'),
+  resumeBtn: $('resume-btn'),
+  discardBtn: $('discard-btn'),
+  notifyBtn: $('notify-btn'),
+  backgroundNote: $('background-note'),
 };
 
 /* ------------------------------------------------------------------ *
@@ -335,8 +351,12 @@ async function handleFile(file) {
     setStatus('Preparing image…');
     const prepared = await prepareImage(file);
     state.imageDataUrl = prepared.dataUrl; // preview only
-    state.imageCanvas = prepared.canvas; // what inference actually reads
+    state.imageCanvas = prepared.canvas; // retained so pixels can be rebuilt
+    state.pixels = prepared.pixels; // transferred to the worker for inference
     state.source = prepared.original;
+    state.resumeIndex = 0;
+    clearCheckpoint();
+    hideResume();
 
     el.preview.src = prepared.dataUrl;
     el.preview.classList.add('show');
@@ -369,24 +389,40 @@ function updateModelWhy() {
   el.modelWhy.textContent = `${bits.join(' · ')} — ${choice.why}`;
 }
 
-async function runVision() {
+async function runVision({ resume = false } = {}) {
   if (state.running) {
     state.abort?.abort();
     return;
   }
-  if (!state.imageCanvas) return;
+  // The buffer is transferred to the worker, so it may be detached from an
+  // earlier run. Rebuild from the retained canvas rather than silently doing
+  // nothing when the button is tapped.
+  if (!state.pixels && state.imageCanvas) state.pixels = pixelsFromCanvas(state.imageCanvas);
+  if (!state.pixels) {
+    setStatus('Could not read that image any more — pick the photo again.', 'err');
+    return;
+  }
 
   state.running = true;
   state.abort = new AbortController();
   el.readBtn.textContent = 'Cancel';
+  hideResume();
+
+  // Keep the screen awake: the OS backgrounds the app when the screen sleeps,
+  // which is what actually stops a run when the phone is set down.
+  const locked = await acquireWakeLock();
+  let interrupted = false;
 
   try {
     const caps = await ensureCaps();
     const choice = chooseModel(caps, state.modelOverride);
 
-    setStatus(`Loading ${choice.label} (${choice.approxDownload} first time)…`, '', -1);
-    const engine = await loadVision(choice, {
+    const startIndex = resume ? state.resumeIndex : 0;
+    const carried = resume ? { ...state.observation } : {};
+
+    const handlers = {
       onProgress: (p) => {
+        if (!p) return;
         if (p.phase === 'download' && p.total) {
           const pct = Math.round((p.loaded / p.total) * 100);
           setStatus(`Downloading ${p.file || 'model'} — ${pct}%`, '', pct);
@@ -396,22 +432,54 @@ async function runVision() {
           setStatus('Loading processor…', '', -1);
         } else if (p.phase === 'model') {
           setStatus('Initialising model…', '', -1);
+        } else if (typeof p.index === 'number') {
+          setStatus(
+            `Reading image — ${FIELD_LABELS[p.field] || p.field} (${p.index + 1}/${p.total})` +
+              (locked ? '' : ' · keep the screen on'),
+            '',
+            Math.round((p.index / p.total) * 100),
+          );
         }
       },
-    });
-
-    const { observation, failures } = await observe(engine, state.imageCanvas, {
-      signal: state.abort.signal,
-      onProgress: ({ index, total, field }) => {
-        setStatus(
-          `Reading image — ${FIELD_LABELS[field] || field} (${index + 1}/${total})`,
-          '',
-          Math.round((index / total) * 100),
-        );
+      // Checkpoint after every pass, and show each answer as it lands so a run
+      // that gets killed still leaves visible, usable work behind.
+      onPass: ({ field, value, index, total }) => {
+        state.observation[field] = value;
+        const input = document.getElementById(`field-${field}`);
+        if (input) input.value = value || '';
+        recompile();
+        state.resumeIndex = index + 1;
+        saveCheckpoint({
+          dataUrl: state.imageDataUrl,
+          source: state.source,
+          observation: state.observation,
+          nextIndex: index + 1,
+          total,
+        });
       },
+      onFallback: (reason) => {
+        // Worth surfacing: it explains why the UI is about to become sluggish.
+        setStatus(`Background worker unavailable, running in page. ${reason}`, '', -1);
+      },
+    };
+
+    setStatus(`Loading ${choice.label} (${choice.approxDownload} first time)…`, '', -1);
+    if (!state.runner) {
+      state.runner = await createRunner(choice, handlers, { preferWorker: true });
+    } else {
+      state.runner.setHandlers(handlers);
+    }
+
+    const { observation, failures } = await state.runner.observe({
+      pixels: state.pixels,
+      startIndex,
+      observation: carried,
+      signal: state.abort.signal,
     });
 
     state.observation = { ...state.observation, ...observation };
+    state.resumeIndex = PASSES.length;
+    clearCheckpoint();
     fillFields();
     const result = recompile();
     saveHistory(result);
@@ -424,12 +492,100 @@ async function runVision() {
     } else {
       setStatus('Done. Check the fields, then copy the prompt.', 'ok');
     }
+    notifyDone(failures.length);
   } catch (err) {
+    interrupted = true;
     setStatus(describeError(err), 'err');
+    // A partial run is still worth resuming.
+    if (state.resumeIndex > 0 && state.resumeIndex < PASSES.length) showResume();
   } finally {
+    // The pixel buffer is transferred to the worker, so it cannot be reused for
+    // a second run — rebuild it from the canvas that stayed on this thread.
+    if (state.imageCanvas) state.pixels = pixelsFromCanvas(state.imageCanvas);
     state.running = false;
     state.abort = null;
     el.readBtn.textContent = 'Read image';
+    await releaseWakeLock();
+    if (!interrupted) hideResume();
+  }
+}
+
+/** Re-read pixels from the retained canvas after a transfer emptied the buffer. */
+function pixelsFromCanvas(canvas) {
+  try {
+    const ctx = canvas.getContext('2d');
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    return { data: data.data, width: canvas.width, height: canvas.height, channels: 4 };
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Interruption handling
+ * ------------------------------------------------------------------ */
+
+function showResume() {
+  el.resumeBar.classList.add('show');
+  el.resumeText.textContent = `Unfinished read — ${state.resumeIndex} of ${PASSES.length} questions done.`;
+}
+
+function hideResume() {
+  el.resumeBar.classList.remove('show');
+}
+
+/**
+ * Offer to resume a run that a previous session did not finish.
+ *
+ * This is the honest answer to "keep working while I'm away": the OS will freeze
+ * the app, so instead of pretending otherwise, the work already done is kept and
+ * the run picks up where it stopped.
+ */
+async function restoreCheckpoint() {
+  const record = loadCheckpoint();
+  if (!record) return;
+
+  state.observation = { ...record.observation };
+  state.resumeIndex = record.nextIndex;
+  state.source = record.source || null;
+  state.imageDataUrl = record.dataUrl;
+
+  el.preview.src = record.dataUrl;
+  el.preview.classList.add('show');
+  el.drop.classList.add('has-image');
+  el.dropLabel.textContent = 'restored from an unfinished read';
+
+  // Rebuild the pixels the run needs from the stored preview.
+  try {
+    const blob = await (await fetch(record.dataUrl)).blob();
+    const prepared = await prepareImage(blob);
+    state.imageCanvas = prepared.canvas;
+    state.pixels = prepared.pixels;
+    el.readBtn.disabled = false;
+  } catch {
+    /* preview still shows; the user can re-pick the photo */
+  }
+
+  fillFields();
+  recompile();
+  showResume();
+}
+
+/**
+ * Notify on completion when the app is not in the foreground, so a long run does
+ * not require watching it.
+ */
+function notifyDone(failureCount) {
+  try {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    if (!document.hidden) return;
+    const body = failureCount
+      ? `Prompt ready, ${failureCount} question(s) failed.`
+      : 'Your prompt is ready.';
+    new Notification('Prompt Forge', { body, icon: './icons/icon-192.png', tag: 'forge-done' });
+  } catch {
+    /* notifications are a convenience */
   }
 }
 
@@ -661,8 +817,42 @@ function wire() {
   });
 
   el.unloadBtn.addEventListener('click', async () => {
+    state.runner?.terminate();
+    state.runner = null;
     await unloadVision();
     setStatus('Model unloaded from memory.', 'ok');
+  });
+
+  el.resumeBtn.addEventListener('click', () => runVision({ resume: true }));
+  el.discardBtn.addEventListener('click', () => {
+    clearCheckpoint();
+    state.resumeIndex = 0;
+    hideResume();
+  });
+
+  el.notifyBtn.addEventListener('click', async () => {
+    if (!('Notification' in window)) {
+      setStatus('This browser does not support notifications.', 'err');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setStatus(
+      permission === 'granted'
+        ? "Notifications on. You'll get one when a read finishes while you're away."
+        : 'Notification permission was not granted.',
+      permission === 'granted' ? 'ok' : 'err',
+    );
+  });
+
+  // Report interruptions honestly rather than leaving a silently stalled bar.
+  document.addEventListener('visibilitychange', async () => {
+    if (document.hidden) return;
+    if (state.running) {
+      // The system drops a screen wake lock whenever the page is hidden.
+      await acquireWakeLock();
+    } else if (state.resumeIndex > 0 && state.resumeIndex < PASSES.length) {
+      showResume();
+    }
   });
 
   const updateOnline = () => {
@@ -696,6 +886,15 @@ function boot() {
   ensureCaps().catch(() => {
     el.modelWhy.textContent = 'Could not probe device capability; auto-detect will retry.';
   });
+
+  // Say plainly what happens when the app goes away, rather than implying it
+  // keeps working.
+  el.backgroundNote.textContent = wakeLockSupported()
+    ? 'Reading keeps the screen awake so it continues while the phone sits. Switching apps pauses it — progress is saved after every question and you can resume.'
+    : 'Keep this screen on while reading. Switching apps or the screen sleeping pauses it — progress is saved after every question and you can resume.';
+
+  // Offer to pick up an interrupted run from a previous session.
+  restoreCheckpoint();
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {

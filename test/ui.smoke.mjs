@@ -379,6 +379,105 @@ async function main() {
     check('manifest is served and valid JSON', manifest?.name === 'Perchance Prompt Forge');
     check('manifest declares three icons', manifest?.icons?.length === 3);
 
+    /* -------------------------------------------------- background handling */
+    console.log('\nBackground handling');
+
+    // The worker only touches the network when told to load a model, so its
+    // construction and whole import graph can be verified without the model host.
+    const workerReady = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          let w;
+          const done = (v) => {
+            try {
+              w?.terminate();
+            } catch {}
+            resolve(v);
+          };
+          try {
+            w = new Worker('./src/worker.js', { type: 'module' });
+          } catch (e) {
+            return done(`construct threw: ${e.message}`);
+          }
+          w.onmessage = (e) => done(e.data?.type === 'ready' ? 'ready' : `unexpected: ${e.data?.type}`);
+          w.onerror = (e) => done(`worker error: ${e.message}`);
+          setTimeout(() => done('timeout'), 8000);
+        }),
+    );
+    check('inference worker starts and reports ready', workerReady === 'ready', String(workerReady));
+
+    check(
+      'the background limitation is stated, not implied away',
+      /resume|progress is saved/i.test((await page.textContent('#background-note')) || ''),
+      (await page.textContent('#background-note')) || '',
+    );
+
+    const resumeHidden = await page.evaluate(
+      () => !document.getElementById('resume-bar').classList.contains('show'),
+    );
+    check('no resume prompt when there is nothing to resume', resumeHidden);
+
+    // Plant an interrupted run and reload, as an OS kill mid-read would leave it.
+    await page.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 32;
+      c.height = 24;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#888';
+      ctx.fillRect(0, 0, 32, 24);
+      localStorage.setItem(
+        'promptforge.run.v1',
+        JSON.stringify({
+          dataUrl: c.toDataURL('image/jpeg', 0.9),
+          source: { width: 32, height: 24 },
+          observation: { subject: 'a cyclist', pose: 'seated' },
+          nextIndex: 3,
+          total: 12,
+          at: Date.now(),
+        }),
+      );
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('#era-seg button');
+    await page.waitForTimeout(300);
+
+    const resumeShown = await page.evaluate(() => ({
+      shown: document.getElementById('resume-bar').classList.contains('show'),
+      text: document.getElementById('resume-text').textContent,
+      subject: document.getElementById('field-subject').value,
+      preview: document.getElementById('preview').classList.contains('show'),
+    }));
+    check('an interrupted run offers to resume', resumeShown.shown, JSON.stringify(resumeShown));
+    check('resume reports how far it got', /3 of \d+/.test(resumeShown.text), resumeShown.text);
+    check('partial answers survive the interruption', resumeShown.subject === 'a cyclist', resumeShown.subject);
+    check('the photo is restored too', resumeShown.preview);
+
+    const restoredPrompt = await page.inputValue('#prompt');
+    check('a partial run still compiles a usable prompt', /cyclist/.test(restoredPrompt), restoredPrompt);
+
+    await page.click('#discard-btn');
+    const discarded = await page.evaluate(() => ({
+      hidden: !document.getElementById('resume-bar').classList.contains('show'),
+      cleared: localStorage.getItem('promptforge.run.v1') === null,
+    }));
+    check('discarding hides the prompt and clears the checkpoint', discarded.hidden && discarded.cleared,
+      JSON.stringify(discarded));
+
+    // A stale checkpoint should be dropped rather than offered.
+    await page.evaluate(() => {
+      localStorage.setItem(
+        'promptforge.run.v1',
+        JSON.stringify({ dataUrl: 'data:,', observation: {}, nextIndex: 2, at: Date.now() - 48 * 3600 * 1000 }),
+      );
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('#era-seg button');
+    await page.waitForTimeout(200);
+    const staleDropped = await page.evaluate(
+      () => !document.getElementById('resume-bar').classList.contains('show'),
+    );
+    check('a day-old checkpoint is not offered', staleDropped);
+
     /* -------------------------------------------------- standalone bundle */
     console.log('\nStandalone single-file build');
     const standalone = await context.newPage();

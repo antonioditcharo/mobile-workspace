@@ -32,6 +32,10 @@ const MODULE_ORDER = [
   'src/perchance.js',
   'src/compiler.js',
   'src/vision.js',
+  // runner.js before app.js; worker.js is deliberately NOT inlined — a module
+  // worker needs a real sibling file, so the standalone build falls back to
+  // in-page inference (createRunner handles that automatically).
+  'src/runner.js',
   'src/app.js',
 ];
 

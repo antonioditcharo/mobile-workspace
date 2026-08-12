@@ -64,6 +64,23 @@ someone simply facing the camera. Pose gets the largest token budget of any pass
 answers are normalised per category — `sitting` → `seated`, `from behind` →
 `back to the camera`, and for gaze only, `camera` → `at the camera`.
 
+### Long reads and leaving the app
+
+**A web app cannot keep processing in the background on a phone.** When the OS
+backgrounds the app it freezes the renderer — main thread and workers alike. Service
+workers aren't an escape hatch: they're killed after ~30s idle and aren't a place to run a
+several-hundred-megabyte model. Rather than pretend otherwise, the app attacks the three
+things that actually cost you time:
+
+| | |
+|---|---|
+| **Screen wake lock** | Held during a read, so setting the phone down doesn't stop it. "Backgrounded" is usually just the screen sleeping, so this is the biggest practical win. |
+| **Inference in a worker** | The phone stays usable during a read instead of the UI freezing for minutes. Falls back to in-page automatically if a worker can't start. |
+| **Checkpoint every pass** | Each answer is saved as it lands. If the OS does freeze or kill the app, reopening offers **Resume** and costs one question instead of the whole image. |
+
+Also in Settings: **Notify me when a read finishes**, which fires if the read completes
+while you're looking at something else. Checkpoints older than 24 hours are discarded.
+
 ### Content levels
 
 Levels above Safe **permit** nudity and add anatomy support — they do not fabricate
@@ -155,6 +172,8 @@ emitted "squinting into the sun" for someone smiling with their eyes open.
 | `src/compiler.js` | Prose → structured prompt (pure functions) |
 | `src/eras.js` | Era preset data |
 | `src/vocab.js` | Controlled vocabulary and cleanup tables |
+| `src/runner.js` | Worker/inline runners, wake lock, checkpointing |
+| `src/worker.js` | Inference worker (module worker) |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA shell |
 | `build/bundle.mjs` | Emits `dist/prompt-forge.html` |
 | `build/make-icons.py` | Regenerates the icon PNGs |
@@ -184,7 +203,7 @@ minute or more per image.
 
 ```bash
 node --test test/*.test.mjs                                # 104 unit tests
-node test/ui.smoke.mjs                                    # 64 browser checks (needs playwright)
+node test/ui.smoke.mjs                                    # 74 browser checks (needs playwright)
 node build/bundle.mjs                                     # rebuild the single-file version
 python3 build/make-icons.py                               # regenerate icons
 ```
