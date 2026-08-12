@@ -388,8 +388,8 @@ test('subject appears once even if several fields mention it', () => {
 
 test('periodSubject adds era styling only when enabled', () => {
   const bare = { subject: 'a man', setting: 'a kitchen', shotType: 'full-body shot' };
-  const off = compile(bare, { era: '1990s', periodSubject: false });
-  const on = compile(bare, { era: '1990s', periodSubject: true });
+  const off = compile(bare, { era: '1990s', periodSubject: false, budget: 400 });
+  const on = compile(bare, { era: '1990s', periodSubject: true, budget: 400 });
   assert.equal(off.prompt.includes('1990s clothing'), false);
   assert.ok(on.prompt.includes('1990s clothing'), on.prompt);
   assert.ok(on.prompt.includes('baggy jeans'), on.prompt);
@@ -489,7 +489,7 @@ test('garments outside the crop are not claimed', () => {
 
 test('observed clothing is not contradicted by era wardrobe', () => {
   const result = compile(
-    { ...BEACH_SELFIE, shotType: 'full-body shot' },
+    { ...BEACH_SELFIE, shotType: 'full-body shot', budget: 400 },
     { era: '1990s', periodSubject: true, intensity: 'heavy' },
   );
   assert.ok(result.prompt.includes('coral top'), result.prompt);
@@ -564,7 +564,7 @@ test('bare lighting adjectives become noun phrases', () => {
 });
 
 test('natural style reads correctly for the beach selfie', () => {
-  const result = compile(BEACH_SELFIE, { era: '1990s', style: 'natural', format: '35mm print' });
+  const result = compile(BEACH_SELFIE, { era: '1990s', style: 'natural', format: '35mm print', budget: 400 });
   assert.ok(result.prompt.includes('at the beach'), result.prompt);
   assert.equal(result.prompt.includes('in ocean'), false, result.prompt);
   assert.ok(result.prompt.includes('lit by sunlight'), result.prompt);

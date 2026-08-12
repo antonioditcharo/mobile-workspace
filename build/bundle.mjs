@@ -30,6 +30,7 @@ const MODULE_ORDER = [
   'src/vocab.js',
   'src/eras.js',
   'src/perchance.js',
+  'src/budget.js',
   'src/compiler.js',
   'src/vision.js',
   // runner.js before app.js; worker.js is deliberately NOT inlined — a module

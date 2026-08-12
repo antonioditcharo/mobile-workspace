@@ -44,7 +44,7 @@ test('gaze vocabulary is category-specific', () => {
 test('pose and gaze reach the prompt in a sensible order', () => {
   const result = compile(
     { ...ADULT, pose: 'seated, arms crossed', gaze: 'at the camera', action: 'smiling' },
-    { era: '1990s', style: 'tags', emphasis: false },
+    { era: '1990s', style: 'tags', emphasis: false, budget: 400 },
   );
   const at = (t) => result.prompt.indexOf(t);
   assert.ok(at('seated') > at('woman'), result.prompt);
@@ -53,7 +53,10 @@ test('pose and gaze reach the prompt in a sensible order', () => {
 });
 
 test('natural style phrases gaze readably', () => {
-  const result = compile({ ...ADULT, gaze: 'at the camera' }, { era: '1990s', style: 'natural' });
+  const result = compile(
+    { ...ADULT, gaze: 'at the camera' },
+    { era: '1990s', style: 'natural', budget: 400 },
+  );
   assert.ok(result.prompt.includes('looking at the camera'), result.prompt);
   assert.equal(/looking\s+looking/.test(result.prompt), false, result.prompt);
 });
@@ -86,7 +89,7 @@ test('adult levels need the affirmation', () => {
 });
 
 test('enabling an adult level lifts the nudity negatives and adds anatomy support', () => {
-  const result = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true });
+  const result = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true, budget: 400 });
   for (const term of SFW_NEGATIVE) {
     assert.equal(result.negativeList.includes(term), false, `"${term}" should not be negated`);
   }
@@ -95,8 +98,8 @@ test('enabling an adult level lifts the nudity negatives and adds anatomy suppor
 });
 
 test('suggestive adds lighter anatomy support than explicit', () => {
-  const suggestive = compile(ADULT, { era: '1990s', content: 'suggestive', adultConfirmed: true });
-  const explicit = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true });
+  const suggestive = compile(ADULT, { era: '1990s', content: 'suggestive', adultConfirmed: true, budget: 400 });
+  const explicit = compile(ADULT, { era: '1990s', content: 'explicit', adultConfirmed: true, budget: 400 });
   const count = (r) => NSFW_QUALITY_TAGS.filter((t) => r.prompt.includes(t)).length;
   assert.ok(count(explicit) > count(suggestive), `${count(suggestive)} vs ${count(explicit)}`);
 });
@@ -220,8 +223,7 @@ test('free-text extra terms reach the prompt', () => {
     era: '1990s',
     extra: 'silk robe, soft window light',
     content: 'suggestive',
-    adultConfirmed: true,
-  });
+    adultConfirmed: true, budget: 400 });
   assert.ok(result.prompt.includes('silk robe'), result.prompt);
   assert.ok(result.prompt.includes('soft window light'), result.prompt);
 });

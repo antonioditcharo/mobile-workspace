@@ -76,6 +76,31 @@ If a pass does hit its ceiling, the dangling fragment is trimmed back to the las
 boundary rather than shown, and the field is named in the status line so a field that clips
 every time is visible. The cap is `MAX_ANSWER_CHARS` in `src/compiler.js`.
 
+### Token budget
+
+CLIP text encoders — what Stable Diffusion uses — accept **75 usable tokens**, and discard
+the rest silently. Both prompts are kept inside that, with live counters in the UI.
+
+This mattered more than it sounds. Before budgeting, a realistic result emitted ~82 words
+of prompt and 80 negative terms, and the overflow fell exactly where it hurt: the
+film/camera/print block trails the prompt, and the anti-AI-look realism terms sat *after*
+generic anatomy boilerplate in the negative. The app's whole purpose was in the part being
+thrown away — including the `nude` terms that make the Safe content level work.
+
+Emission order is unchanged, since earlier tokens carry more attention weight. Instead
+there's an explicit **drop order** (`src/budget.js`): colours go first, then gaze, action,
+observed lighting, appearance; surplus era look and artifacts thin next; clothing, pose and
+setting are late; and the subject anchor, the era's film stock/camera, and anything you
+typed into **Extra prompt terms** are never dropped. Several categories have floors, so a
+list thins rather than empties. Anything removed is listed under the prompt.
+
+The negative prompt is reordered by priority: content terms first (losing them changes
+behaviour), then the anti-AI-look core, then era-specific terms, then everything else.
+
+The token count is an estimate — a real CLIP tokenizer needs a megabyte of BPE vocabulary
+this app has no other use for — deliberately tuned to over-count slightly, since
+overflowing loses content while under-filling just wastes a little room.
+
 ### Long reads and leaving the app
 
 **A web app cannot keep processing in the background on a phone.** When the OS
@@ -184,6 +209,7 @@ emitted "squinting into the sun" for someone smiling with their eyes open.
 | `src/compiler.js` | Prose → structured prompt (pure functions) |
 | `src/eras.js` | Era preset data |
 | `src/vocab.js` | Controlled vocabulary and cleanup tables |
+| `src/budget.js` | CLIP token estimation, drop order, negative priority |
 | `src/runner.js` | Worker/inline runners, wake lock, checkpointing |
 | `src/worker.js` | Inference worker (module worker) |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA shell |
@@ -214,8 +240,8 @@ minute or more per image.
 ## Development
 
 ```bash
-node --test test/*.test.mjs                                # 126 unit tests
-node test/ui.smoke.mjs                                    # 74 browser checks (needs playwright)
+node --test test/*.test.mjs                                # 158 unit tests
+node test/ui.smoke.mjs                                    # 83 browser checks (needs playwright)
 node build/bundle.mjs                                     # rebuild the single-file version
 python3 build/make-icons.py                               # regenerate icons
 ```

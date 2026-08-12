@@ -158,6 +158,15 @@
         border-left: 3px solid var(--accent);
         padding: 6px 0 6px 9px;
       }
+      /* Token counters: neutral until the budget is tight. */
+      .count.tight {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .count.over {
+        color: var(--bad);
+        font-weight: 600;
+      }
       .stat b.small {
         font-size: 13px;
         line-height: 1.5;
@@ -509,6 +518,7 @@
         </button>
       </div>
 
+      <p class="hint" id="trimmed-note"></p>
       <button id="copy-all" class="primary">Copy everything (prompt + settings)</button>
 
       <label class="toggle" style="margin-top: 6px">

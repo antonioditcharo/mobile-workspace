@@ -111,6 +111,9 @@ async function readState(page) {
     resolution: document.getElementById('stat-resolution').textContent,
     styleHint: document.getElementById('style-hint').textContent,
     cfgHint: document.getElementById('cfg-hint').textContent,
+    promptCount: document.getElementById('prompt-count').textContent,
+    negativeCount: document.getElementById('negative-count').textContent,
+    trimmedNote: document.getElementById('trimmed-note').textContent,
     eras: [...document.querySelectorAll('#era-seg button')].map((b) => b.textContent),
     formats: [...document.querySelectorAll('#format-seg button')].map((b) => b.textContent),
     pressedEra: document
@@ -312,6 +315,10 @@ async function main() {
 
     /* -------------------------------------------------- pose & gaze */
     console.log('\nPose & gaze');
+    // Subtle intensity so the prompt has budget room: this checks normalisation,
+    // not trimming, and gaze is deliberately one of the first things trimmed.
+    await segButton(page, 'intensity-seg', 'Subtle').click();
+    await page.fill('#field-clothing', '');
     await page.fill('#field-pose', 'sitting');
     await page.fill('#field-gaze', 'camera');
     s = await readState(page);
@@ -323,6 +330,44 @@ async function main() {
     await page.fill('#extra-terms', '');
     await page.fill('#field-pose', '');
     await page.fill('#field-gaze', '');
+    await page.fill('#field-clothing', 'a plaid shirt');
+    await segButton(page, 'intensity-seg', 'Medium').click();
+
+    /* -------------------------------------------------- token budget */
+    console.log('\nToken budget');
+    s = await readState(page);
+    check('prompt token counter is shown against the limit',
+      /^\d+\/75 tokens$/.test(s.promptCount), s.promptCount);
+    check('negative token counter is shown', /^\d+\/75 tokens$/.test(s.negativeCount), s.negativeCount);
+    const budgetState = await page.evaluate(() => {
+      const n = (t) => Number((t || '').split('/')[0]);
+      return {
+        prompt: n(document.getElementById('prompt-count').textContent),
+        negative: n(document.getElementById('negative-count').textContent),
+        note: document.getElementById('trimmed-note').textContent,
+      };
+    });
+    check('prompt fits CLIP context', budgetState.prompt <= 75, String(budgetState.prompt));
+    check('negative fits CLIP context', budgetState.negative <= 75, String(budgetState.negative));
+    check('the era apparatus survived the budget', /Kodak|point-and-shoot/.test(s.prompt), s.prompt);
+    check('nudity negatives survived the budget', /\bnude\b/.test(s.negative), s.negative.slice(0, 90));
+
+    // Force a very long observation and confirm it is trimmed rather than overflowing.
+    await page.fill('#field-appearance',
+      'long wavy brown hair, side-swept bangs, warm brown eyes, a small silver nose stud, lightly freckled cheeks, faint smile lines, a thin gold chain');
+    await page.fill('#field-pose',
+      'seated on a low stone wall, leaning back on both hands, head tilted slightly to one side, shoulders relaxed');
+    s = await readState(page);
+    const overflow = await page.evaluate(() => ({
+      prompt: Number((document.getElementById('prompt-count').textContent || '').split('/')[0]),
+      note: document.getElementById('trimmed-note').textContent,
+    }));
+    check('a very long observation is still trimmed to fit', overflow.prompt <= 75, String(overflow.prompt));
+    check('what was trimmed is disclosed', /Trimmed from prompt/i.test(overflow.note), overflow.note);
+    check('the era apparatus still survives a long observation',
+      /Kodak|point-and-shoot/.test(s.prompt), s.prompt);
+    await page.fill('#field-appearance', '');
+    await page.fill('#field-pose', '');
 
     /* -------------------------------------------------- reroll */
     console.log('\nVariant reroll');

@@ -48,6 +48,12 @@ import {
 } from './eras.js';
 
 import { perchanceSettings } from './perchance.js';
+import {
+  TOKEN_BUDGET,
+  estimateTokens,
+  fitGroupsToBudget,
+  prioritiseNegative,
+} from './budget.js';
 
 /**
  * Categories the vision stage fills in, in the order it asks about them.
@@ -252,6 +258,38 @@ export function fieldToTags(raw, category = null) {
   return dedupeTags(tags);
 }
 
+/**
+ * Fold a richer appearance phrase into the subject anchor.
+ *
+ * A longer answer often restates the subject: subject "a woman" plus appearance
+ * "young woman with long wavy brown hair" put *woman* in the prompt twice, once
+ * as the weighted anchor and once as a detail. Merging gives a single stronger
+ * anchor and costs fewer tokens.
+ *
+ * Only fires when the appearance phrase genuinely contains the subject's head
+ * noun, so unrelated details are left where they are.
+ */
+export function mergeSubjectAppearance(groups) {
+  const subject = groups.subject?.[0];
+  const appearance = groups.appearance || [];
+  if (!subject || !appearance.length) return groups;
+
+  // The head noun is the last word of the subject tag: "young woman" -> "woman".
+  const head = subject.split(/\s+/).pop()?.toLowerCase();
+  if (!head || head.length < 3) return groups;
+
+  const index = appearance.findIndex(
+    (tag) => new RegExp(`\\b${head}\\b`, 'i').test(tag) && tag.length > subject.length,
+  );
+  if (index === -1) return groups;
+
+  return {
+    ...groups,
+    subject: [appearance[index], ...groups.subject.slice(1)],
+    appearance: appearance.filter((_, i) => i !== index),
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Scene inference
  * ------------------------------------------------------------------ */
@@ -374,9 +412,13 @@ export function eraContribution(
   // Lighting character depends on the scene; medium texture depends on the
   // format. Ordered most-characteristic-first, since intensity truncates.
   const flash = isFlashScene(scene, format);
+  // Order matters twice over: intensity truncates this list, and so does the
+  // token budget, which trims from the end. The medium's own texture (film grain,
+  // video noise) is the period signature, so it leads — an earlier order put the
+  // scene lighting first and let "visible film grain" be trimmed off a 35mm print.
   const look = [
-    ...(flash ? era.flashLook || [] : era.daylightLook || []),
     ...(format.look || []),
+    ...(flash ? era.flashLook || [] : era.daylightLook || []),
     ...(era.look || []),
   ];
 
@@ -678,6 +720,7 @@ export function compile(observation = {}, options = {}) {
     content = DEFAULT_CONTENT,
     adultConfirmed = false,
     extra = '',
+    budget = TOKEN_BUDGET,
   } = options;
 
   const scene = inferScene(observation);
@@ -686,7 +729,7 @@ export function compile(observation = {}, options = {}) {
   const era = contribution.era;
 
   // Observed fields.
-  const groups = {};
+  let groups = {};
   for (const field of OBSERVATION_FIELDS) {
     groups[field] = fieldToTags(observation[field], field);
   }
@@ -700,7 +743,7 @@ export function compile(observation = {}, options = {}) {
 
   // Era contributions.
   groups.medium = [...(groups.medium || []), ...contribution.medium];
-  groups.lighting = [...(groups.lighting || []), ...contribution.look];
+  groups.eraLook = [...(groups.eraLook || []), ...contribution.look];
   groups.artifacts = [...(groups.artifacts || []), ...contribution.artifacts];
 
   if (periodSubject) {
@@ -724,7 +767,7 @@ export function compile(observation = {}, options = {}) {
   // Free-text terms the user supplies themselves, kept close to the subject
   // rather than trailing after the medium tags.
   if (extra) {
-    groups.action = [...groups.action, ...fieldToTags(extra)];
+    groups.extra = fieldToTags(extra);
   }
 
   if (!era.suppressQualityTags) {
@@ -743,14 +786,34 @@ export function compile(observation = {}, options = {}) {
     });
   }
 
+  // Fold a restated subject into one anchor before budgeting, since it removes a
+  // duplicate rather than sacrificing information.
+  groups = mergeSubjectAppearance(groups);
+
+  const render = (g) =>
+    style === 'natural'
+      ? renderNatural(g, { framing: contribution.framing })
+      : renderTagStyle(g, { emphasis });
+
+  // Keep the prompt inside CLIP's 75-token context. Trimming drops the lowest
+  // value tags rather than letting the image model silently discard the tail —
+  // which, given the era apparatus trails the prompt, was cutting exactly the
+  // part that matters. Whole tags go before rendering so prose stays grammatical.
+  const fitted = fitGroupsToBudget(groups, render, budget);
+  groups = fitted.groups;
+  const prompt = fitted.text;
+
   const positiveTags = [...CATEGORY_ORDER, 'quality'].flatMap((c) => groups[c] || []);
 
-  const prompt =
-    style === 'natural'
-      ? renderNatural(groups, { framing: contribution.framing })
-      : renderTagStyle(groups, { emphasis });
-
-  const negative = buildNegative(era, contribution, positiveTags, decision.config);
+  const rawNegative = buildNegative(era, contribution, positiveTags, decision.config);
+  // Era and content terms are request-specific, so they outrank leftover
+  // boilerplate when the negative prompt has to be trimmed.
+  const negativeFit = prioritiseNegative(
+    rawNegative,
+    { content: decision.config.negative || [], era: era.negative || [] },
+    budget,
+  );
+  const negative = negativeFit.kept;
 
   const aspect =
     contribution.aspect === 'source'
@@ -773,6 +836,15 @@ export function compile(observation = {}, options = {}) {
     groups,
     scene,
     flash: contribution.flash,
+    budget: {
+      limit: budget,
+      promptTokens: fitted.tokens,
+      negativeTokens: negativeFit.tokens,
+      droppedFromPrompt: fitted.dropped,
+      droppedFromNegative: negativeFit.dropped,
+      // True when even the protected tags exceed the context on their own.
+      promptOverBudget: fitted.tokens > budget,
+    },
     content: decision.level,
     contentRequested: content,
     contentBlocked: decision.blocked,

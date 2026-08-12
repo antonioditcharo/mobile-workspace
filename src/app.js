@@ -109,6 +109,7 @@ const el = {
   statResolution: $('stat-resolution'),
   styleHint: $('style-hint'),
   cfgHint: $('cfg-hint'),
+  trimmedNote: $('trimmed-note'),
   copyPrompt: $('copy-prompt'),
   copyNegative: $('copy-negative'),
   copyAll: $('copy-all'),
@@ -307,8 +308,28 @@ function recompile() {
 
   el.prompt.value = result.prompt;
   el.negative.value = result.negative;
-  el.promptCount.textContent = `${result.prompt.length} chars`;
-  el.negativeCount.textContent = `${result.negativeList.length} terms`;
+  // Token counts, not character counts: CLIP's 75-token context is the limit
+  // that actually decides what the image model sees.
+  const b = result.budget;
+  const badge = (el2, tokens) => {
+    el2.textContent = `${tokens}/${b.limit} tokens`;
+    el2.className = 'count' + (tokens > b.limit ? ' over' : tokens >= b.limit - 4 ? ' tight' : '');
+  };
+  badge(el.promptCount, b.promptTokens);
+  badge(el.negativeCount, b.negativeTokens);
+
+  const trimmed = [];
+  if (b.droppedFromPrompt.length) {
+    trimmed.push(`Trimmed from prompt to fit: ${b.droppedFromPrompt.join(', ')}.`);
+  }
+  if (b.droppedFromNegative.length) {
+    trimmed.push(`${b.droppedFromNegative.length} lower-priority negative terms dropped.`);
+  }
+  if (b.promptOverBudget) {
+    trimmed.push('Still over budget — the image model may ignore the tail.');
+  }
+  el.trimmedNote.textContent = trimmed.join(' ');
+  el.trimmedNote.className = b.promptOverBudget ? 'hint warn' : 'hint';
   const perchance = perchanceSettings(result);
   el.statCfg.textContent = perchance.guidanceScale;
   el.statStyle.textContent = perchance.style;

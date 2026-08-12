@@ -490,10 +490,17 @@ export const CATEGORY_ORDER = [
   'clothing',
   'pose',
   'action',
+  // Terms the user typed themselves. Kept as its own category so budget trimming
+  // can treat it as near-untouchable — dropping what someone explicitly asked
+  // for is the worst possible trim.
+  'extra',
   'gaze',
   'setting',
   'colors',
   'lighting',
+  // Era look is kept separate from observed lighting so budget trimming cannot
+  // sacrifice the period character to save an observed detail.
+  'eraLook',
   'composition',
   'medium',
   'artifacts',
@@ -512,12 +519,14 @@ export const NL_JOINERS = {
   appearance: { lead: '', skipIf: [] },
   clothing: { lead: 'wearing ', skipIf: ['wearing', 'dressed', 'in a', 'in an'] },
   pose: { lead: '', skipIf: [] },
+  extra: { lead: '', skipIf: [] },
   gaze: { lead: 'looking ', skipIf: ['looking', 'gazing', 'eyes', 'staring', 'facing'] },
   action: { lead: '', skipIf: [] },
   // The setting preposition is chosen per phrase — see SETTING_PREPOSITIONS.
   setting: { lead: '', skipIf: [] },
   colors: { lead: 'in shades of ', skipIf: ['in shades'] },
   lighting: { lead: 'lit by ', skipIf: ['lit', 'under', 'backlighting', 'in', 'with'] },
+  eraLook: { lead: '', skipIf: [] },
   composition: { lead: '', skipIf: [] },
   medium: { lead: '', skipIf: [] },
   artifacts: { lead: '', skipIf: [] },
