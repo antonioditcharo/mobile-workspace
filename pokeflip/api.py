@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,7 +29,8 @@ from . import backtest as backtest_mod
 from . import bulk as bulk_mod
 from . import digest as digest_mod
 from . import grading as grading_mod
-from . import ingest, orders as orders_mod, portfolio, scheduler as scheduler_mod, signals
+from . import ingest, orders as orders_mod, pairing, portfolio
+from . import scheduler as scheduler_mod, signals
 from .analytics import load_metrics
 from .config import Config
 from .db import Database
@@ -41,38 +43,97 @@ WEB_DIR = Path(__file__).with_name("web")
 SESSION_COOKIE = "pokeflip_session"
 SESSION_MAX_AGE = 60 * 60 * 24 * 30
 
+# Not in every platform's mime database, and a manifest served as octet-stream
+# is ignored, which silently costs you the home-screen install.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
-def _action_page(heading: str, message: str, ok: bool) -> str:
-    """A confirmation you can read one-handed, with no assets to load."""
-    import html
 
-    tone = "#0a7d3f" if ok else "#b4232a"
+def _standalone_page(inner: str, tone: str = "ink") -> str:
+    """A page you can read one-handed, with no assets to load.
+
+    These are the two places a phone lands before it has a session - a tapped
+    notification button and the pairing screen - so they cannot depend on
+    ``/static`` being reachable or on a stylesheet that may still be loading.
+    """
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2a78d6">
+<!-- Without an icon link the browser goes looking for /favicon.ico, which is
+     behind the token and 401s on the one screen that has no session yet. -->
+<link rel="icon" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
 <title>pokeflip</title>
 <style>
- :root {{ color-scheme: light dark; }}
+ :root {{ color-scheme: light dark;
+   --tone-ink:#101318; --tone-good:#0a7d3f; --tone-bad:#b4232a; }}
  body {{ margin:0; min-height:100vh; display:flex; align-items:center;
    justify-content:center; background:#f6f7f9; color:#16181d; padding:24px;
    font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
  .card {{ background:#fff; border:1px solid #e3e6eb; border-radius:14px;
    padding:28px 24px; max-width:420px; width:100%; text-align:center;
-   box-shadow:0 1px 3px rgba(16,20,28,.07); }}
- h1 {{ font-size:20px; margin:0 0 10px; color:{tone}; }}
+   box-shadow:0 1px 3px rgba(16,20,28,.07); box-sizing:border-box; }}
+ h1 {{ font-size:20px; margin:0 0 10px; color:var(--tone-{tone}); }}
  p {{ margin:0; color:#52514e; }}
+ p + p {{ margin-top:10px; }}
  .mark {{ font-size:34px; line-height:1; margin-bottom:12px; }}
+ form {{ margin:18px 0 0; display:flex; flex-direction:column; gap:10px; }}
+ input {{ font:inherit; font-size:22px; letter-spacing:.16em; text-align:center;
+   text-transform:uppercase; padding:12px 10px; border-radius:10px;
+   border:1px solid #cbd1da; background:#fff; color:#16181d; width:100%;
+   box-sizing:border-box; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }}
+ input:focus {{ outline:2px solid #2a78d6; outline-offset:1px; border-color:#2a78d6; }}
+ button {{ font:inherit; font-size:16px; font-weight:600; padding:12px;
+   border-radius:10px; border:none; background:#2a78d6; color:#fff;
+   cursor:pointer; width:100%; }}
+ .hint {{ font-size:13px; color:#858b95; margin-top:14px; }}
  @media (prefers-color-scheme: dark) {{
+   /* Ink and both verdict colours have to be redefined, not just the
+      surfaces - near-black on near-black is an invisible heading. */
+   :root {{ --tone-ink:#e7e9ee; --tone-good:#3fc07f; --tone-bad:#ef7076; }}
    body {{ background:#0f1115; color:#e7e9ee; }}
    .card {{ background:#171a20; border-color:#262b33; box-shadow:none; }}
    p {{ color:#99a1af; }}
+   input {{ background:#0f1115; border-color:#333a45; color:#e7e9ee; }}
  }}
 </style></head>
 <body><div class="card">
- <div class="mark">{"&#10003;" if ok else "&#9888;"}</div>
- <h1>{html.escape(heading)}</h1>
- <p>{html.escape(message)}</p>
+{inner}
 </div></body></html>"""
+
+
+def _action_page(heading: str, message: str, ok: bool) -> str:
+    import html
+
+    tone = "good" if ok else "bad"
+    mark = "&#10003;" if ok else "&#9888;"
+    return _standalone_page(
+        f' <div class="mark">{mark}</div>\n'
+        f' <h1>{html.escape(heading)}</h1>\n'
+        f' <p>{html.escape(message)}</p>',
+        tone,
+    )
+
+
+def _pair_page(error: str = "") -> str:
+    """The screen a phone sees when it needs a session and has no cookie."""
+    import html
+
+    problem = (f'<p style="color:var(--tone-bad)">{html.escape(error)}</p>'
+               if error else
+               '<p>Run <code>pokeflip pair</code> on the computer running the '
+               'server and type the code it prints.</p>')
+    return _standalone_page(
+        ' <div class="mark">&#9672;</div>\n'
+        ' <h1>Pair this device</h1>\n'
+        f' {problem}\n'
+        ' <form method="post" action="/pair">\n'
+        '  <input name="code" placeholder="XXXX-XXXX" autofocus required\n'
+        '   autocomplete="off" autocapitalize="characters" autocorrect="off"\n'
+        '   spellcheck="false" maxlength="12" aria-label="Pairing code">\n'
+        '  <button type="submit">Pair</button>\n'
+        ' </form>\n'
+        ' <div class="hint">Codes expire in minutes and work once.</div>')
 
 
 # --- request bodies -----------------------------------------------------
@@ -226,8 +287,13 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
         path = request.url.path
         exempt = (
             path.startswith("/api/act/")
-            or path in {"/api/health", "/docs", "/openapi.json", "/redoc"}
+            or path in {"/api/health", "/docs", "/openapi.json", "/redoc",
+                        "/pair", "/favicon.ico"}
             or path.startswith("/static/")
+            # Pairing is how a phone gets a session in the first place, so it
+            # cannot require one. A code is its own authorisation: minutes to
+            # live, one use, and it must have been read off this machine.
+            or path.startswith("/p/")
         )
         if token and not exempt:
             if not secrets.compare_digest(_supplied_token(request), token):
@@ -266,11 +332,110 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
             return response
         return FileResponse(index)
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Any:
+        return RedirectResponse("/static/icon-192.png", status_code=308)
+
     @app.post("/api/logout")
     def logout() -> Any:
         response = JSONResponse({"ok": True})
         response.delete_cookie(SESSION_COOKIE)
         return response
+
+    # --- pairing a phone -------------------------------------------------
+
+    # Failed code attempts per client. A short code is only safe to type if
+    # guessing it is slower than its lifetime, and this is what enforces that.
+    pair_failures: dict[str, list[float]] = {}
+
+    def _client_key(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
+
+    def _throttled(key: str) -> bool:
+        import time
+
+        now = time.monotonic()
+        recent = [t for t in pair_failures.get(key, [])
+                  if now - t < pairing.ATTEMPT_WINDOW_SECONDS]
+        pair_failures[key] = recent
+        return len(recent) >= pairing.MAX_ATTEMPTS
+
+    def _record_failure(key: str) -> None:
+        import time
+
+        now = time.monotonic()
+        pair_failures.setdefault(key, []).append(now)
+        # Nothing else prunes keys that are never seen again, and this dict
+        # lives as long as the process does.
+        if len(pair_failures) > 256:
+            for stale, hits in list(pair_failures.items()):
+                if all(now - t >= pairing.ATTEMPT_WINDOW_SECONDS for t in hits):
+                    del pair_failures[stale]
+
+    def _grant_session(request: Request) -> Any:
+        """Hand over the dashboard session and land on a clean URL."""
+        response: Any = RedirectResponse("/", status_code=303)
+        token = config.server.api_token
+        if token:
+            response.set_cookie(
+                SESSION_COOKIE, token,
+                httponly=True, samesite="lax", max_age=SESSION_MAX_AGE,
+                secure=request.url.scheme == "https",
+            )
+        return response
+
+    def _try_pair(request: Request, code: str) -> Any:
+        key = _client_key(request)
+        if _throttled(key):
+            return HTMLResponse(
+                _pair_page("Too many attempts. Wait a few minutes, then run "
+                           "`pokeflip pair` again for a fresh code."),
+                status_code=429)
+        if not pairing.redeem(db, code, client=key):
+            _record_failure(key)
+            return HTMLResponse(
+                _pair_page("That code is wrong, expired, or already used. "
+                           "Run `pokeflip pair` for a new one."),
+                status_code=401)
+        pair_failures.pop(key, None)
+        return _grant_session(request)
+
+    @app.get("/pair", response_class=HTMLResponse)
+    def pair_form(request: Request) -> Any:
+        supplied = config.server.api_token and secrets.compare_digest(
+            _supplied_token(request), config.server.api_token)
+        if supplied or not config.server.api_token:
+            return RedirectResponse("/", status_code=303)
+        return HTMLResponse(_pair_page())
+
+    @app.post("/pair", response_class=HTMLResponse)
+    async def pair_submit(request: Request) -> Any:
+        # Parsed by hand rather than with fastapi.Form, which would pull in
+        # python-multipart for one field on one page.
+        from urllib.parse import parse_qs
+
+        body = (await request.body()).decode("utf-8", "replace")
+        code = (parse_qs(body).get("code") or [""])[0]
+        return _try_pair(request, code)
+
+    @app.get("/p/{code}")
+    def pair_link(code: str, request: Request) -> Any:
+        """The whole hand-off in one address you can type from across a desk."""
+        return _try_pair(request, code)
+
+    @app.post("/api/pair")
+    def mint_pair_code(minutes: int = Query(pairing.DEFAULT_TTL_MINUTES,
+                                            ge=1, le=1440)) -> dict[str, Any]:
+        """Mint a pairing code from a browser that already has a session."""
+        code = pairing.mint(db, ttl_minutes=minutes)
+        urls = pairing.base_urls(config)
+        return {
+            **code.to_dict(),
+            "urls": [code.url(base) for base in urls],
+            "reachable": bool(urls),
+            "listens_everywhere": pairing.listens_everywhere(config),
+            "needs_token": bool(config.server.api_token),
+        }
 
     # --- one-tap actions from notifications ------------------------------
 

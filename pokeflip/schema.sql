@@ -250,6 +250,18 @@ CREATE TABLE IF NOT EXISTS action_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_action_expires ON action_tokens(expires_at);
 
+-- Short-lived codes that trade for a dashboard session on a phone. They are
+-- deliberately typeable, which is only safe because they expire in minutes and
+-- can be spent once.
+CREATE TABLE IF NOT EXISTS pair_codes (
+    code       TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at    TEXT,
+    used_by    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pair_expires ON pair_codes(expires_at);
+
 -- Alerts you have told the app to stop raising. Acknowledging only clears the
 -- badge; the underlying condition would re-raise it on the next cycle.
 CREATE TABLE IF NOT EXISTS alert_snoozes (

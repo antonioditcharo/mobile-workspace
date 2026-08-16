@@ -1913,14 +1913,21 @@ class SetupWizardTests(unittest.TestCase):
     def test_an_api_token_is_generated_not_left_blank(self):
         config = self.run_wizard(
             {"Public URL": "https://pokeflip.example"},
-            {"reach this server": True},
+            {"public URL": True},
         )
         self.assertEqual(config.server.public_base_url, "https://pokeflip.example")
         self.assertGreaterEqual(len(config.server.api_token), 32)
 
     def test_no_token_is_generated_when_not_publishing(self):
-        config = self.run_wizard({}, {"reach this server": False})
+        config = self.run_wizard({}, {"public URL": False, "home wifi": False})
         self.assertEqual(config.server.api_token, "")
+        self.assertEqual(config.host, "127.0.0.1")
+
+    def test_phone_access_binds_outward_and_always_sets_a_token(self):
+        """Leaving localhost without a token is never an option offered."""
+        config = self.run_wizard({}, {"home wifi": True})
+        self.assertEqual(config.host, "0.0.0.0")
+        self.assertGreaterEqual(len(config.server.api_token), 32)
 
     def test_a_random_ntfy_topic_is_suggested(self):
         config = self.run_wizard({}, {"ntfy": True})
@@ -2515,6 +2522,263 @@ class TrendConfidenceTests(unittest.TestCase):
                                   make_rows([float(10 + i) for i in range(20)]),
                                   today=date(2025, 1, 20))
         self.assertEqual(metrics.direction, "rising")
+
+
+# --- pairing a phone -----------------------------------------------------
+
+class PairingCodeTests(TempDbCase):
+    """A code short enough to type is only safe if it is short-lived and
+    single-use. These are the properties that make that true."""
+
+    def test_a_minted_code_redeems_once(self):
+        from pokeflip import pairing
+
+        code = pairing.mint(self.db)
+        self.assertTrue(pairing.redeem(self.db, code.pretty))
+        self.assertFalse(pairing.redeem(self.db, code.pretty))
+
+    def test_the_typed_form_is_forgiving_about_case_and_dashes(self):
+        from pokeflip import pairing
+
+        code = pairing.mint(self.db)
+        typed = f" {code.pretty.lower().replace('-', ' ')} "
+        self.assertTrue(pairing.redeem(self.db, typed))
+
+    def test_an_expired_code_is_refused(self):
+        from pokeflip import pairing
+        from pokeflip.db import iso, utcnow
+
+        code = pairing.mint(self.db)
+        self.db.execute("UPDATE pair_codes SET expires_at = ? WHERE code = ?",
+                        (iso(utcnow() - timedelta(minutes=1)), code.code))
+        self.assertFalse(pairing.redeem(self.db, code.pretty))
+
+    def test_an_unknown_code_is_refused(self):
+        from pokeflip import pairing
+
+        self.assertFalse(pairing.redeem(self.db, "ABCD-EFGH"))
+        self.assertFalse(pairing.redeem(self.db, ""))
+        self.assertFalse(pairing.redeem(self.db, "short"))
+
+    def test_the_alphabet_avoids_characters_that_get_misread(self):
+        from pokeflip import pairing
+
+        for banned in "ILOU01":
+            self.assertNotIn(banned, pairing.CODE_ALPHABET)
+
+    def test_codes_do_not_repeat(self):
+        from pokeflip import pairing
+
+        seen = {pairing.mint(self.db).code for _ in range(50)}
+        self.assertEqual(len(seen), 50)
+
+    def test_expired_codes_are_eventually_forgotten(self):
+        from pokeflip import pairing
+        from pokeflip.db import iso, utcnow
+
+        code = pairing.mint(self.db)
+        self.db.execute("UPDATE pair_codes SET expires_at = ? WHERE code = ?",
+                        (iso(utcnow() - timedelta(days=3)), code.code))
+        pairing.purge(self.db)
+        self.assertIsNone(
+            self.db.one("SELECT code FROM pair_codes WHERE code = ?", (code.code,)))
+
+    def test_active_codes_exclude_spent_ones(self):
+        from pokeflip import pairing
+
+        first = pairing.mint(self.db)
+        pairing.mint(self.db)
+        pairing.redeem(self.db, first.pretty)
+        self.assertEqual(len(pairing.active_codes(self.db)), 1)
+
+
+class PairingAddressTests(unittest.TestCase):
+    def test_loopback_hosts_are_recognised(self):
+        from pokeflip import pairing
+
+        for host in ("127.0.0.1", "localhost", "127.0.0.5"):
+            config = Config(host=host)
+            self.assertTrue(pairing.is_loopback_host(config), host)
+        self.assertFalse(pairing.is_loopback_host(Config(host="192.168.1.9")))
+        self.assertFalse(pairing.is_loopback_host(Config(host="0.0.0.0")))
+
+    def test_a_loopback_bind_offers_no_address_for_a_phone(self):
+        from pokeflip import pairing
+
+        self.assertEqual(pairing.base_urls(Config(host="127.0.0.1")), [])
+
+    def test_a_published_url_wins_over_a_discovered_one(self):
+        from pokeflip import pairing
+
+        config = Config(host="0.0.0.0")
+        config.server.public_base_url = "https://pokeflip.example/"
+        self.assertEqual(pairing.base_urls(config)[0], "https://pokeflip.example")
+
+    def test_an_explicit_lan_bind_is_used_as_given(self):
+        from pokeflip import pairing
+
+        config = Config(host="192.168.1.9", port=9000)
+        self.assertEqual(pairing.base_urls(config), ["http://192.168.1.9:9000"])
+
+    def test_discovered_addresses_are_never_loopback_or_link_local(self):
+        from pokeflip import pairing
+
+        for address in pairing.lan_addresses():
+            self.assertFalse(address.startswith("127."), address)
+            self.assertFalse(address.startswith("169.254."), address)
+
+
+class PairingRouteTests(TempDbCase):
+    """The phone hand-off, end to end: a code in a URL becomes a session."""
+
+    def setUp(self):
+        super().setUp()
+        from fastapi.testclient import TestClient
+
+        from pokeflip.api import create_app
+
+        ingest.seed_demo(self.db, self.config, days=20, include_portfolio=False)
+        self.config.server.api_token = "s3cret"
+        self.client = TestClient(create_app(self.config, start_scheduler=False),
+                                 follow_redirects=False)
+
+    def _code(self) -> str:
+        from pokeflip import pairing
+
+        return pairing.mint(self.db).pretty
+
+    def test_a_pairing_link_grants_a_session(self):
+        response = self.client.get(f"/p/{self._code()}")
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("pokeflip_session", response.cookies)
+        self.assertEqual(self.client.get("/api/portfolio").status_code, 200)
+
+    def test_the_granted_cookie_is_http_only(self):
+        response = self.client.get(f"/p/{self._code()}")
+        self.assertIn("HttpOnly", response.headers["set-cookie"])
+
+    def test_a_link_cannot_be_replayed(self):
+        code = self._code()
+        self.client.get(f"/p/{code}")
+        self.client.cookies.clear()
+        second = self.client.get(f"/p/{code}")
+        self.assertEqual(second.status_code, 401)
+        self.assertNotIn("pokeflip_session", second.cookies)
+
+    def test_a_wrong_code_grants_nothing(self):
+        response = self.client.get("/p/ZZZZ-ZZZZ")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(self.client.get("/api/portfolio").status_code, 401)
+
+    def test_guessing_is_throttled(self):
+        from pokeflip import pairing
+
+        for _ in range(pairing.MAX_ATTEMPTS):
+            self.client.get("/p/ZZZZ-ZZZZ")
+        # A valid code presented after the budget is spent still fails: the
+        # throttle is on the client, not on the code.
+        blocked = self.client.get(f"/p/{self._code()}")
+        self.assertEqual(blocked.status_code, 429)
+
+    def test_the_form_accepts_a_typed_code(self):
+        response = self.client.post(
+            "/pair", content=f"code={self._code()}",
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("pokeflip_session", response.cookies)
+
+    def test_the_pairing_page_is_reachable_without_a_session(self):
+        response = self.client.get("/pair")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Pair this device", response.text)
+
+    def test_the_pairing_page_does_not_leak_the_token(self):
+        self.assertNotIn("s3cret", self.client.get("/pair").text)
+
+    def test_minting_a_code_needs_an_existing_session(self):
+        self.assertEqual(self.client.post("/api/pair").status_code, 401)
+
+    def test_a_paired_session_can_mint_the_next_code(self):
+        self.client.get(f"/p/{self._code()}")
+        payload = self.client.post("/api/pair").json()
+        self.assertIn("-", payload["code"])
+        self.assertTrue(payload["needs_token"])
+
+    def test_the_manifest_is_served_for_add_to_home_screen(self):
+        response = self.client.get("/static/manifest.webmanifest")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["start_url"], "/")
+
+    def test_the_home_screen_icon_is_served(self):
+        response = self.client.get("/static/icon-180.png")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"\x89PNG"))
+
+    def test_the_pairing_prefix_cannot_be_walked_into_a_protected_route(self):
+        for path in ("/p/../api/portfolio", "/pair/../api/portfolio"):
+            self.assertEqual(self.client.get(path).status_code, 401, path)
+
+
+class StandalonePageTests(unittest.TestCase):
+    """The pairing and action pages carry their own CSS, so nothing else
+    catches a heading that is near-black on a near-black background."""
+
+    def test_every_heading_colour_is_redefined_for_dark_mode(self):
+        from pokeflip.api import _action_page, _pair_page
+
+        for page in (_pair_page(), _pair_page("bad code"),
+                     _action_page("Done", "Recorded", True),
+                     _action_page("Nope", "Expired", False)):
+            dark = page.split("prefers-color-scheme: dark")[1]
+            for token in ("--tone-ink", "--tone-good", "--tone-bad"):
+                self.assertIn(token, dark)
+            self.assertIn("var(--tone-", page)
+
+    def test_the_pages_link_an_icon_so_favicon_ico_is_never_requested(self):
+        from pokeflip.api import _pair_page
+
+        self.assertIn('rel="icon"', _pair_page())
+
+    def test_the_error_text_is_escaped(self):
+        from pokeflip.api import _pair_page
+
+        self.assertNotIn("<script>", _pair_page("<script>alert(1)</script>"))
+
+
+class PhoneDoctorTests(TempDbCase):
+    def test_localhost_with_phone_delivery_is_flagged(self):
+        self.config.host = "127.0.0.1"
+        self.config.notify.channels = ["file", "ntfy"]
+        check = pfsetup._check_phone(self.config)
+        self.assertEqual(check.status, "warn")
+        self.assertIn("0.0.0.0", check.fix)
+
+    def test_localhost_alone_is_not_a_problem(self):
+        self.config.host = "127.0.0.1"
+        self.config.notify.channels = ["file"]
+        self.assertEqual(pfsetup._check_phone(self.config).status, "pass")
+
+    def test_binding_outward_without_a_token_fails_the_check(self):
+        self.config.host = "0.0.0.0"
+        self.config.server.api_token = ""
+        self.assertEqual(pfsetup._check_phone(self.config).status, "fail")
+
+    def test_binding_outward_with_a_token_passes(self):
+        self.config.host = "0.0.0.0"
+        self.config.server.api_token = "s3cret"
+        self.assertEqual(pfsetup._check_phone(self.config).status, "pass")
+
+    def test_a_stale_lan_address_is_caught(self):
+        # The router hands out a new lease and every notification button
+        # quietly starts pointing at somebody else's laptop.
+        self.config.server.public_base_url = "http://192.168.77.123:8787"
+        check = pfsetup._check_phone(self.config)
+        self.assertEqual(check.status, "warn")
+        self.assertIn("192.168.77.123", check.detail)
+
+    def test_a_public_hostname_is_not_treated_as_stale(self):
+        self.config.server.public_base_url = "https://pokeflip.example"
+        self.assertNotIn("stale", pfsetup._check_phone(self.config).detail)
 
 
 if __name__ == "__main__":

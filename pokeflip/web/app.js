@@ -47,6 +47,27 @@ function toast(message, bad = false) {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 4200);
 }
 
+// --- modal --------------------------------------------------------------
+
+function openModal(title, html) {
+  $("#modal-title").textContent = title;
+  $("#modal-body").innerHTML = html;
+  $("#modal").classList.remove("hidden");
+}
+
+function closeModal() {
+  $("#modal").classList.add("hidden");
+}
+
+$("#modal-close").addEventListener("click", closeModal);
+// Clicking the backdrop, not the card, dismisses.
+$("#modal").addEventListener("click", (e) => {
+  if (e.target === $("#modal")) closeModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeModal();
+});
+
 // --- table builder ------------------------------------------------------
 
 function table(columns, rows, emptyText = "Nothing here yet.") {
@@ -415,13 +436,19 @@ async function loadHealth() {
     const health = await api("/api/health");
     state.health = health;
     const counts = health.counts || {};
+    // The words are wrapped so a narrow screen can drop them and keep the
+    // dot, which is the part you actually glance at.
     $("#status").innerHTML = `
-      <span class="dot ${health.scheduler_running ? "" : "off"}"></span>
+      <span class="dot ${health.scheduler_running ? "" : "off"}"></span><span class="status-text">
       ${esc(health.provider)} &middot; ${counts.cards || 0} cards &middot;
       ${counts.holdings || 0} lots &middot;
-      scheduler ${health.scheduler_running ? "on" : "off"}`;
+      scheduler ${health.scheduler_running ? "on" : "off"}</span>`;
+    $("#status").title = health.scheduler_running
+      ? "scheduler running" : "scheduler stopped";
   } catch (err) {
-    $("#status").textContent = `offline: ${err.message}`;
+    $("#status").innerHTML =
+      `<span class="dot off"></span><span class="status-text">offline: ${esc(err.message)}</span>`;
+    $("#status").title = `offline: ${err.message}`;
   }
 }
 
@@ -992,10 +1019,29 @@ const VIEWS = {
   alerts: viewAlerts,
 };
 
+/* On a phone the tab strip scrolls sideways, so the active tab can sit
+   off-screen after a reload or a #hash link - and a tab you cannot see is a
+   tab you do not know you are on. Scrolling the strip directly rather than
+   using scrollIntoView, which also disturbs the page's own scroll position. */
+function revealTab(name) {
+  const strip = $("#tabs");
+  const active = $(`#tabs button[data-view="${name}"]`);
+  if (!active || strip.scrollWidth <= strip.clientWidth) return;
+  const pad = 12;
+  const left = active.offsetLeft - pad;
+  const right = active.offsetLeft + active.offsetWidth + pad;
+  if (left < strip.scrollLeft) {
+    strip.scrollTo({ left, behavior: "smooth" });
+  } else if (right > strip.scrollLeft + strip.clientWidth) {
+    strip.scrollTo({ left: right - strip.clientWidth, behavior: "smooth" });
+  }
+}
+
 async function switchView(name) {
   $$(".view").forEach((v) => v.classList.add("hidden"));
   $(`#view-${name}`).classList.remove("hidden");
   $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+  revealTab(name);
   location.hash = name;
   try {
     await VIEWS[name]();
@@ -1418,6 +1464,34 @@ $("#ack-all").addEventListener("click", async () => {
     const result = await api("/api/alerts/ack", { method: "POST" });
     toast(`Marked ${result.acknowledged} read`);
     viewAlerts();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#pair-phone").addEventListener("click", async () => {
+  try {
+    const pair = await api("/api/pair", { method: "POST" });
+    const links = (pair.urls || [])
+      .map((u) => `<a class="pairurl" href="${esc(u)}">${esc(u)}</a>`)
+      .join("");
+    const unreachable = `
+      <p class="meta">This server only listens on localhost, so your phone
+      cannot reach it. Set <code>host</code> to <code>0.0.0.0</code> in
+      config.json, restart <code>pokeflip serve</code>, then run
+      <code>pokeflip pair</code> for the address to type.</p>`;
+    const body = pair.reachable
+      ? `<div class="paircode">${esc(pair.code)}</div>
+         <ol class="steps">
+           <li>Put your phone on the same wifi as this computer.</li>
+           <li>Open one of these addresses on it:</li>
+         </ol>
+         ${links}
+         <p class="meta">Or open <code>/pair</code> there and type the code.
+         It works once and expires
+         ${esc(new Date(pair.expires_at).toLocaleTimeString())}.</p>
+         <p class="meta">Once it loads, use your browser's <em>Add to home
+         screen</em> to keep it one tap away.</p>`
+      : unreachable;
+    openModal("Open this on your phone", body);
   } catch (err) { toast(err.message, true); }
 });
 

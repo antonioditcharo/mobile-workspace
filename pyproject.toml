@@ -24,6 +24,9 @@ desktop = [
     "pywebview>=5.0",
     "pywebview[qt]>=5.0; sys_platform == 'linux'",
 ]
+# `pokeflip pair` draws its URL as a scannable QR when this is present. The
+# pairing URL is short enough to type, so this is a convenience, not a need.
+qr = ["qrcode>=7.4"]
 
 [project.scripts]
 pokeflip = "pokeflip.cli:main"

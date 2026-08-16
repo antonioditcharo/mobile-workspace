@@ -2,9 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>pokeflip</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%97%88%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="/static/icon-192.png">
+<!-- Add to home screen: standalone chrome, a real icon, and a status bar that
+     matches the top bar instead of a white strip above it. -->
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="pokeflip">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14171c" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -26,6 +36,7 @@
   </nav>
   <div class="topbar-actions">
     <span id="status" class="status" title="provider and scheduler state"></span>
+    <button id="pair-phone" class="btn ghost" title="open this on your phone">Phone</button>
     <button id="refresh" class="btn primary">Refresh prices</button>
   </div>
 </header>
@@ -317,6 +328,16 @@
   </section>
 
 </main>
+
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button class="btn ghost tiny" id="modal-close" aria-label="Close">Close</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
 
 <div id="toast" class="toast hidden"></div>
 <footer class="foot">

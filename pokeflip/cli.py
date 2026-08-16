@@ -8,6 +8,7 @@ Everything the scheduler does on its own, you can do on demand:
     pokeflip digest --save             the full report
     pokeflip bulk estimate --count 5000 --ask 120
     pokeflip serve                     dashboard + API + scheduler
+    pokeflip pair                      open the dashboard on your phone
 """
 
 from __future__ import annotations
@@ -1380,14 +1381,114 @@ def cmd_where(args: argparse.Namespace, db: Database, config: Config) -> int:
     return 0
 
 
+def cmd_pair(args: argparse.Namespace, db: Database, config: Config) -> int:
+    """Print everything a phone needs to reach this server, and nothing else.
+
+    The whole point is that you should be able to hold the phone up to the
+    screen and type one short line. If that is not possible - the server is
+    bound to localhost - say so and give the fix, rather than printing an
+    address that will not answer.
+    """
+    from . import pairing
+
+    code = pairing.mint(db, ttl_minutes=args.minutes)
+    urls = pairing.base_urls(config)
+    info = {
+        **code.to_dict(),
+        "urls": [code.url(base) for base in urls],
+        "minutes": args.minutes,
+        "reachable": bool(urls),
+        "host": config.host,
+        "port": config.port,
+        "needs_token": bool(config.server.api_token),
+    }
+
+    def render() -> None:
+        heading("Pair your phone")
+        if not info["reachable"]:
+            print(_c("  This server only listens on "
+                     f"{config.host}, which nothing else on your", YELLOW))
+            print(_c("  network can reach.", YELLOW))
+            print()
+            print("  Fix it once:")
+            print(_c('    1. set "host": "0.0.0.0" in config.json', BOLD))
+            print(f"       ({paths_hint()})")
+            print(_c("    2. restart `pokeflip serve`", BOLD))
+            print(_c("    3. run `pokeflip pair` again", BOLD))
+            print()
+            print(_c("  Only do this on a network you trust, and only with "
+                     "server.api_token set.", DIM))
+            return
+
+        print("  1. Put your phone on the same wifi as this computer.")
+        print("  2. Open this in its browser:")
+        print()
+        for url in info["urls"]:
+            print(f"       {_c(url, BOLD)}")
+        print()
+        print(_c(f"     The code is {code.pretty} - it works once and expires "
+                 f"in {args.minutes} minutes.", DIM))
+        if pairing.in_container() and not config.server.public_base_url:
+            print(_c("     That is this container's address, not the machine's. "
+                     "Use the host's", YELLOW))
+            print(_c("     address with the published port, or set "
+                     "server.public_base_url.", YELLOW))
+        if not info["needs_token"]:
+            print(_c("     No api_token is set, so anyone on this network can "
+                     "reach the app.", YELLOW))
+            print(_c("     Run `pokeflip setup` to generate one.", YELLOW))
+        print("  3. Use your browser's 'Add to home screen' to keep it one tap "
+              "away.")
+        _print_qr(info["urls"][0])
+
+    emit(args, info, render)
+    return 0
+
+
+def paths_hint() -> str:
+    from . import paths
+
+    config_path, _ = paths.resolve_config_path(None)
+    return str(config_path)
+
+
+def _print_qr(url: str) -> None:
+    """Draw a QR if the optional dependency happens to be installed.
+
+    Never required: the pairing URL is short enough to type, which is the
+    entire reason it is a code and not the API token.
+    """
+    try:
+        import qrcode  # type: ignore
+    except ImportError:
+        return
+    print()
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    qr.print_ascii(invert=True)
+
+
 def cmd_serve(args: argparse.Namespace, db: Database, config: Config) -> int:
     import uvicorn
 
     from .api import create_app
 
-    host = args.host or config.host
-    port = args.port or config.port
-    print(f"pokeflip on http://{host}:{port}  (API docs at /docs)")
+    from . import pairing
+
+    # The flags win, and everything downstream - pairing URLs, the addresses
+    # `pokeflip pair` prints - has to agree with where we actually listen.
+    config.host = host = args.host or config.host
+    config.port = port = args.port or config.port
+    shown = "127.0.0.1" if host in {"0.0.0.0", "::", ""} else host
+    print(f"pokeflip on http://{shown}:{port}  (API docs at /docs)")
+    if host in {"0.0.0.0", "::", ""}:
+        for address in pairing.lan_addresses():
+            print(f"           http://{address}:{port}  (from your phone: "
+                  f"`pokeflip pair`)")
+        if not config.server.api_token:
+            print("WARNING: listening on every interface with no api_token - "
+                  "anyone on this network can edit your portfolio.")
     uvicorn.run(create_app(config, start_scheduler=not args.no_scheduler),
                 host=host, port=port, log_level=args.log_level)
     return 0
@@ -1678,6 +1779,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = cmd(sub, "where", help="show which config and database this install uses")
     p.set_defaults(func=cmd_where)
+
+    p = cmd(sub, "pair", help="print a code to open the dashboard on a phone")
+    p.add_argument("--minutes", type=int, default=15,
+                   help="how long the code stays valid (default 15)")
+    p.set_defaults(func=cmd_pair)
 
     p = cmd(sub, "serve", help="dashboard, API and scheduler")
     p.add_argument("--host")

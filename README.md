@@ -544,6 +544,77 @@ pokeflip notify list
 
 ---
 
+## On your phone
+
+Three separate things reach a phone, and they solve different problems:
+
+| | What it is | Needs |
+|---|---|---|
+| **Push alerts** | The digest and alerts, with one-tap buttons | an ntfy topic (below) |
+| **The dashboard** | The whole app, in the phone browser | `pokeflip pair` |
+| **Telegram bot** | Ask it things, standing in a card shop | a bot token |
+
+### The dashboard, in three steps
+
+By default the server listens on `127.0.0.1`, which nothing else on your wifi
+can reach. Change that once:
+
+```jsonc
+"host": "0.0.0.0",                 // listen on the network, not just this machine
+"server": { "api_token": "..." }   // required - `pokeflip setup` generates one
+```
+
+Then, on the computer running it:
+
+```bash
+pokeflip pair
+```
+
+```
+Pair your phone
+
+  1. Put your phone on the same wifi as this computer.
+  2. Open this in its browser:
+
+       http://192.168.1.24:8787/p/K7MB-3QRV
+
+     The code is K7MB-3QRV - it works once and expires in 15 minutes.
+  3. Use your browser's 'Add to home screen' to keep it one tap away.
+```
+
+That address hands the phone a session cookie and drops it on the dashboard.
+The dashboard's own **Phone** button does the same thing without a terminal.
+
+**Why a code and not the token.** The API token is 43 characters and belongs in
+a config file, not a phone keyboard — and a token in a URL ends up in history
+and access logs. A pairing code is a different thing: it lives for minutes,
+works exactly once, buys nothing on its own, and guessing is rate-limited per
+client. Pair once per device; the cookie lasts 30 days.
+
+**Add to home screen** gives you an icon, no browser chrome and the app opening
+on Today. The tab strip swipes sideways, forms go one field per row, and it
+respects your phone's dark mode.
+
+Off your own wifi you need a real address — see `public_base_url` below. Until
+then, `pokeflip doctor` tells you what a phone can and cannot reach:
+
+```
+  ok    phone access     reachable on your network at http://192.168.1.24:8787 - run `pokeflip pair`
+```
+
+```
+  warn  phone access     host is 127.0.0.1, so only this computer can open the dashboard
+        -> Phone delivery is configured but the links lead nowhere. Set host to
+           0.0.0.0 in config.json (with server.api_token set), restart, then run
+           `pokeflip pair`.
+```
+
+It also catches the failure nobody notices: your router hands out a new lease,
+`public_base_url` still points at the old address, and every notification
+button silently stops working.
+
+---
+
 ## Hands-off: phone push and one-tap actions
 
 The three channels that reach a phone — `ntfy`, `pushover`, `telegram` —
@@ -783,6 +854,7 @@ pokeflip bot                      Telegram bot in the foreground
 pokeflip runs                     recent job history
 pokeflip app [--browser]          desktop app window
 pokeflip where                    which config and database this install uses
+pokeflip pair [--minutes N]       code to open the dashboard on a phone
 pokeflip run                      scheduler in the foreground
 pokeflip serve                    dashboard, API and scheduler
 pokeflip config                   show resolved configuration
@@ -834,6 +906,9 @@ GET    /api/backtest                  last signal scorecard
 POST   /api/backtest/run              replay history and re-grade the rules
 POST   /api/act/{token}               redeem a one-tap notification action
 GET    /api/act/{token}               same, from a browser (returns a page)
+POST   /api/pair                      mint a pairing code for a phone
+GET    /p/{code}                      redeem it - hands over a session cookie
+GET    /pair                          type a code instead of following a link
 GET    /api/alerts                    recent alerts
 GET    /api/runs                      job history
 ```

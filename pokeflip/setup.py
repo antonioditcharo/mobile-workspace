@@ -343,7 +343,89 @@ def _check_exposure(config: Config) -> list[Check]:
         ))
     elif exposed:
         out.append(Check("tap-to-act", PASS, "action buttons enabled"))
+
+    out.append(_check_phone(config))
     return out
+
+
+# Channels that deliver to a device that is not this computer, so a link in
+# them has to point somewhere reachable.
+PHONE_CHANNELS = {"ntfy", "pushover", "telegram"}
+
+
+def _stale_lan_url(config: Config) -> str:
+    """A private address in ``public_base_url`` that this machine no longer has.
+
+    Only reported for private addresses: a public hostname is somebody else's
+    job to resolve, and a DNS name is meant to outlive the lease.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    from . import pairing
+
+    published = (config.server.public_base_url or "").strip()
+    if not published:
+        return ""
+    host = urlparse(published).hostname or ""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return ""
+    if not ip.is_private or ip.is_loopback:
+        return ""
+    return "" if host in pairing.lan_addresses() else host
+
+
+def _check_phone(config: Config) -> Check:
+    """Can a phone actually open this?
+
+    Push notifications and the dashboard fail in opposite ways: a notification
+    that arrives is proof the phone is *configured*, and says nothing about
+    whether the link in it leads anywhere. This is the check that catches the
+    default bind address quietly stranding everything.
+    """
+    from . import pairing
+
+    wants_phone = (bool(config.server.public_base_url)
+                   or bool(PHONE_CHANNELS & set(config.notify.channels)))
+
+    stale = _stale_lan_url(config)
+    if stale:
+        return Check(
+            "phone access", WARN,
+            f"server.public_base_url points at {stale}, which is not an "
+            "address this machine has",
+            "Your router almost certainly moved the lease. Update "
+            "server.public_base_url, or give this machine a static address - "
+            "until then, notification buttons lead nowhere.",
+        )
+
+    if pairing.listens_everywhere(config):
+        if not config.server.api_token:
+            return Check(
+                "phone access", FAIL,
+                f"listening on {config.host} with no API token",
+                "Anyone on your network can read and edit your portfolio. Run "
+                "`pokeflip setup` to generate server.api_token, or set host "
+                "back to 127.0.0.1.",
+            )
+        found = pairing.lan_addresses()
+        where = f" at http://{found[0]}:{config.port}" if found else ""
+        return Check("phone access", PASS,
+                     f"reachable on your network{where} - run `pokeflip pair`")
+
+    if pairing.is_loopback_host(config) and wants_phone:
+        return Check(
+            "phone access", WARN,
+            f"host is {config.host}, so only this computer can open the "
+            "dashboard",
+            "Phone delivery is configured but the links lead nowhere. Set "
+            "host to 0.0.0.0 in config.json (with server.api_token set), "
+            "restart, then run `pokeflip pair`.",
+        )
+    return Check("phone access", PASS,
+                 f"host {config.host} - this computer only")
 
 
 def _check_schedule(config: Config) -> Check:
@@ -419,12 +501,32 @@ def wizard(config: Config, ask: Callable[[str, str], str],
         channels.append("ntfy")
     config.notify.channels = channels
 
-    if confirm("Will you reach this server from your phone (for tap-to-act)?", False):
+    # Two different questions that used to be one. Most people want the first
+    # and have no answer to the second, and asking only the second left them
+    # with notifications whose buttons did nothing.
+    if confirm("Open the dashboard on your phone over your home wifi?", False):
+        from . import pairing
+
+        config.host = "0.0.0.0"
+        # Generated rather than prompted: a token someone types is a token
+        # someone can guess. Non-negotiable here - the app just stopped being
+        # localhost-only.
+        if not config.server.api_token:
+            config.server.api_token = secrets.token_urlsafe(32)
+        found = pairing.lan_addresses()
+        if found and not config.server.public_base_url:
+            # Notification buttons need an address to point at. This one goes
+            # stale if the router hands out a different lease; `pokeflip
+            # doctor` says so when it does.
+            config.server.public_base_url = ask(
+                "Address your phone should use (from your router's lease)",
+                f"http://{found[0]}:{config.port}").strip().rstrip("/")
+
+    if confirm("Do you have a public URL for this server (reachable off wifi)?",
+               False):
         config.server.public_base_url = ask(
             "Public URL, e.g. https://pokeflip.example.com",
             config.server.public_base_url).strip().rstrip("/")
-        # Generated rather than prompted: a token someone types is a token
-        # someone can guess.
         if not config.server.api_token:
             config.server.api_token = secrets.token_urlsafe(32)
 
