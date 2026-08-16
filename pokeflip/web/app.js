@@ -50,7 +50,10 @@ function toast(message, bad = false) {
 // --- table builder ------------------------------------------------------
 
 function table(columns, rows, emptyText = "Nothing here yet.") {
-  if (!rows.length) return `<div class="empty">${esc(emptyText)}</div>`;
+  if (!rows.length) {
+    const [head, ...rest] = String(emptyText).split(" — ");
+    return emptyState(head, rest.join(" — "));
+  }
   const cls = (c) => [c.num ? "num" : "", c.cls || ""].filter(Boolean).join(" ");
   const head = columns
     .map((c) => `<th class="${cls(c)}">${esc(c.label)}</th>`)
@@ -66,11 +69,56 @@ function table(columns, rows, emptyText = "Nothing here yet.") {
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-const cardCell = (r) =>
-  `<div class="name">${esc(r.card_name || r.name || r.card_id)}</div>
-   <div class="meta">${esc(r.set_name || "")} ${esc(r.number || "")}</div>`;
+const cardCell = (r) => {
+  const art = r.image
+    ? `<img src="${esc(r.image)}" alt="" loading="lazy">`
+    : "";
+  return `<div class="cardcell">${art}<div>
+    <div class="name">${esc(r.card_name || r.name || r.card_id)}</div>
+    <div class="meta">${esc(r.set_name || "")} ${esc(r.number || "")}</div>
+  </div></div>`;
+};
+
+/** A score reads faster as a chip than as a bare number. */
+const scoreCell = (v) => {
+  const tone = v >= 70 ? "high" : v >= 50 ? "mid" : "";
+  return `<span class="score ${tone}">${v.toFixed(0)}</span>`;
+};
+
+const skeleton = (lines = 4) =>
+  `<div class="skeleton">${'<div class="line"></div>'.repeat(lines)}</div>`;
+
+const emptyState = (title, hint = "") =>
+  `<div class="empty"><strong>${esc(title)}</strong>${hint ? esc(hint) : ""}</div>`;
 
 // --- chart --------------------------------------------------------------
+
+
+/**
+ * Evenly spaced date labels that never collide.
+ *
+ * Labelling every Nth point *and* always labelling the last one puts two
+ * labels on top of each other whenever the series length is not a multiple of
+ * the step - so the last label wins and the one it would overlap is dropped.
+ */
+function dateLabels(dates, x, height, target = 7) {
+  const every = Math.max(1, Math.floor(dates.length / target));
+  const last = dates.length - 1;
+  // In viewBox units; roughly the width of a "05-13" label.
+  const minGap = 34;
+  const chosen = [];
+  for (let i = 0; i < dates.length; i += every) chosen.push(i);
+  if (chosen[chosen.length - 1] !== last) {
+    while (chosen.length && x(last) - x(chosen[chosen.length - 1]) < minGap) {
+      chosen.pop();
+    }
+    chosen.push(last);
+  }
+  return chosen
+    .map((i) => `<text class="axis-text" x="${x(i).toFixed(1)}" y="${height - 6}"
+       text-anchor="middle">${dates[i].slice(5)}</text>`)
+    .join("");
+}
 
 /**
  * Price history with 7d and 30d moving averages.
@@ -118,15 +166,7 @@ function priceChart(history, currencySymbol = "$") {
     )
     .join("");
 
-  const labelEvery = Math.max(1, Math.floor(points.length / 6));
-  const dateLabels = points
-    .map((p, i) =>
-      i % labelEvery === 0 || i === points.length - 1
-        ? `<text class="axis-text" x="${x(i).toFixed(1)}" y="${H - 6}"
-             text-anchor="middle">${p.on.slice(5)}</text>`
-        : ""
-    )
-    .join("");
+  const dateLabelMarkup = dateLabels(points.map((p) => p.on), x, H, 6);
 
   const id = `chart-${Math.random().toString(36).slice(2, 9)}`;
   const series = JSON.stringify(
@@ -154,7 +194,7 @@ function priceChart(history, currencySymbol = "$") {
          aria-label="Price history with 7 and 30 day moving averages"
          data-series='${esc(series)}' data-sym="${currencySymbol}">
       ${gridlines}
-      ${dateLabels}
+      ${dateLabelMarkup}
       <path class="series s3" d="${path(sma30)}"/>
       <path class="series s2" d="${path(sma7)}"/>
       <path class="series s1" d="${path(prices)}"/>
@@ -170,6 +210,121 @@ function priceChart(history, currencySymbol = "$") {
   </div>`;
 }
 
+
+/**
+ * Portfolio value over time: one filled series for net liquidation, with cost
+ * basis as a recessive dashed reference. The baseline is not a competing
+ * series so it wears muted ink rather than a categorical hue, and the gap
+ * between the two lines *is* the profit - which is the whole point.
+ */
+function portfolioChart(days) {
+  const rows = days.filter((d) => d.net_value != null);
+  if (rows.length < 2) {
+    return emptyState("Not enough history to plot",
+                      "Value is reconstructed from stored prices; give it a few days.");
+  }
+
+  const net = rows.map((d) => d.net_value);
+  const cost = rows.map((d) => d.cost_basis);
+  const W = 900, H = 240, ML = 58, MR = 14, MT = 12, MB = 24;
+  const plotW = W - ML - MR, plotH = H - MT - MB;
+
+  const all = [...net, ...cost];
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const pad = (hi - lo) * 0.12 || hi * 0.1 || 1;
+  lo = Math.max(0, lo - pad);
+  hi += pad;
+
+  const x = (i) => ML + (i / (rows.length - 1)) * plotW;
+  const y = (v) => MT + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
+  const line = (vals) =>
+    vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const area = `${line(net)}L${x(rows.length - 1).toFixed(1)},${(MT + plotH).toFixed(1)}`
+             + `L${ML.toFixed(1)},${(MT + plotH).toFixed(1)}Z`;
+
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + (hi - lo) * f);
+  const grid = ticks.map((t) =>
+    `<line class="grid-line" x1="${ML}" x2="${W - MR}" y1="${y(t).toFixed(1)}"
+       y2="${y(t).toFixed(1)}"/>
+     <text class="axis-text" x="${ML - 8}" y="${(y(t) + 3).toFixed(1)}"
+       text-anchor="end">$${Math.round(t).toLocaleString("en-US")}</text>`).join("");
+
+  const dates = dateLabels(rows.map((d) => d.on), x, H, 7);
+
+  const id = `pf-${Math.random().toString(36).slice(2, 9)}`;
+  const series = JSON.stringify(rows.map((d, i) => ({
+    on: d.on, net: d.net_value, cost: d.cost_basis, pnl: d.unrealized,
+    cards: d.cards, x: +x(i).toFixed(2),
+    yn: +y(d.net_value).toFixed(2), yc: +y(d.cost_basis).toFixed(2),
+  })));
+
+  const last = rows[rows.length - 1];
+  return `
+  <div class="chart-wrap">
+    <div class="legend">
+      <span><i class="k1"></i>Net if sold <b>${money(last.net_value)}</b></span>
+      <span><i class="kbase"></i>Cost basis <b>${money(last.cost_basis)}</b></span>
+      <span class="${signClass(last.unrealized)}">Unrealised
+        <b class="${signClass(last.unrealized)}">${money(last.unrealized)}</b></span>
+    </div>
+    <svg class="chart" id="${id}" viewBox="0 0 ${W} ${H}" role="img"
+         aria-label="Portfolio net value and cost basis over time"
+         data-kind="portfolio" data-series='${esc(series)}'>
+      ${grid}${dates}
+      <path class="area" d="${area}" fill="var(--series-1)" opacity="0.12"/>
+      <path class="baseline" d="${line(cost)}"/>
+      <path class="series s1" d="${line(net)}"/>
+      <g class="focus" style="display:none">
+        <line class="crosshair" y1="${MT}" y2="${MT + plotH}"/>
+        <circle class="focus-dot d1" r="4" fill="var(--series-1)"/>
+        <circle class="focus-dot d2" r="3.5" fill="var(--text-muted)"/>
+      </g>
+      <rect class="hit" x="${ML}" y="${MT}" width="${plotW}" height="${plotH}"/>
+    </svg>
+    <div class="tooltip hidden"></div>
+  </div>`;
+}
+
+/** An inline trend, coloured by direction. Too small for axes, so it carries
+ *  no numbers - the row beside it already has them. */
+function sparkline(values) {
+  const points = (values || []).filter((v) => v != null);
+  if (points.length < 2) return `<span class="meta">-</span>`;
+  const W = 72, H = 22, pad = 2;
+  const lo = Math.min(...points), hi = Math.max(...points);
+  const span = hi - lo || 1;
+  const x = (i) => (i / (points.length - 1)) * W;
+  const y = (v) => pad + (1 - (v - lo) / span) * (H - pad * 2);
+  const d = points.map((v, i) =>
+    `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const change = (points[points.length - 1] - points[0]) / (points[0] || 1);
+  const tone = change > 0.02 ? "up" : change < -0.02 ? "down" : "flat";
+  const fillTone = tone === "up" ? "var(--good)"
+                 : tone === "down" ? "var(--bad)" : "var(--text-muted)";
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" aria-hidden="true">
+    <path class="fill" d="${d}L${W},${H}L0,${H}Z" fill="${fillTone}"/>
+    <path class="${tone}" d="${d}"/>
+  </svg>`;
+}
+
+/** Shares compared against each other. A bar chart, never a pie. */
+function allocationBars(rows, { limit = 6, overAt = null } = {}) {
+  if (!rows.length) return emptyState("Nothing to break down yet");
+  const top = rows.slice(0, limit);
+  const max = Math.max(...top.map((r) => r.share), 0.0001);
+  return `<div class="bars">${top.map((r) => {
+    const over = overAt != null && r.share > overAt;
+    return `<div class="bar-row">
+      <div class="bar-label" title="${esc(r.label)}">${esc(r.label)}</div>
+      <div class="bar-track">
+        <div class="bar-fill ${over ? "over" : ""}"
+             style="width:${Math.max(2, (r.share / max) * 100).toFixed(1)}%"></div>
+      </div>
+      <div class="bar-value">${(r.share * 100).toFixed(1)}%</div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
 /** Wire hover behaviour for every chart currently in the DOM. */
 function bindCharts(root = document) {
   $$(".chart", root).forEach((svg) => {
@@ -178,10 +333,30 @@ function bindCharts(root = document) {
 
     const series = JSON.parse(svg.dataset.series);
     const symbol = svg.dataset.sym || "$";
+    const kind = svg.dataset.kind || "price";
     const wrap = svg.closest(".chart-wrap");
     const tip = $(".tooltip", wrap);
     const focus = $(".focus", svg);
     const hit = $(".hit", svg);
+
+    // Each chart carries its own point shape, so the readout is defined
+    // alongside it rather than assumed.
+    const readouts = {
+      price: (p) => [
+        ["Market", `${symbol}${p.market.toFixed(2)}`, "var(--series-1)"],
+        ["7-day", `${symbol}${p.sma7.toFixed(2)}`, "var(--series-2)"],
+        ["30-day", `${symbol}${p.sma30.toFixed(2)}`, "var(--series-3)"],
+      ],
+      portfolio: (p) => [
+        ["Net if sold", money(p.net), "var(--series-1)"],
+        ["Cost basis", money(p.cost), "var(--text-muted)"],
+        ["Unrealised", money(p.pnl), null],
+        [`${p.cards} cards`, "", null],
+      ],
+    };
+    const dots = kind === "portfolio"
+      ? [[".d1", "yn"], [".d2", "yc"]]
+      : [[".d1", "ym"], [".d2", "y7"], [".d3", "y30"]];
 
     const move = (event) => {
       const box = svg.getBoundingClientRect();
@@ -195,25 +370,28 @@ function bindCharts(root = document) {
       focus.style.display = "";
       $(".crosshair", focus).setAttribute("x1", nearest.x);
       $(".crosshair", focus).setAttribute("x2", nearest.x);
-      $(".d1", focus).setAttribute("cx", nearest.x);
-      $(".d1", focus).setAttribute("cy", nearest.ym);
-      $(".d2", focus).setAttribute("cx", nearest.x);
-      $(".d2", focus).setAttribute("cy", nearest.y7);
-      $(".d3", focus).setAttribute("cx", nearest.x);
-      $(".d3", focus).setAttribute("cy", nearest.y30);
+      dots.forEach(([sel, key]) => {
+        const dot = $(sel, focus);
+        if (!dot) return;
+        dot.setAttribute("cx", nearest.x);
+        dot.setAttribute("cy", nearest[key]);
+      });
 
-      tip.innerHTML = `
-        <div class="t-date">${esc(nearest.on)}</div>
-        <div class="t-row"><span>Market</span><b>${symbol}${nearest.market.toFixed(2)}</b></div>
-        <div class="t-row"><span>7-day</span><b>${symbol}${nearest.sma7.toFixed(2)}</b></div>
-        <div class="t-row"><span>30-day</span><b>${symbol}${nearest.sma30.toFixed(2)}</b></div>`;
+      const rows = (readouts[kind] || readouts.price)(nearest);
+      tip.innerHTML = `<div class="t-date">${esc(nearest.on)}</div>` + rows
+        .map(([label, value, swatch]) =>
+          `<div class="t-row"><span>${
+            swatch ? `<i style="background:${swatch}"></i>` : ""}${esc(label)}</span>` +
+          `<b>${esc(value)}</b></div>`)
+        .join("");
       tip.classList.remove("hidden");
 
       const scale = box.width / svg.viewBox.baseVal.width;
       const left = nearest.x * scale;
-      const flip = left > box.width - 140;
+      const flip = left > box.width - 160;
+      const anchor = kind === "portfolio" ? nearest.yn : nearest.ym;
       tip.style.left = `${flip ? left - tip.offsetWidth - 12 : left + 12}px`;
-      tip.style.top = `${Math.max(0, nearest.ym * scale - 10)}px`;
+      tip.style.top = `${Math.max(0, anchor * scale - 10)}px`;
     };
 
     const leave = () => {
@@ -249,7 +427,8 @@ async function loadHealth() {
 
 async function viewToday(force = false) {
   if (!state.digest || force) {
-    $("#action-list").innerHTML = `<li><span class="spin"></span> Scoring…</li>`;
+    $("#action-list").innerHTML = `<li>${skeleton(3)}</li>`;
+    $("#today-chart").innerHTML = skeleton(5);
     state.digest = (await api("/api/digest")).digest;
   }
   const d = state.digest;
@@ -275,15 +454,25 @@ async function viewToday(force = false) {
   $("#action-list").innerHTML = d.actions.length
     ? d.actions
         .map(
-          (a) => `<li>
-            <div class="head"><span class="pill ${esc(a.type)}">${esc(a.type)}</span>
-              <span class="name">${esc(a.card)}</span></div>
-            <div class="detail">${esc(a.detail)}</div>
-            ${a.why ? `<div class="why">${esc(a.why)}</div>` : ""}
+          (a, i) => `<li>
+            <span class="idx">${i + 1}</span>
+            <div>
+              <div class="head"><span class="pill ${esc(a.type)}">${esc(a.type)}</span>
+                <span class="name">${esc(a.card)}</span></div>
+              <div class="detail">${esc(a.detail)}</div>
+              ${a.why ? `<div class="why">${esc(a.why)}</div>` : ""}
+            </div>
           </li>`
         )
         .join("")
-    : `<li class="empty">Nothing clears your thresholds today. Sitting out is a position.</li>`;
+    : `<li style="display:block">${emptyState(
+        "Nothing clears your thresholds today",
+        "Sitting out is a position.")}</li>`;
+
+  api("/api/portfolio/history?days=90")
+    .then((h) => { $("#today-chart").innerHTML = portfolioChart(h.days || []);
+                   bindCharts($("#today-chart")); })
+    .catch(() => { $("#today-chart").innerHTML = emptyState("Could not load history"); });
 
   $("#sell-table").innerHTML = table(
     [
@@ -296,7 +485,7 @@ async function viewToday(force = false) {
         render: (r) => `<span class="${signClass(r.roi)}">${pct(r.roi, 0)}</span>` },
       { label: "Total", num: true,
         render: (r) => `<span class="${signClass(r.total_net_profit)}">${money(r.total_net_profit)}</span>` },
-      { label: "Score", num: true, render: (r) => `<span class="score">${r.score.toFixed(0)}</span>` },
+      { label: "Score", num: true, render: (r) => scoreCell(r.score) },
       { label: "Why", cls: "reason",
         render: (r) => `<span class="meta">${esc(r.reasons[0] || "")}</span>` },
     ],
@@ -311,7 +500,7 @@ async function viewToday(force = false) {
       { label: "Market", num: true, render: (r) => money(r.price) },
       { label: "Net", num: true, render: (r) => `<span class="up">${money(r.net_profit)}</span>` },
       { label: "ROI", num: true, render: (r) => pct(r.roi, 0) },
-      { label: "Score", num: true, render: (r) => `<span class="score">${r.score.toFixed(0)}</span>` },
+      { label: "Score", num: true, render: (r) => scoreCell(r.score) },
       { label: "Why", cls: "reason",
         render: (r) => `<span class="meta">${esc(r.reasons[0] || "")}</span>` },
     ],
@@ -352,6 +541,12 @@ async function viewToday(force = false) {
 }
 
 async function viewPortfolio() {
+  $("#pf-chart").innerHTML = skeleton(5);
+  api("/api/portfolio/history?days=180")
+    .then((h) => { $("#pf-chart").innerHTML = portfolioChart(h.days || []);
+                   bindCharts($("#pf-chart")); })
+    .catch(() => { $("#pf-chart").innerHTML = emptyState("Could not load history"); });
+
   const p = await api("/api/portfolio");
   $("#pf-kpis").innerHTML = `
     <div class="kpi"><div class="label">Cost basis</div>
@@ -380,7 +575,7 @@ async function viewPortfolio() {
         render: (r) => `<span class="${signClass(r.unrealized)}">${money(r.unrealized)}</span>` },
       { label: "ROI", num: true, render: (r) => pct(r.roi, 0) },
       { label: "30d", num: true, render: (r) => pct(r.change_30d) },
-      { label: "Trend", render: (r) => `<span class="pill ${esc(r.direction)}">${esc(r.direction)}</span>` },
+      { label: "Trend", render: (r) => sparkline(r.spark) },
       { label: "Held", num: true, render: (r) => (r.hold_days ?? "-") + "d" },
       { label: "", render: (r) =>
           `<button class="btn tiny" data-open-card="${esc(r.card_id)}">View</button>` },
@@ -579,28 +774,30 @@ async function viewOrders() {
     "No orders yet."
   );
 
+  // Shares are a comparison, so they get bars. Anything past the configured
+  // limit is painted with the bad tone rather than left for you to spot.
+  const positionLimit = 0.20, setLimit = 0.40;
   $("#risk-panel").innerHTML = `
     ${risk.warnings.length
       ? `<ul class="notes">${risk.warnings.map((w) =>
           `<li class="down">${esc(w.message)}</li>`).join("")}</ul>`
-      : `<div class="empty">No concentration limits exceeded.</div>`}
+      : `<div class="meta" style="margin-bottom:12px">No concentration limits exceeded.</div>`}
     <div class="split" style="margin-top:12px">
-      <div>${table(
-        [
-          { label: "Position", render: (r) => `${esc(r.card_name)} <span class="meta">${esc(r.condition)}</span>` },
-          { label: "Cost", num: true, render: (r) => money(r.cost) },
-          { label: "Share", num: true, render: (r) => `${(r.share * 100).toFixed(1)}%` },
-        ],
-        risk.top_positions
-      )}</div>
-      <div>${table(
-        [
-          { label: "Set", render: (r) => esc(r.set_name) },
-          { label: "Cost", num: true, render: (r) => money(r.cost) },
-          { label: "Share", num: true, render: (r) => `${(r.share * 100).toFixed(1)}%` },
-        ],
-        risk.by_set
-      )}</div>
+      <div>
+        <div class="panel-head"><h2>Largest positions</h2></div>
+        ${allocationBars(
+          risk.top_positions.map((r) => ({
+            label: `${r.card_name}${r.condition && r.condition !== "NM"
+              ? ` (${r.condition})` : ""}`,
+            share: r.share,
+          })), { overAt: positionLimit })}
+      </div>
+      <div>
+        <div class="panel-head"><h2>By set</h2></div>
+        ${allocationBars(
+          risk.by_set.map((r) => ({ label: r.set_name, share: r.share })),
+          { overAt: setLimit })}
+      </div>
     </div>`;
 }
 
@@ -653,8 +850,17 @@ function renderScorecard(report) {
       { label: "Horizon", num: true, render: (r) => `${r.horizon_days}d` },
       { label: "Signals", num: true, render: (r) => r.signals },
       { label: "Graded", num: true, render: (r) => r.resolved },
-      { label: "Win rate", num: true,
-        render: (r) => r.win_rate == null ? "-" : `${(r.win_rate * 100).toFixed(0)}%` },
+      { label: "Win rate", num: true, render: (r) => {
+          if (r.win_rate == null) return "-";
+          const tone = r.win_rate >= 0.6 ? "var(--good)"
+                     : r.win_rate >= 0.45 ? "var(--warn)" : "var(--bad)";
+          return `<div style="display:flex;align-items:center;gap:6px;
+                    justify-content:flex-end">
+            <div class="bar-track" style="width:52px">
+              <div class="bar-fill" style="width:${(r.win_rate * 100).toFixed(0)}%;
+                   background:${tone}"></div>
+            </div><span>${(r.win_rate * 100).toFixed(0)}%</span></div>`;
+        } },
       { label: "Median ROI", num: true,
         render: (r) => `<span class="${signClass(r.median_roi)}">${pct(r.median_roi)}</span>` },
       { label: "Median move", num: true, render: (r) => pct(r.median_return) },

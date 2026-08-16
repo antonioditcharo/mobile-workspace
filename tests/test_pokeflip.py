@@ -2355,5 +2355,167 @@ class DesktopChannelTests(TempDbCase):
         self.assertEqual(self.sent, [])
 
 
+# --- dashboard session ---------------------------------------------------
+
+class DashboardAuthTests(TempDbCase):
+    """With a token set, the dashboard has to be usable in a browser. It was
+    not: the page loaded from ?token= but its own fetch calls carried nothing,
+    so every one of them 401'd."""
+
+    def setUp(self):
+        super().setUp()
+        from fastapi.testclient import TestClient
+
+        from pokeflip.api import create_app
+
+        ingest.seed_demo(self.db, self.config, days=20, include_portfolio=False)
+        self.config.server.api_token = "s3cret"
+        self.client = TestClient(create_app(self.config, start_scheduler=False),
+                                 follow_redirects=False)
+
+    def test_the_token_hand_off_sets_a_cookie_and_redirects(self):
+        response = self.client.get("/?token=s3cret")
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/")
+        self.assertIn("pokeflip_session", response.cookies)
+
+    def test_after_the_hand_off_the_pages_api_calls_succeed(self):
+        self.client.get("/?token=s3cret")           # cookie stored on the client
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.get("/api/portfolio").status_code, 200)
+        self.assertEqual(self.client.get("/api/digest").status_code, 200)
+
+    def test_the_cookie_is_http_only_so_scripts_cannot_read_it(self):
+        response = self.client.get("/?token=s3cret")
+        self.assertIn("HttpOnly", response.headers["set-cookie"])
+
+    def test_a_wrong_token_gets_no_cookie(self):
+        response = self.client.get("/?token=nope")
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("pokeflip_session", response.cookies)
+
+    def test_a_forged_cookie_is_rejected(self):
+        self.client.cookies.set("pokeflip_session", "forged")
+        self.assertEqual(self.client.get("/api/portfolio").status_code, 401)
+
+    def test_logging_out_clears_the_session(self):
+        self.client.get("/?token=s3cret")
+        self.assertEqual(self.client.get("/api/portfolio").status_code, 200)
+        self.client.post("/api/logout")
+        self.assertEqual(self.client.get("/api/portfolio").status_code, 401)
+
+    def test_the_exempt_prefix_cannot_be_walked_into_a_protected_route(self):
+        for path in ("/api/act/../portfolio", "/api/health/../portfolio"):
+            self.assertNotEqual(self.client.get(path).status_code, 200, path)
+
+
+class PortfolioHistoryTests(TempDbCase):
+    def setUp(self):
+        super().setUp()
+        ingest.seed_demo(self.db, self.config, days=90, include_portfolio=False)
+        provider = FixtureProvider(self.config)
+        self.card_id = provider.all_card_ids()[0]
+        self.variant = provider._catalog[self.card_id]["variant"]
+
+    def test_an_empty_book_returns_no_days_rather_than_crashing(self):
+        self.assertEqual(portfolio.value_history(self.db, self.config)["days"], [])
+
+    def test_value_starts_when_the_card_was_acquired_not_when_tracking_began(self):
+        bought = date.today() - timedelta(days=30)
+        portfolio.add_holding(self.db, self.card_id, self.variant, 1, 50.0,
+                              acquired_at=f"{bought.isoformat()}T12:00:00+00:00")
+        days = portfolio.value_history(self.db, self.config, days=60)["days"]
+        before = [d for d in days if d["on"] < bought.isoformat()]
+        after = [d for d in days if d["on"] >= bought.isoformat()]
+        self.assertTrue(all(d["cost_basis"] == 0 for d in before))
+        self.assertTrue(all(d["cost_basis"] == 50.0 for d in after))
+        self.assertTrue(all(d["cards"] == 1 for d in after))
+
+    def test_a_sold_lot_leaves_the_curve_on_the_day_it_sold(self):
+        bought = date.today() - timedelta(days=40)
+        holding = portfolio.add_holding(
+            self.db, self.card_id, self.variant, 1, 50.0,
+            acquired_at=f"{bought.isoformat()}T12:00:00+00:00")
+        sold_on = date.today() - timedelta(days=10)
+        portfolio.sell_holding(self.db, holding, 1, 90.0, self.config,
+                               sold_at=f"{sold_on.isoformat()}T12:00:00+00:00")
+        days = {d["on"]: d for d in
+                portfolio.value_history(self.db, self.config, days=60)["days"]}
+        self.assertEqual(days[(sold_on - timedelta(days=1)).isoformat()]["cards"], 1)
+        self.assertEqual(days[sold_on.isoformat()]["cards"], 0)
+
+    def test_unrealised_is_net_value_less_cost_on_every_day(self):
+        portfolio.add_holding(self.db, self.card_id, self.variant, 2, 40.0,
+                              acquired_at="2020-01-01T00:00:00+00:00")
+        for day in portfolio.value_history(self.db, self.config, days=30)["days"]:
+            self.assertAlmostEqual(day["unrealized"],
+                                   round(day["net_value"] - day["cost_basis"], 2),
+                                   places=2)
+
+    def test_condition_is_applied_to_historical_value_too(self):
+        portfolio.add_holding(self.db, self.card_id, self.variant, 1, 10.0,
+                              condition="MP",
+                              acquired_at="2020-01-01T00:00:00+00:00")
+        played = portfolio.value_history(self.db, self.config, days=10)["days"][-1]
+        self.db.execute("UPDATE holdings SET condition = 'NM'")
+        mint = portfolio.value_history(self.db, self.config, days=10)["days"][-1]
+        self.assertLess(played["market_value"], mint["market_value"])
+
+    def test_the_endpoint_serves_it(self):
+        from fastapi.testclient import TestClient
+
+        from pokeflip.api import create_app
+
+        portfolio.add_holding(self.db, self.card_id, self.variant, 1, 10.0)
+        client = TestClient(create_app(self.config, start_scheduler=False))
+        payload = client.get("/api/portfolio/history?days=30").json()
+        self.assertEqual(len(payload["days"]), 31)
+
+
+class SparkSeriesTests(unittest.TestCase):
+    def metrics_with(self, count):
+        from pokeflip.analytics import compute_metrics
+
+        return compute_metrics("c", "v", "s", make_rows([float(i + 1)
+                                                         for i in range(count)]),
+                               include_history=True, today=date(2030, 1, 1))
+
+    def test_a_short_series_is_passed_through_whole(self):
+        from pokeflip.analytics import spark_series
+
+        self.assertEqual(len(spark_series(self.metrics_with(12))), 12)
+
+    def test_a_long_series_is_downsampled_to_a_fixed_length(self):
+        from pokeflip.analytics import spark_series
+
+        self.assertEqual(len(spark_series(self.metrics_with(400))), 30)
+
+    def test_no_history_yields_no_spark(self):
+        from pokeflip.analytics import compute_metrics, spark_series
+
+        self.assertEqual(spark_series(compute_metrics("c", "v", "s", [])), [])
+
+
+class TrendConfidenceTests(unittest.TestCase):
+    def test_a_trend_is_not_claimed_from_one_observation(self):
+        # The moving averages equal the single point by construction, so
+        # momentum computes to exactly zero and the card would be reported as
+        # confidently "flat" on no evidence at all.
+        from pokeflip.analytics import compute_metrics
+
+        for count in (1, 2):
+            metrics = compute_metrics("c", "v", "s", make_rows([10.0] * count),
+                                      today=date(2025, 1, 2))
+            self.assertEqual(metrics.direction, "unknown", f"{count} points")
+
+    def test_enough_observations_do_produce_a_label(self):
+        from pokeflip.analytics import compute_metrics
+
+        metrics = compute_metrics("c", "v", "s",
+                                  make_rows([float(10 + i) for i in range(20)]),
+                                  today=date(2025, 1, 20))
+        self.assertEqual(metrics.direction, "rising")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

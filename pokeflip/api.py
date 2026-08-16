@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -34,6 +36,10 @@ from .providers import ProviderError
 
 log = logging.getLogger("pokeflip.api")
 WEB_DIR = Path(__file__).with_name("web")
+
+# Session cookie the dashboard uses once it has been handed the token.
+SESSION_COOKIE = "pokeflip_session"
+SESSION_MAX_AGE = 60 * 60 * 24 * 30
 
 
 def _action_page(heading: str, message: str, ok: bool) -> str:
@@ -208,6 +214,13 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
         notifications require. Action links are exempt because the single-use
         token in the URL is itself the authorisation - a phone following a
         notification button has no way to send a header.
+
+        Three ways to present the token, in order: an ``Authorization`` header
+        (scripts), a session cookie (the dashboard, after one hand-off), and a
+        ``?token=`` query parameter (the hand-off itself, and curl). The cookie
+        exists because the query parameter is a poor place for a secret - it
+        lands in access logs and browser history - and because the dashboard's
+        own fetch calls cannot carry a header they were never given.
         """
         token = config.server.api_token
         path = request.url.path
@@ -217,24 +230,47 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
             or path.startswith("/static/")
         )
         if token and not exempt:
-            supplied = request.headers.get("authorization", "")
-            if supplied.lower().startswith("bearer "):
-                supplied = supplied[7:]
-            else:
-                supplied = request.query_params.get("token", "")
-            if not secrets.compare_digest(supplied, token):
+            if not secrets.compare_digest(_supplied_token(request), token):
                 return JSONResponse(status_code=401,
                                     content={"detail": "missing or invalid API token"})
         return await call_next(request)
 
+    def _supplied_token(request: Request) -> str:
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            return header[7:]
+        cookie = request.cookies.get(SESSION_COOKIE)
+        if cookie:
+            return cookie
+        return request.query_params.get("token", "")
+
     # --- pages ----------------------------------------------------------
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard() -> Any:
+    def dashboard(request: Request) -> Any:
         index = WEB_DIR / "index.html"
         if not index.is_file():
             return HTMLResponse("<h1>pokeflip</h1><p>Dashboard assets missing.</p>")
+
+        token = config.server.api_token
+        # Trade a one-off ?token= for a cookie, then bounce to a clean URL. The
+        # dashboard's own fetch calls have no way to add a header, and leaving
+        # the secret in the address bar puts it in history and access logs.
+        if token and request.query_params.get("token") == token:
+            response: Any = RedirectResponse("/", status_code=303)
+            response.set_cookie(
+                SESSION_COOKIE, token,
+                httponly=True, samesite="lax", max_age=SESSION_MAX_AGE,
+                secure=request.url.scheme == "https",
+            )
+            return response
         return FileResponse(index)
+
+    @app.post("/api/logout")
+    def logout() -> Any:
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(SESSION_COOKIE)
+        return response
 
     # --- one-tap actions from notifications ------------------------------
 
@@ -440,6 +476,10 @@ def create_app(config: Config | None = None, start_scheduler: bool = True) -> Fa
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/portfolio/history")
+    def portfolio_history(days: int = Query(90, ge=7, le=730)) -> dict[str, Any]:
+        return portfolio.value_history(db, config, days=days)
 
     @app.get("/api/portfolio/concentration")
     def get_concentration() -> dict[str, Any]:

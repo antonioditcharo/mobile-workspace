@@ -14,3 +14,7 @@ dist/
 venv/
 .pytest_cache/
 .coverage
+
+# stray files from local testing
+jar.txt
+*.log

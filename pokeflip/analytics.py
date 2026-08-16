@@ -354,11 +354,20 @@ def _apply_liquidity(metrics: TrendMetrics, points: Sequence[PricePoint]) -> Non
         metrics.listing_count = listings[-1]
 
 
+# Observations needed before a trend label means anything. With one point the
+# moving averages are equal to it by construction, so momentum computes to
+# exactly zero and the card is confidently reported as "flat" on no evidence.
+MIN_POINTS_FOR_DIRECTION = 3
+
+
 def classify_direction(metrics: TrendMetrics) -> str:
     """Label the trend from momentum and slope together.
 
-    Requiring both to agree keeps a single noisy day from flipping the label.
+    Requiring both to agree keeps a single noisy day from flipping the label,
+    and a minimum number of observations keeps the label from being invented.
     """
+    if metrics.points < MIN_POINTS_FOR_DIRECTION:
+        return "unknown"
     momentum = metrics.momentum
     slope = metrics.trend_slope
     if momentum is None and slope is None:
@@ -423,6 +432,20 @@ def fmt_money(value: float | None, currency: str = "USD") -> str:
         return "-"
     symbol = {"USD": "$", "EUR": "€"}.get(currency, "")
     return f"{symbol}{value:,.2f}"
+
+
+def spark_series(metrics: "TrendMetrics", points: int = 30) -> list[float]:
+    """A short price series for an inline sparkline.
+
+    Downsampled to a fixed length so a row's chart costs the same whether the
+    card has 30 days of history or 700.
+    """
+    history = [h["market"] for h in metrics.history if h.get("market")]
+    if len(history) <= points:
+        return [round(v, 4) for v in history]
+    step = len(history) / points
+    return [round(history[min(len(history) - 1, int(i * step))], 4)
+            for i in range(points)]
 
 
 def annualized_volatility(volatility: float | None) -> float | None:

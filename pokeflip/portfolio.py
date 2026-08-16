@@ -12,12 +12,12 @@ The second number is the real one.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from .analytics import load_metrics
+from .analytics import load_metrics, spark_series
 from .config import Config
-from .db import Database, iso, parse_ts
+from .db import Database, iso, parse_ts, utcnow
 
 
 @dataclass
@@ -60,6 +60,7 @@ class ValuedPosition:
     change_30d: float | None
     direction: str
     stale_days: int | None
+    spark: list[float] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = self.position.to_dict()
@@ -72,6 +73,7 @@ class ValuedPosition:
             "change_30d": self.change_30d,
             "direction": self.direction,
             "stale_days": self.stale_days,
+            "spark": self.spark,
             "hold_days": self.position.hold_days(),
         })
         return data
@@ -333,7 +335,8 @@ def value_positions(db: Database, config: Config, today: date | None = None
     source = config.provider.preferred_source
     out: list[ValuedPosition] = []
     for position in open_positions(db):
-        metrics = load_metrics(db, position.card_id, position.variant, source, today=today)
+        metrics = load_metrics(db, position.card_id, position.variant, source,
+                               days=60, include_history=True, today=today)
         price = metrics.price
         if price is None:
             out.append(ValuedPosition(position, None, None, None, None, None,
@@ -355,6 +358,7 @@ def value_positions(db: Database, config: Config, today: date | None = None
                 change_30d=metrics.change_30d,
                 direction=metrics.direction,
                 stale_days=metrics.stale_days,
+                spark=spark_series(metrics),
             )
         )
     return out
@@ -458,6 +462,106 @@ def summary(db: Database, config: Config, today: date | None = None) -> dict[str
         "top_losers": [v.to_dict() for v in movers[:5]],
         "positions_detail": [v.to_dict() for v in valued],
         "concentration": concentration(db, config, valued),
+    }
+
+
+def value_history(db: Database, config: Config, days: int = 90,
+                  today: date | None = None) -> dict[str, Any]:
+    """What the book has been worth, day by day.
+
+    Reconstructed rather than recorded: for each day it values the lots that
+    were open on that day at that day's price. That means the curve is correct
+    from the moment you enter a holding, instead of only starting the day you
+    first ran the app.
+
+    Prices are carried forward across gaps in collection - a day with no quote
+    is missing data, not a card that briefly became worthless.
+    """
+    source = config.provider.preferred_source
+    end = today or utcnow().date()
+    start = end - timedelta(days=days)
+
+    lots = db.query(
+        """
+        SELECT card_id, variant, condition, quantity, cost_each,
+               acquired_at, status, sold_at
+        FROM holdings
+        """
+    )
+    if not lots:
+        return {"days": [], "start": start.isoformat(), "end": end.isoformat()}
+
+    # One pass over the price table, then everything else is in memory.
+    prices: dict[tuple[str, str], list[tuple[date, float]]] = {}
+    for key, rows in db.full_series(source).items():
+        series = [
+            (date.fromisoformat(r["captured_on"]), float(r["market"]))
+            for r in rows if r["market"]
+        ]
+        if series:
+            prices[key] = series
+
+    def price_on(key: tuple[str, str], when: date) -> float | None:
+        series = prices.get(key)
+        if not series:
+            return None
+        latest = None
+        for observed_on, value in series:
+            if observed_on > when:
+                break
+            latest = value
+        return latest
+
+    parsed = []
+    for lot in lots:
+        try:
+            acquired = parse_ts(lot["acquired_at"]).date()
+        except (ValueError, TypeError):
+            continue
+        sold = None
+        if lot["sold_at"]:
+            try:
+                sold = parse_ts(lot["sold_at"]).date()
+            except (ValueError, TypeError):
+                sold = None
+        parsed.append((lot, acquired, sold))
+
+    out: list[dict[str, Any]] = []
+    for offset in range(days + 1):
+        when = start + timedelta(days=offset)
+        cost = market = net = 0.0
+        held = 0
+        for lot, acquired, sold in parsed:
+            if acquired > when:
+                continue
+            if sold is not None and sold <= when:
+                continue
+            quantity = int(lot["quantity"] or 0)
+            cost += float(lot["cost_each"] or 0) * quantity
+            held += quantity
+            price = price_on((lot["card_id"], lot["variant"]), when)
+            if price is None:
+                continue
+            market += condition_price(config, price, lot["condition"]) * quantity
+            net += realistic_net_each(config, price, lot["condition"]) * quantity
+
+        out.append({
+            "on": when.isoformat(),
+            "cards": held,
+            "cost_basis": round(cost, 2),
+            "market_value": round(market, 2),
+            "net_value": round(net, 2),
+            "unrealized": round(net - cost, 2),
+        })
+
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "days": out,
+        "note": (
+            "Reconstructed from stored prices and your acquisition dates. Days "
+            "before a card was first priced show its cost but no value."
+        ),
     }
 
 

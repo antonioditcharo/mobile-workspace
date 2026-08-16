@@ -589,11 +589,16 @@ happened rather than doing it twice. Only a fixed set of action kinds is
 executable; a tampered payload cannot reach arbitrary code.
 
 **Set `server.api_token` before exposing the server.** With it set, everything
-except `/api/health` and the action links requires
-`Authorization: Bearer <token>` (or `?token=`). Action links are exempt because
-a phone following a notification button cannot send headers — the unguessable
-single-use token in the URL *is* the authorisation. Put TLS in front of it;
-don't expose the port directly.
+except `/api/health` and the action links needs the token, presented three
+ways: an `Authorization: Bearer` header for scripts, a session cookie for the
+dashboard, or `?token=` for the initial hand-off.
+
+Opening `https://your-host/?token=<token>` once exchanges the token for an
+HttpOnly cookie and redirects to a clean URL — so the secret stops appearing in
+your address bar, your browser history and the access log. `POST /api/logout`
+clears it. Action links stay exempt because a phone following a notification
+button cannot send headers; the unguessable single-use token in that URL *is*
+the authorisation. Put TLS in front of it; don't expose the port directly.
 
 ### Telegram: ask it things
 
@@ -801,6 +806,7 @@ POST   /api/refresh                   run a refresh cycle now
 GET    /api/signals                   latest stored buy/sell signals
 POST   /api/signals/run               re-score without fetching
 GET    /api/portfolio                 valuation and P&L
+GET    /api/portfolio/history         net value and cost basis, day by day
 POST   /api/holdings                  add a lot
 POST   /api/holdings/{id}/sell        record a sale (splits the lot)
 GET    /api/watchlist                 watchlist with live metrics
@@ -926,7 +932,7 @@ Secrets (`api_key`, SMTP password, webhook URLs) are redacted from
 python -m unittest discover -s tests -v
 ```
 
-265 tests, standard library only, no network. The offline provider is
+283 tests, standard library only, no network. The offline provider is
 deterministic, so results are stable run to run.
 
 ---
